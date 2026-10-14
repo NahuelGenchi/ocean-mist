@@ -83,18 +83,48 @@ When the music matters more than the window, the player shrinks to a small bar t
 
 ## What it does
 
-| | |
-| :--- | :--- |
-| **Visualizations** | Eight of them: Battery (Randomization, Kaleidovision, Spider's Last Moment, Event Horizon, Sepiaswirl), Bars and Waves (Bars, Scope) and Ambience (Water). Or show the album cover instead. |
-| **Graphic equalizer** | 10 bands from 31 Hz to 16 kHz, ±12 dB each, with 11 presets such as Rock, Jazz and Bass boost. |
-| **Media Library** | Reads your Music folder, and any other folder you add. Browse by artist, album or genre, search as you type, sort by any column. The files stay where they are. |
-| **Now Playing list** | Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as the list. |
-| **Playlists** | Opens and saves `.m3u`; also reads `.m3u8` and `.pls`. |
-| **Radio Tuner** | Plays internet radio stations from a stream address or a `.pls` / `.m3u` link, and shows the song title when the station sends one. Add your own stations by address. |
-| **Formats** | MP3, FLAC, Ogg Vorbis, Opus, M4A/AAC and WAV. Titles, covers and lengths are read by the player itself. |
-| **Desktop integration** | Implements MPRIS, the interface behind your keyboard's media keys and the desktop's media controls. Optional notification when the song changes. |
-| **Sizes** | Compact mode, full screen, and five player sizes from 100% to 200% for high-resolution screens. |
-| **Small comforts** | Picks up where you left off. A sleep timer stops the music after a set time or at the end of the song. |
+<table>
+  <tr>
+    <td width="170" valign="top"><strong>Visualizations</strong></td>
+    <td>Eight of them: Battery (Randomization, Kaleidovision, Spider's Last Moment, Event Horizon, Sepiaswirl), Bars and Waves (Bars, Scope) and Ambience (Water). Or show the album cover instead.</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Graphic equalizer</strong></td>
+    <td>10 bands from 31 Hz to 16 kHz, ±12 dB each, with 11 presets such as Rock, Jazz and Bass boost.</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Media Library</strong></td>
+    <td>Reads your Music folder, and any other folder you add. Browse by artist, album or genre, search as you type, sort by any column. The files stay where they are.</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Now Playing list</strong></td>
+    <td>Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as the list.</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Playlists</strong></td>
+    <td>Opens and saves <code>.m3u</code>; also reads <code>.m3u8</code> and <code>.pls</code>.</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Radio Tuner</strong></td>
+    <td>Plays internet radio stations from a stream address or a <code>.pls</code> / <code>.m3u</code> link, and shows the song title when the station sends one. Add your own stations by address.</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Formats</strong></td>
+    <td>MP3, FLAC, Ogg Vorbis, Opus, M4A/AAC and WAV. Titles, covers and lengths are read by the player itself.</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Desktop integration</strong></td>
+    <td>Implements MPRIS, the interface behind your keyboard's media keys and the desktop's media controls. Optional notification when the song changes.</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Sizes</strong></td>
+    <td>Compact mode, full screen, and five player sizes from 100% to 200% for high-resolution screens.</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Small comforts</strong></td>
+    <td>Picks up where you left off. A sleep timer stops the music after a set time or at the end of the song.</td>
+  </tr>
+</table>
 
 ## Get started
 
@@ -218,9 +248,7 @@ Every change, however small, follows the same trail:
 
 ```mermaid
 flowchart LR
-    issue["<b>Issue</b><br/>goal and scope"] --> branch["<b>Branch</b><br/>type/issue-slug"] --> pr["<b>Pull request</b><br/>Closes #issue"] --> main["<b>main</b>"]
-    milestone(["Milestone"]) -.- issue
-    milestone -.- pr
+    issue["<b>Issue</b><br/>goal, scope, milestone"] --> branch["<b>Branch</b><br/>type/issue-slug"] --> pr["<b>Pull request</b><br/>closes the issue,<br/>same milestone"] --> main["<b>main</b>"]
 ```
 
 Found a bug or have an idea? [Open a work item](https://github.com/NahuelGenchi/ocean-mist/issues/new/choose). Before sending code, read [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/TRACKING.md](docs/TRACKING.md); agents start with [AGENTS.md](AGENTS.md).
