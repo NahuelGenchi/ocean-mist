@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ocean Mist</title>
+<link rel="stylesheet" href="ui/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- sculpted frame, drawn by frame.js to fit the window -->
+  <svg id="frame" class="tint" xmlns="http://www.w3.org/2000/svg"></svg>
+  <svg id="logo" viewBox="0 0 18 20">
+    <path d="M1.600 4.300c2.500-1.700 4.900-1.800 7.200-.500l-1 6.200c-2.300-1.300-4.700-1.200-7.200.5z" fill="#e8582e"/>
+    <path d="M9.900 4.400c2.300 1.300 4.700 1.200 7.200-.5l-1 6.200c-2.500 1.700-4.900 1.800-7.200.5z" fill="#84c341"/>
+    <path d="M.5 11.600c2.500-1.700 4.900-1.800 7.200-.5l-1 6.200c-2.300-1.300-4.700-1.200-7.200.5z" fill="#4c8fdc"/>
+    <path d="M8.800 11.700c2.300 1.300 4.700 1.200 7.200-.5l-1 6.200c-2.500 1.700-4.900 1.800-7.200.5z" fill="#f5cb2c"/>
+  </svg>
+
+  <!-- window move areas (the host starts the drag) -->
+  <div id="drag-top" class="drag"></div>
+  <div id="drag-lobe" class="drag"></div>
+  <div id="drag-deck" class="drag"></div>
+
+  <!-- top -->
+  <button id="shade" class="tint nodrag" title="Menu"><svg viewBox="0 0 10 10"><path d="M2.500 4L5 1.800 7.500 4M2.500 6L5 8.200 7.500 6" fill="none" stroke="currentColor" stroke-width="1.500"/></svg></button>
+  <div id="mini-title">Ocean Mist</div>
+  <div id="corner" class="drag tint">
+    <div id="np-select" class="nodrag" title="Open music or a saved playlist">
+      <svg class="np-ico" viewBox="0 0 13 13"><path d="M1.500 1.500h7l3 3v7h-10z" fill="#fff" stroke="#6f86c4"/><path d="M8.500 1.500v3h3" fill="#dfe8fb" stroke="#6f86c4"/><path d="M4.300 5.200l4 2.500-4 2.500z" fill="#2f55b5"/></svg>
+      <span id="np-label">Now Playing</span>
+      <svg class="np-chev" viewBox="0 0 10 7"><path d="M1.200 1.200L5 5l3.800-3.800" fill="none" stroke="#131c44" stroke-width="2.200"/></svg>
+    </div>
+    <button id="w-full" class="wbtn nodrag" title="Return to full mode"><svg viewBox="0 0 12 12"><path d="M2 7.500V10h2.500M10 4.500V2H7.500M2.300 9.700l3-3M9.700 2.300l-3 3" fill="none" stroke="currentColor" stroke-width="1.500"/></svg></button>
+    <button id="w-min" class="wbtn nodrag" title="Minimize"><svg viewBox="0 0 12 12"><path d="M1.500 10h8" stroke="currentColor" stroke-width="2.200"/></svg></button>
+    <button id="w-max" class="wbtn nodrag" title="Maximize"><svg viewBox="0 0 12 12"><path d="M1.700 2.500h8.600v8H1.700z" fill="none" stroke="currentColor" stroke-width="1.200"/><path d="M1.700 2.900h8.600" stroke="currentColor" stroke-width="2"/></svg></button>
+    <button id="w-close" class="wbtn nodrag" title="Close"><svg viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.700"/></svg></button>
+  </div>
+
+  <!-- taskbar -->
+  <nav id="taskbar" class="tint">
+    <a class="task sel" data-view="now"><span>Now<br>Playing</span><i></i></a>
+    <a class="task" data-view="na" data-name="Media Guide"><span>Media<br>Guide</span></a>
+    <a class="task" data-view="na" data-name="Copy from CD"><span>Copy from<br>CD</span></a>
+    <a class="task" data-view="library"><span>Media<br>Library</span></a>
+    <a class="task" data-view="radio"><span>Radio<br>Tuner</span></a>
+    <a class="task" data-view="na" data-name="Copy to CD or Device"><span>Copy to CD<br>or Device</span></a>
+    <a class="task" data-view="na" data-name="Premium Services"><span>Premium<br>Services</span><i></i></a>
+    <a class="task" data-view="skins"><span>Skin<br>Chooser</span></a>
+  </nav>
+  <div id="tb-handle" class="tint"><svg viewBox="0 0 5 8"><path d="M1 1l3 3-3 3" fill="none" stroke="#1b2748" stroke-width="1.400"/></svg></div>
+
+  <!-- Now Playing -->
+  <section id="view-now" class="view">
+    <div id="stage">
+      <div id="now-artist"></div>
+      <div id="now-title"></div>
+      <canvas id="vis"></canvas>
+      <img id="vis-art" alt="" hidden>
+      <div id="empty-hint" hidden>
+        <b>No music loaded</b>
+        Open the <u>Now Playing</u> menu at the top right and choose <u>Open files…</u>,<br>or drop music files onto this window.
+      </div>
+      <div id="eq" class="tint" hidden>
+        <div class="eq-head">
+          <b>Graphic Equalizer</b>
+          <a id="eq-on">Turn on</a>
+          <a id="eq-preset" title="Presets"><span id="eq-preset-name">Flat</span><svg viewBox="0 0 8 5"><path d="M0 0h8L4 5z" fill="currentColor"/></svg></a>
+          <a id="eq-reset">Reset</a>
+          <span class="grow"></span>
+          <button id="eq-close" title="Hide the equalizer"><svg viewBox="0 0 8 8"><path d="M1 1l6 6M7 1L1 7" stroke="currentColor" stroke-width="1.400"/></svg></button>
+        </div>
+        <div id="eq-bands"></div>
+      </div>
+    </div>
+    <aside id="pane" class="tint">
+      <div id="pane-head">Find Album Info</div>
+      <div id="art-box"><img id="art" alt=""><div id="art-none"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" fill="none" stroke="#8d97c3" stroke-width="2"/><circle cx="24" cy="24" r="6" fill="none" stroke="#8d97c3" stroke-width="2"/><path d="M24 4a20 20 0 0 1 20 20" fill="none" stroke="#c3c9fc" stroke-width="2"/></svg></div></div>
+      <div id="album-name"></div>
+      <div id="playlist"></div>
+      <div id="drop-line" hidden></div>
+    </aside>
+    <div id="visbar" class="tint">
+      <button id="vis-menu" class="mini" title="Select visualization or show the equalizer"><svg viewBox="0 0 14 10"><rect x="1" y="1" width="12" height="8" fill="none" stroke="currentColor" stroke-width="1.400"/><path d="M9.500 1v8M10.800 3.500h1.400M10.800 5.500h1.400" stroke="currentColor"/></svg></button>
+      <button id="vis-prev" class="mini round" title="Previous visualization"><svg viewBox="0 0 10 10"><path d="M6.800 2L2.800 5l4 3z" fill="currentColor"/></svg></button>
+      <button id="vis-next" class="mini round" title="Next visualization"><svg viewBox="0 0 10 10"><path d="M3.200 2l4 3-4 3z" fill="currentColor"/></svg></button>
+      <span id="vis-name"></span>
+      <span class="grow"></span>
+      <button id="pane-toggle" class="mini" title="Show or hide the playlist"><svg viewBox="0 0 14 10"><rect x="1" y="1" width="12" height="8" fill="none" stroke="currentColor" stroke-width="1.400"/><path d="M9.500 1v8M3 5h4M5.500 3.200L7.300 5 5.500 6.800" fill="none" stroke="currentColor"/></svg></button>
+      <button id="fullscreen" class="mini" title="Full screen"><svg viewBox="0 0 14 10"><rect x="1" y="1" width="12" height="8" fill="none" stroke="currentColor" stroke-width="1.400"/><path d="M5 7l4-4M6.500 3H9v2.500" fill="none" stroke="currentColor"/></svg></button>
+    </div>
+    <div id="totalbar" class="tint">
+      <button id="list-menu" class="mini" title="Menu"><svg viewBox="0 0 14 10"><path d="M2 1h7l3 2.500V9H2z" fill="none" stroke="currentColor" stroke-width="1.400"/><path d="M5.500 3.500l3.200 1.800-3.200 1.800z" fill="currentColor"/></svg></button>
+      <span class="grow"></span>
+      <span id="total-time">Total Time: 0:00</span>
+    </div>
+  </section>
+
+  <!-- Media Library -->
+  <section id="view-library" class="view tint" hidden>
+    <div class="lib-tools">
+      <button id="lib-add">Add<svg viewBox="0 0 8 5"><path d="M0 0h8L4 5z" fill="currentColor"/></svg></button>
+      <button id="lib-play">Play</button>
+      <button id="lib-queue">Add to Now Playing</button>
+      <button id="lib-remove" hidden>Remove</button>
+      <button id="lib-clear" hidden>Clear list</button>
+      <span class="grow"></span>
+      <input id="lib-search" type="search" placeholder="Search">
+    </div>
+    <div class="lib-body">
+      <div id="lib-tree"></div>
+      <div id="lib-scroll" class="lib-table">
+        <table>
+          <thead><tr><th data-sort="title">Title</th><th data-sort="artist">Artist</th><th data-sort="album">Album</th><th data-sort="duration" class="num">Length</th></tr></thead>
+          <tbody id="lib-rows"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="lib-foot"><span id="lib-count"></span></div>
+  </section>
+
+  <!-- Radio Tuner -->
+  <section id="view-radio" class="view tint" hidden>
+    <div class="lib-tools">
+      <button id="radio-play">Play</button>
+      <button id="radio-add">Add station…</button>
+      <button id="radio-edit">Edit…</button>
+      <button id="radio-remove">Remove</button>
+    </div>
+    <form id="radio-form" hidden>
+      <label>Name <input id="radio-name" type="text" placeholder="(optional)"></label>
+      <label class="wide">Address <input id="radio-url" type="text" placeholder="http://…  a stream, or a station’s .pls / .m3u file"></label>
+      <button type="submit">Save</button>
+      <button type="button" id="radio-cancel">Cancel</button>
+    </form>
+    <div class="lib-table">
+      <table>
+        <thead><tr><th class="station">Station</th><th>Address</th></tr></thead>
+        <tbody id="radio-rows"></tbody>
+      </table>
+    </div>
+    <div class="lib-foot"><span>Double-click a station to listen. Previous and Next change the station.</span></div>
+  </section>
+
+  <!-- Skin Chooser -->
+  <section id="view-skins" class="view tint" hidden>
+    <div class="lib-tools">
+      <button id="skin-apply">Apply Skin</button>
+    </div>
+    <div class="skin-body">
+      <div id="skin-list"><div class="sel">Compact</div></div>
+      <div class="skin-info">
+        <div id="skin-shot"></div>
+        <b>Compact</b>
+        <p>Only the status line and the controls, in a small bar that stays out of the way.<br>
+        The arrow button at its top right (or Ctrl+1) brings the full player back.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- features that only existed online -->
+  <section id="view-na" class="view tint" hidden>
+    <div class="na-box"><b id="na-title"></b><p>This part of the original player was an online service or a CD feature.<br>It is not included in this player.</p></div>
+  </section>
+
+  <div id="status">
+    <svg id="st-icon" viewBox="0 0 10 10"><path d="M2 1l7 4-7 4z" fill="currentColor"/></svg>
+    <span id="st-text">Ready</span>
+    <span class="grow"></span>
+    <span id="st-time">00:00</span>
+  </div>
+
+  <!-- deck -->
+  <div id="deck" class="tint">
+    <button id="rew" class="jog nodrag" title="Rewind"><svg viewBox="0 0 12 6"><path d="M5.500 0v6L1 3zM11 0v6L6.500 3z" fill="currentColor"/></svg></button>
+    <div id="seek" class="nodrag"><div class="fill"></div><div class="thumb"></div></div>
+    <button id="ffw" class="jog nodrag" title="Fast forward"><svg viewBox="0 0 12 6"><path d="M1 0v6l4.500-3zM6.500 0v6L11 3z" fill="currentColor"/></svg></button>
+
+    <button id="play" class="orb nodrag" title="Play"><svg id="ico-play" viewBox="0 0 16 16"><path d="M5.500 3.200l8 4.800-8 4.800z" fill="currentColor"/></svg><svg id="ico-pause" viewBox="0 0 16 16" hidden><path d="M4.200 3.500h2.900v9H4.200zM8.900 3.500h2.900v9H8.900z" fill="currentColor"/></svg></button>
+    <button id="stop" class="orb nodrag" title="Stop"><svg viewBox="0 0 16 16"><rect x="4.700" y="4.700" width="6.600" height="6.600" fill="currentColor"/></svg></button>
+    <button id="prev" class="orb nodrag" title="Previous"><svg viewBox="0 0 16 16"><path d="M4 4h1.800v8H4zM12.500 4v8L6 8z" fill="currentColor"/></svg></button>
+    <button id="next" class="orb nodrag" title="Next"><svg viewBox="0 0 16 16"><path d="M10.200 4H12v8h-1.800zM3.500 4v8L10 8z" fill="currentColor"/></svg></button>
+    <button id="mute" class="orb nodrag" title="Mute"><svg viewBox="0 0 16 16"><path d="M2.500 6h2.500L8.500 3v10L5 10H2.500z" fill="currentColor"/><path id="mute-waves" d="M10.200 5.500v5M11.900 4.500v7M13.600 5.500v5" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="1.500 1"/><path id="mute-x" d="M10.300 6l3.400 4M13.700 6l-3.400 4" stroke="currentColor" stroke-width="1.400" hidden/></svg></button>
+    <div id="volume" class="nodrag" title="Volume"><div class="wedge"><div class="fill"></div></div><div class="thumb"></div></div>
+    <button id="shuffle" class="orb tiny nodrag" title="Turn shuffle on"><svg viewBox="0 0 16 16"><path d="M5.800 12.500V4M3.600 6.200L5.800 4 8 6.200M10.200 3.500V12M8 9.800l2.200 2.200 2.200-2.200" fill="none" stroke="currentColor" stroke-width="1.500"/></svg></button>
+    <button id="tint" class="orb tiny nodrag" title="Change player color"><svg viewBox="0 0 16 16"><path d="M12.800 2.200c.9.600.6 1.600-.2 2.600L8.300 9.600 6.700 8.300l4-4.900c.7-.9 1.400-1.600 2.100-1.200z" fill="currentColor"/><path d="M6.100 9l1.500 1.300c-.3 1.700-1.800 2.800-4.300 2.900 1.100-.900 1.500-1.700 1.500-2.600.1-.700.600-1.300 1.300-1.600z" fill="currentColor"/></svg></button>
+    <button id="repeat" class="orb tiny nodrag" title="Repeat"><svg viewBox="0 0 16 16"><path d="M2.700 7.600V6.800a2.300 2.300 0 0 1 2.300-2.300h7.200M10.400 2.500l2 2-2 2M13.300 8.400v.8a2.300 2.300 0 0 1-2.300 2.300H3.800M5.600 9.500l-2 2 2 2" fill="none" stroke="currentColor" stroke-width="1.400"/><path id="repeat-one" d="M7.300 7.100l1-.7v3.400" fill="none" stroke="currentColor" stroke-width="1.200" hidden/></svg></button>
+    <div id="grip" class="nodrag"></div>
+  </div>
+</div>
+
+<audio id="audio" preload="auto"></audio>
+<script src="ui/frame.js"></script>
+<script src="ui/visuals.js"></script>
+<script src="ui/app.js"></script>
+<script src="ui/eq.js"></script>
+<script src="ui/library.js"></script>
+<script src="ui/radio.js"></script>
+<script src="ui/skins.js"></script>
+<script>Mist.boot();</script>
+</body>
+</html>
