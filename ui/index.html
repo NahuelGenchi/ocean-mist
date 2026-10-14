@@ -45,7 +45,7 @@
     <a class="task" data-view="library"><span>Media<br>Library</span></a>
     <a class="task" data-view="radio"><span>Radio<br>Tuner</span></a>
     <a class="task" data-view="na" data-name="Copy to CD or Device"><span>Copy to CD<br>or Device</span></a>
-    <a class="task" data-view="na" data-name="Premium Services"><span>Premium<br>Services</span><i></i></a>
+    <a class="task" data-view="premium"><span>Premium<br>Services</span><i></i></a>
     <a class="task" data-view="skins"><span>Skin<br>Chooser</span></a>
   </nav>
   <div id="tb-handle" class="tint"><svg viewBox="0 0 5 8"><path d="M1 1l3 3-3 3" fill="none" stroke="#1b2748" stroke-width="1.400"/></svg></div>
@@ -158,6 +158,31 @@
     </div>
   </section>
 
+  <!-- Premium Services: YouTube Music -->
+  <section id="view-premium" class="view tint" hidden>
+    <div class="lib-tools">
+      <button id="yt-back" title="Back to what was shown before">Back</button>
+      <button id="yt-play">Play</button>
+      <button id="yt-queue">Add to Now Playing</button>
+      <span class="grow"></span>
+      <input id="yt-search" type="search" placeholder="Search YouTube Music">
+    </div>
+    <div class="lib-body">
+      <div id="yt-side">
+        <div id="yt-tree"></div>
+        <div id="yt-cover"><img id="yt-art" alt="" hidden><div id="yt-none"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" fill="none" stroke="#8d97c3" stroke-width="2"/><circle cx="24" cy="24" r="6" fill="none" stroke="#8d97c3" stroke-width="2"/><path d="M24 4a20 20 0 0 1 20 20" fill="none" stroke="#c3c9fc" stroke-width="2"/></svg></div></div>
+      </div>
+      <div id="yt-scroll" class="lib-table">
+        <div id="yt-head" hidden></div>
+        <table>
+          <thead><tr><th id="yt-c1">Title</th><th id="yt-c2">Artist</th><th id="yt-c3">Album</th><th class="num">Length</th></tr></thead>
+          <tbody id="yt-rows"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="lib-foot"><a id="yt-more" hidden>More results</a><span id="yt-count"></span></div>
+  </section>
+
   <!-- features that only existed online -->
   <section id="view-na" class="view tint" hidden>
     <div class="na-box"><b id="na-title"></b><p>This part of the original player was an online service or a CD feature.<br>It is not included in this player.</p></div>
@@ -197,6 +222,7 @@
 <script src="ui/library.js"></script>
 <script src="ui/radio.js"></script>
 <script src="ui/skins.js"></script>
+<script src="ui/premium.js"></script>
 <script>Mist.boot();</script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 // The player itself: playback, the Now Playing pane, menus and the talk with
-// the host. The other files (eq.js, library.js, radio.js, skins.js) add their
-// parts through window.Mist; Mist.boot() at the end of the page starts it all.
+// the host. The other files (eq.js, library.js, radio.js, skins.js,
+// premium.js) add their parts through window.Mist; Mist.boot() at the end of
+// the page starts it all.
 (() => {
   const $ = (id) => document.getElementById(id);
   const base = location.pathname.replace(/[^/]*$/, '');
@@ -17,6 +18,7 @@
     mode: 'stopped',    // playing | paused | stopped
     view: 'now', history: [],
     heard: new Set(),   // tracks already played in this shuffle pass
+    played: null,       // the last YouTube Music song that was heard
     queue: [],          // ids picked with "Play next", played before the list goes on
   };
   const hooks = {};
@@ -70,7 +72,9 @@
     return `${pad ? two(m) : m}:${two(s)}`;
   }
   function esc(text) { const d = document.createElement('span'); d.textContent = text; return d.innerHTML; }
+  const sentence = (text) => (text ? text[0].toUpperCase() + text.slice(1) : '');
   const length = () => (isFinite(audio.duration) ? audio.duration : 0);   // 0 for a live stream
+  const isStream = (t) => !!t && t.source === 'youtube';
 
   // ---- audio graph (equalizer, analyser for the visualizations, gain for volume) ----
   let actx = null, gain = null, analyserNode = null, fade = 1;
@@ -117,7 +121,8 @@
     state.station = null; state.radioTitle = ''; cueAt = 0;
     state.cur = id; state.sel = id; state.heard.add(id);
     ensureGraph();
-    audio.src = base + 'media/' + id;
+    closeStream();
+    if (!isStream(t)) audio.src = base + 'media/' + id;   // a YouTube Music song is fed by start()
     start();
     setMode('playing');
     showTrack();
@@ -128,6 +133,7 @@
     if (!s) return;
     state.cur = null; state.station = id; state.radioTitle = ''; cueAt = 0; radioError = '';
     ensureGraph();
+    closeStream();
     audio.src = base + 'radio/' + id + '?t=' + Date.now();
     start();
     setMode('playing');
@@ -146,14 +152,16 @@
       if (!t) return;
       state.cur = state.sel = t.id; state.heard.add(t.id);
       cueAt = saved.position > 2 && (!t.duration || saved.position < t.duration - 3) ? saved.position : 0;
-      audio.src = base + 'media/' + t.id;
+      if (!isStream(t)) audio.src = base + 'media/' + t.id;   // nothing is fetched before Play
     }
     setMode(cueAt ? 'paused' : 'stopped');
     showTrack(); render(); updateTime();
   }
   function start() {
-    const at = cueAt;
-    if (at) {  // WebKit ignores a seek on a song that has not run yet: start it silently, jump, then let it be heard
+    const at = cueAt, t = track(state.cur);
+    if (state.station === null && isStream(t)) {   // fed from where it should start
+      if (!feed || feed.t.id !== t.id) openStream(t);
+    } else if (at) {  // WebKit ignores a seek on a song that has not run yet: start it silently, jump, then let it be heard
       fade = 0; applyVolume();
       audio.addEventListener('playing', () => { if (cueAt === at) audio.currentTime = at; else { fade = 1; applyVolume(); } }, { once: true });
       audio.addEventListener('seeked', () => { if (cueAt === at) cueAt = 0; fade = 1; applyVolume(); }, { once: true });
@@ -174,7 +182,7 @@
   function stop(forget) {
     audio.pause();
     cueAt = 0;
-    if (state.station !== null) { audio.removeAttribute('src'); audio.load(); }   // hang up on the stream
+    if (state.station !== null || feed) { closeStream(); audio.removeAttribute('src'); audio.load(); }   // hang up on the stream
     else { try { audio.currentTime = 0; } catch (e) { /* not loaded */ } }
     if (forget) { state.cur = null; state.station = null; state.radioTitle = ''; audio.removeAttribute('src'); audio.load(); showTrack(); }
     setMode('stopped');
@@ -206,7 +214,7 @@
       // every song once per pass; the list only starts over if repeat is on
       let left = state.tracks.filter((t) => !state.heard.has(t.id));
       if (!left.length) {
-        if (auto && repeatMode() === 'off') { state.heard.clear(); stop(); render(); return; }
+        if (auto && repeatMode() === 'off') { if (carryOn()) return; state.heard.clear(); stop(); render(); return; }
         state.heard.clear();
         left = state.tracks.filter((t) => t.id !== state.cur);
       }
@@ -214,11 +222,22 @@
     } else {
       i += 1;
       if (i >= state.tracks.length) {
-        if (auto && repeatMode() === 'off') { stop(); state.sel = state.tracks[0].id; render(); return; }
+        if (auto && repeatMode() === 'off') { if (carryOn()) return; stop(); state.sel = state.tracks[0].id; render(); return; }
         i = 0;
       }
     }
     play(state.tracks[i].id);
+  }
+  // the list ran out by itself: premium.js may carry on with similar songs
+  const carryOn = () => !!(Mist.carryOn && Mist.carryOn(track(state.cur)));
+  // the song that plays after this one, when that is known (not in shuffle)
+  function upcoming() {
+    const queued = state.queue.find((id) => track(id));
+    if (queued !== undefined) return queued;
+    const i = indexOf(state.cur);
+    if (state.settings.shuffle || state.station !== null || i < 0) return null;
+    if (i + 1 < state.tracks.length) return state.tracks[i + 1].id;
+    return repeatMode() === 'all' ? state.tracks[0].id : null;
   }
   function setMode(mode) {
     state.mode = mode;
@@ -234,6 +253,109 @@
     report();
     fire('mode', mode);
   }
+
+  // ---- YouTube Music songs ----
+  // The host gets a song in segments of about seven seconds and repacks each
+  // one as MP4; they go into a MediaSource here, about a minute ahead of the
+  // music, and what was played a while ago is let go.
+  const AHEAD = 60, BEHIND = 90;
+  let feed = null;      // the song being fed: { t, source, url, buffer, info, busy, started, stalled, end, ctrl }
+  let streamFails = 0;  // songs in a row that could not be played
+  function openStream(t) {
+    closeStream();
+    const source = new MediaSource();
+    const f = feed = { t, source, url: URL.createObjectURL(source), buffer: null, info: null, busy: false, started: false, stalled: false, end: 0, ctrl: new AbortController() };
+    source.addEventListener('sourceopen', () => feedStart(f), { once: true });
+    audio.src = f.url;
+  }
+  function closeStream() {
+    if (!feed) return;
+    feed.ctrl.abort();
+    URL.revokeObjectURL(feed.url);
+    feed = null;
+  }
+  async function need(f, part) {   // a part of the song from the host; its error message otherwise
+    const r = await fetch(`${base}yt/song/${f.t.video}${part}`, { signal: f.ctrl.signal });
+    if (r.ok) return r;
+    const why = await r.json().catch(() => ({}));
+    throw Object.assign(new Error(why.error || 'the player could not get this song'), { general: !!why.general });
+  }
+  function append(f, data) {
+    return new Promise((ok, fail) => {
+      const done = () => { f.buffer.removeEventListener('error', bad); ok(); };
+      const bad = () => { f.buffer.removeEventListener('updateend', done); fail(new Error('the player could not read this song')); };
+      f.buffer.addEventListener('updateend', done, { once: true });
+      f.buffer.addEventListener('error', bad, { once: true });
+      f.buffer.appendBuffer(data);
+    });
+  }
+  async function feedStart(f) {
+    try {
+      const info = await (await need(f, '')).json();
+      if (f !== feed) return;
+      f.info = info;
+      f.buffer = f.source.addSourceBuffer(info.type);
+      f.source.duration = info.duration;
+      await append(f, await (await need(f, '/init')).arrayBuffer());
+      if (f !== feed) return;
+      if (cueAt) { audio.currentTime = cueAt; cueAt = 0; }   // resuming where the last session stopped
+      pump(f);
+    } catch (err) { streamFailed(f, err); }
+  }
+  // where the music that is in ends, from this moment on (-1: none here)
+  function edge(f) {
+    const ranges = f.buffer.buffered, now = audio.currentTime;
+    for (let i = 0; i < ranges.length; i++) if (ranges.start(i) <= now + 0.1 && now < ranges.end(i)) return ranges.end(i);
+    return -1;
+  }
+  // the music that is in reaches the song's end (known once its last segment is in)
+  const allIn = (f, until) => f.end > 0 && until >= f.end - 0.05;
+  // the segment the music needs next, of those not tried yet this round; -1 while it is far enough ahead
+  function wanted(f, tried) {
+    const starts = f.info.starts, now = audio.currentTime, until = edge(f), ranges = f.buffer.buffered;
+    const at = (time) => { let n = 0; while (n + 1 < starts.length && starts[n + 1] <= time) n++; return n; };
+    let here = false;
+    for (let i = 0; i < ranges.length; i++) here = here || (ranges.start(i) <= now && now < ranges.end(i));
+    if (audio.ended || (here && (until - now > AHEAD || allIn(f, until)))) return -1;
+    // nothing here yet: the segment this moment is in, then its neighbor in case the
+    // playlist's times and the music's are a frame apart; otherwise the one after what is in
+    const n = at(here ? until + 0.1 : now);
+    const near = here ? [n] : [n, now - starts[n] < 0.1 ? n - 1 : n + 1];
+    return near.find((i) => i >= 0 && i < starts.length && !tried.has(i)) ?? -1;
+  }
+  async function pump(f) {
+    if (f.busy || f !== feed || !f.info) return;
+    f.busy = true;
+    try {
+      const tried = new Set();
+      for (let n = wanted(f, tried); n >= 0 && f === feed; n = wanted(f, tried)) {
+        tried.add(n);
+        const data = await (await need(f, '/' + n)).arrayBuffer();
+        if (f !== feed) return;
+        const ranges = f.buffer.buffered, old = audio.currentTime - BEHIND;
+        if (ranges.length && ranges.start(0) < old - 30) {   // let go of what played a while ago
+          await new Promise((ok) => { f.buffer.addEventListener('updateend', ok, { once: true }); f.buffer.remove(0, old); });
+        }
+        await append(f, data);
+        if (n === f.info.starts.length - 1) { const r = f.buffer.buffered; f.end = r.end(r.length - 1); }   // where it really ends
+      }
+      if (f === feed && f.source.readyState === 'open' && allIn(f, edge(f))) f.source.endOfStream();   // so the song can end
+    } catch (err) { streamFailed(f, err); } finally { f.busy = false; }
+  }
+  function streamFailed(f, err) {
+    if (f !== feed || (err && err.name === 'AbortError')) return;
+    closeStream(); audio.removeAttribute('src'); audio.load();
+    const why = sentence((err && err.message) || 'the player could not get this song');
+    if ((err && err.general) || ++streamFails >= 3) { streamFails = 0; stop(); flash(why, 30000); return; }   // the next one would fail too
+    flash(why, 5000);
+    setTimeout(() => { if (state.cur === f.t.id && state.mode === 'playing') step(1, true); }, 2500);
+  }
+  audio.addEventListener('timeupdate', () => { if (feed) pump(feed); });
+  audio.addEventListener('seeking', () => { if (feed) pump(feed); });
+  audio.addEventListener('waiting', () => {
+    const f = feed;
+    if (f) setTimeout(() => { if (f === feed && f.started && audio.readyState < 3 && !audio.paused) { f.stalled = true; statusTick(); } }, 700);
+  });
 
   // what the host passes on from the keyboard's media keys and the desktop's controls
   function control(action, value) {
@@ -258,7 +380,9 @@
       if (!refresh.loaded) return;
       api('now', {
         id: state.cur, station: state.station, mode: state.mode, title: state.radioTitle,
-        position: state.mode === 'stopped' ? 0 : position(), duration: length(),
+        position: state.mode === 'stopped' ? 0 : position(), duration: length(), next: upcoming(),
+        // a YouTube Music song has started once it is heard, so one that cannot play is not announced
+        started: !isStream(track(state.cur)) || !!(feed && feed.t.id === state.cur && feed.started),
       });
     }, 120);
   }
@@ -300,6 +424,8 @@
     let text = 'Ready';
     if (state.mode === 'stopped') text = t || s ? 'Stopped' : 'Ready';
     else if (state.mode === 'paused') text = 'Paused';
+    else if (feed && !feed.started) text = 'Connecting to YouTube Music…';
+    else if (feed && feed.stalled) text = 'Buffering…';
     else if (s) {
       const lines = ['Station: ' + s.name];
       if (state.radioTitle) lines.push('Song: ' + state.radioTitle);
@@ -348,14 +474,15 @@
   function unqueue(id) { state.queue = state.queue.filter((q) => q !== id); render(); }
   function trackMenu(e, id, extra) {
     const queued = state.queue.includes(id);
-    menu(e.clientX, e.clientY, [
+    const items = [
       { label: 'Play', run: () => play(id) },
       { label: 'Play next', run: () => queueNext(id) },
       queued ? { label: 'Take out of the queue', run: () => unqueue(id) } : { label: 'Add to queue', run: () => queueLast(id) },
       null,
       { label: 'Remove from list', run: () => api('remove', { ids: [id] }) },
-      ...(extra || []),
-    ]);
+    ];
+    fire('track-menu', id, items);   // the other parts may add theirs
+    menu(e.clientX, e.clientY, [...items, ...(extra || [])]);
   }
   list.addEventListener('click', (e) => { const id = rowId(e); if (id !== null) { state.sel = id; render(); } });
   list.addEventListener('dblclick', (e) => { const id = rowId(e); if (id !== null) play(id); });
@@ -410,7 +537,7 @@
   let probing = false;
   function probeNext() {
     if (probing) return;
-    const t = state.tracks.find((x) => !x.duration && !x.probed);
+    const t = state.tracks.find((x) => !x.duration && !x.probed && !isStream(x));
     if (!t) return;
     probing = true; t.probed = true;
     const done = () => { probing = false; probe.onloadedmetadata = probe.onerror = null; probeNext(); };
@@ -572,6 +699,7 @@
       { label: 'Shuffle', hint: 'Ctrl+H', checked: state.settings.shuffle, run: toggleShuffle },
       { label: 'Repeat list', hint: 'Ctrl+T', checked: mode === 'all', run: () => setRepeat(mode === 'all' ? 'off' : 'all') },
       { label: 'Repeat song', checked: mode === 'one', run: () => setRepeat(mode === 'one' ? 'off' : 'one') },
+      { label: 'Autoplay similar songs', checked: state.settings.yt_radio !== false, run: () => { state.settings.yt_radio = state.settings.yt_radio === false; saveSettings(); } },
       null,
       { label: 'Graphic equalizer', checked: !!state.settings.eq_open, run: () => Mist.eq.toggle() },
       { label: 'Player size', items: [1, 1.25, 1.5, 1.75, 2].map((z) => ({ label: `${z * 100}%`, checked: zoom === z, run: () => setZoom(z) })) },
@@ -619,7 +747,7 @@
   }
 
   // ---- views ----
-  const views = ['now', 'library', 'radio', 'skins', 'na'];
+  const views = ['now', 'library', 'radio', 'skins', 'premium', 'na'];
   function show(view, name) {
     state.view = view;
     for (const v of views) $('view-' + v).hidden = v !== view;
@@ -687,7 +815,15 @@
       t.duration = audio.duration; api('duration', { id: t.id, seconds: t.duration }); render();
     }
   });
-  audio.addEventListener('playing', () => { if (state.station !== null) { flashUntil = 0; statusTick(true); } });
+  audio.addEventListener('playing', () => {
+    streamFails = 0;
+    if (feed) {
+      const first = !feed.started;
+      feed.started = true; feed.stalled = false; state.played = feed.t.id;
+      if (first) report();   // the host can announce it now
+    }
+    if (state.station !== null || feed) { flashUntil = 0; statusTick(true); }
+  });
   audio.addEventListener('ended', () => {
     if (state.station !== null) { stop(); flash('The station stopped sending', 8000); return; }
     if (sleep.song) { sleep.song = false; stop(); flash('Sleep timer: the music was stopped', 3600000); return; }
@@ -697,6 +833,7 @@
   let radioError = '';
   audio.addEventListener('error', () => {
     if (!audio.src) return;
+    if (feed) { streamFailed(feed, new Error('the player could not read this song')); return; }
     if (state.station !== null) {
       if (state.mode === 'playing') { stop(); flash('Radio: ' + (radioError || 'this station cannot be played'), 10000); }
     } else if (state.mode === 'playing') { flash('Cannot play this file', 1500); setTimeout(() => step(1, true), 1200); }
@@ -749,7 +886,7 @@
   }
 
   window.Mist = {
-    $, base, audio, state, api, on, fire, boot, refresh, saveSettings, track, station, clock, esc,
+    $, base, audio, state, api, on, fire, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream,
     play, playStation, toggle, stop, step, setVis, applyVolume, cycleRepeat, repeatMode, control,
     menu, closeMenus, trackMenu, queueNext, queueLast, flash, render, show, layoutChanged, regions, setSleep, setZoom,
     probe() {  // handy for debugging
