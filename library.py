@@ -1,12 +1,18 @@
-"""What the player knows: the Now Playing list, the media library, saved
-playlists, radio stations and the settings. Everything lives in state.json;
-the files themselves are only ever read. YouTube Music songs sit in the same
-list as files; their "path" is the song's address on music.youtube.com."""
+"""What the player knows: the two Now Playing lists, the media library, saved
+playlists, radio stations and the settings, kept in state.json; the files
+themselves are only ever read.
+
+My Music holds files. YouTube Music holds YouTube Music songs, whose "path" is
+their address on music.youtube.com, and lives in memory only: nothing from
+streaming is written to disk. So that list starts empty each time, a song in it
+is never the resume point, and its covers wait in the runtime folder, which is
+not on disk, until the player closes."""
 import hashlib
 import json
 import os
 import queue
 import re
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -14,7 +20,7 @@ import urllib.parse
 import tags
 import ytmusic
 
-APP_ID = "io.github.nahuelgenchi.OceanMist"
+APP_ID = os.environ.get("OCEAN_MIST_APP_ID", "io.github.nahuelgenchi.OceanMist")   # tests run beside the real player
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
     "ocean-mist",
@@ -25,6 +31,10 @@ CACHE_DIR = os.path.join(
 )
 STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
 TAG_CACHE = os.path.join(CACHE_DIR, "tags.json")
+# YouTube Music covers, as files for the desktop's media controls; named after
+# the app id, so a test instance never clears the covers of the real player
+STREAM_COVERS = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), APP_ID)
+LISTS = ("local", "youtube")   # the Now Playing lists: My Music, and YouTube Music
 AUDIO_EXTENSIONS = {
     ".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav", ".wma",
 }
@@ -64,6 +74,11 @@ def _is_audio(name):
 
 def is_playlist(name):
     return os.path.splitext(name)[1].lower() in PLAYLIST_EXTENSIONS
+
+
+def list_for(track):
+    """The Now Playing list a track belongs in."""
+    return "youtube" if track.get("source") else "local"
 
 
 def folder_songs(folder):
@@ -172,8 +187,8 @@ class Library:
     def __init__(self):
         self.lock = threading.RLock()
         self.by_id, self.by_path = {}, {}   # every track met this session
-        self.tracks = []          # Now Playing, in order
-        self.list_name = ""       # the saved playlist it was loaded from
+        self.lists = {which: [] for which in LISTS}   # the Now Playing lists, in order
+        self.names = {which: "" for which in LISTS}   # the saved playlist (or page) each came from
         self.collection = []      # what the library folders hold
         self.scanning = False
         self.art = {}             # track id -> cover file path, True if embedded
@@ -203,6 +218,7 @@ class Library:
         self._rescan = False
         self._found_lists = []    # playlist files inside the library folders
         self._remembered = []     # ...and ones saved or opened elsewhere
+        self._playlist_lists = {}  # playlist path -> ((mtime, size), the list its songs go to)
 
     # ---- persistence ----
     def load(self):
@@ -223,42 +239,43 @@ class Library:
                         for n, (name, url) in enumerate(DEFAULT_STATIONS)]
         self.stations = [s for s in stations if s.get("url")]
         self._remembered = [p for p in saved.get("playlists", []) if isinstance(p, str)]
-        self.list_name = saved.get("list", "")
-        self._restore(saved.get("playlist", []))
-        self.resume = self._resume_offer = saved.get("resume") or None
+        self.names["local"] = saved.get("list", "")
+        dropped = self._restore(saved.get("playlist", []))
+        resume = saved.get("resume")
+        if not isinstance(resume, dict):
+            resume = None
+        elif str(resume.get("path", "")).startswith(ytmusic.WATCH):
+            resume, dropped = None, True
+        self.resume = self._resume_offer = resume
+        # the previous version kept YouTube Music in the list, the resume
+        # point and the cache: none of it stays on disk
+        self.forget_stream_covers(os.path.join(CACHE_DIR, "covers"))
+        if dropped:
+            self.save()
 
     def _restore(self, entries):
-        """The saved Now Playing list: file paths, and YouTube Music songs
-        with what was known about them (so they show without asking YouTube)."""
+        """The saved My Music list. Returns whether YouTube Music songs were
+        left out: the previous version kept them in the same list."""
         with self.lock:
-            chosen, listed = [], set()
+            chosen, listed, dropped = [], set(), False
             for entry in entries if isinstance(entries, list) else []:
-                if isinstance(entry, dict):
-                    track = self._stream(dict(entry, video=entry.get("yt")))
+                if isinstance(entry, dict):   # {"yt": video id, ...}
+                    dropped = True
                 elif isinstance(entry, str) and _is_audio(entry) and os.path.isfile(entry):
                     track = self._entry(os.path.abspath(entry))
-                else:
-                    continue
-                if track and track["id"] not in listed:
-                    listed.add(track["id"])
-                    chosen.append(track)
-            self.tracks = chosen
-
-    @staticmethod
-    def _saved(track):
-        if not track.get("source"):
-            return track["path"]
-        saved = {"yt": track["video"]}
-        for key in STREAM_FIELDS:
-            if track.get(key) and not (key == "title" and track.get("bare")):
-                saved[key] = track[key]
-        return saved
+                    if track["id"] not in listed:
+                        listed.add(track["id"])
+                        chosen.append(track)
+            self.lists["local"] = chosen
+            if dropped and not chosen:
+                self.names["local"] = ""   # named after a YouTube Music page
+        return dropped
 
     def save(self):
         with self.lock:   # written inside it too, so two saves cannot mix in the file
             data = {"settings": dict(self.settings),
-                    "playlist": [self._saved(t) for t in self.tracks],
-                    "list": self.list_name, "stations": list(self.stations),
+                    "playlist": [t["path"] for t in self.lists["local"]],   # never the YouTube Music list
+                    "list": self.names["local"], "stations": list(self.stations),
                     "playlists": list(self._remembered), "resume": self.resume}
             _write_json(STATE_FILE, data)
 
@@ -306,14 +323,14 @@ class Library:
             resume = None
             if pending is None and offer:
                 track = self.by_path.get(offer.get("path"))
-                if track and track in self.tracks:
+                if track and track in self.lists["local"]:
                     resume = {"id": track["id"], "position": offer.get("position") or 0}
                 elif any(s["id"] == offer.get("station") for s in self.stations):
                     resume = {"station": offer["station"]}
-            return {"tracks": [self._public(t) for t in self.tracks],
+            return {"lists": {which: {"tracks": [self._public(t) for t in self.lists[which]],
+                                      "name": self.names[which]} for which in LISTS},
                     "settings": dict(self.settings), "play": pending,
-                    "resume": resume, "list": self.list_name,
-                    "stations": list(self.stations),
+                    "resume": resume, "stations": list(self.stations),
                     "playlists": self.playlist_files(),
                     "folders": self.folders()}
 
@@ -388,8 +405,8 @@ class Library:
         return track
 
     def add_streams(self, items, replace=False, name=""):
-        """Put YouTube Music songs in the Now Playing list: after what is
-        there, or as the whole list (named `name`). Returns their tracks."""
+        """Put YouTube Music songs in their list: after what is there, or as
+        the whole list (named `name`). Returns their tracks."""
         with self.lock:
             chosen, listed = [], set()
             for item in items[:ytmusic.PLAYLIST_LIMIT]:
@@ -400,12 +417,11 @@ class Library:
             if not chosen:
                 return []
             if replace:
-                self.tracks, self.list_name = chosen, str(name or "")[:200]
+                self.lists["youtube"], self.names["youtube"] = chosen, str(name or "")[:200]
             else:
-                listed = {t["id"] for t in self.tracks}
-                self.tracks += [t for t in chosen if t["id"] not in listed]
-        self.save()
-        self.emit("playlist")
+                listed = {t["id"] for t in self.lists["youtube"]}
+                self.lists["youtube"] += [t for t in chosen if t["id"] not in listed]
+        self._changed("youtube")
         return chosen
 
     def stream_found(self, video, details):
@@ -424,12 +440,24 @@ class Library:
                 changed = True
             track["art"] = bool(track["cover"])
         if changed:
-            self.save()
-            self.emit("playlist")
+            self._changed("youtube")
 
     def track(self, track_id):
         with self.lock:
             return self.by_id.get(track_id)
+
+    def list_of(self, track_id):
+        """The Now Playing list a track is in ("local" or "youtube"), or None."""
+        with self.lock:
+            return next((which for which in LISTS
+                         if any(t["id"] == track_id for t in self.lists[which])), None)
+
+    def _changed(self, *which):
+        """After a change to these lists: My Music is written down (the
+        YouTube Music list never is), and the page is told."""
+        if "local" in which:
+            self.save()
+        self.emit("playlist")
 
     @staticmethod
     def _expand(paths):
@@ -446,25 +474,24 @@ class Library:
         return list(dict.fromkeys(files))
 
     def add_paths(self, paths, announce=True, replace=False):
-        """Add files (folders are scanned); with replace they become the whole
-        list. Returns the id of the first of them."""
+        """Add files to My Music (folders are scanned); with replace they
+        become the whole list. Returns the id of the first of them."""
         files = self._expand(paths)
         if not files:
             return None
         with self.lock:
             chosen = [self._entry(path) for path in files]
             if replace:
-                self.tracks, self.list_name = chosen, ""
+                self.lists["local"], self.names["local"] = chosen, ""
             else:
-                listed = {t["id"] for t in self.tracks}
-                self.tracks += [t for t in chosen if t["id"] not in listed]
+                listed = {t["id"] for t in self.lists["local"]}
+                self.lists["local"] += [t for t in chosen if t["id"] not in listed]
         if announce:
-            self.save()
-            self.emit("playlist")
+            self._changed("local")
         return chosen[0]["id"]
 
     def open_paths(self, paths):
-        """Open songs the way a file manager expects: they become the list,
+        """Open songs the way a file manager expects: they become My Music,
         and a single song brings the rest of its folder along as the queue.
         A playlist file is loaded instead. Returns what to play."""
         target = None
@@ -484,51 +511,60 @@ class Library:
             with self.lock:
                 first = self.by_path[target]["id"]
         self._tag(first)  # the song about to play shows its real title at once
-        self.save()
-        self.emit("playlist")
+        self._changed("local")
         return first
 
     def play_set(self, ids, start=None):
-        """Make these library tracks the Now Playing list."""
+        """Make these tracks (from the Media Library) the list they belong
+        in; the song to start with decides which. Returns its id."""
         with self.lock:
             chosen = [self.by_id[i] for i in dict.fromkeys(ids) if i in self.by_id]
             if not chosen:
                 return None
-            self.tracks, self.list_name = chosen, ""
-            first = start if any(t["id"] == start for t in chosen) else chosen[0]["id"]
-        self.save()
-        self.emit("playlist")
-        return first
+            first = next((t for t in chosen if t["id"] == start), chosen[0])
+            which = list_for(first)
+            self.lists[which] = [t for t in chosen if list_for(t) == which]
+            self.names[which] = ""
+        self._changed(which)
+        return first["id"]
 
     def add_ids(self, ids):
+        """Add tracks to the end of the lists they belong in."""
         with self.lock:
-            listed = {t["id"] for t in self.tracks}
-            self.tracks += [self.by_id[i] for i in dict.fromkeys(ids)
-                            if i in self.by_id and i not in listed]
-        self.save()
-        self.emit("playlist")
+            listed = {t["id"] for which in LISTS for t in self.lists[which]}
+            touched = set()
+            for track_id in dict.fromkeys(ids):
+                track = self.by_id.get(track_id)
+                if track is not None and track_id not in listed:
+                    listed.add(track_id)
+                    touched.add(list_for(track))
+                    self.lists[list_for(track)].append(track)
+        self._changed(*touched)
 
     def move(self, ids, before):
-        """Move tracks in front of another one (or to the end)."""
+        """Move tracks in front of another one (or to the end of their list)."""
         with self.lock:
-            moving = [t for t in self.tracks if t["id"] in ids]
-            rest = [t for t in self.tracks if t["id"] not in ids]
+            which = next((w for w in LISTS if any(t["id"] in ids for t in self.lists[w])), None)
+            if which is None:
+                return
+            moving = [t for t in self.lists[which] if t["id"] in ids]
+            rest = [t for t in self.lists[which] if t["id"] not in ids]
             at = next((n for n, t in enumerate(rest) if t["id"] == before), len(rest))
-            self.tracks = rest[:at] + moving + rest[at:]
-        self.save()
-        self.emit("playlist")
+            self.lists[which] = rest[:at] + moving + rest[at:]
+        self._changed(which)
 
     def remove(self, ids):
         with self.lock:
-            self.tracks = [t for t in self.tracks if t["id"] not in ids]
-        self.save()
-        self.emit("playlist")
+            touched = [w for w in LISTS if any(t["id"] in ids for t in self.lists[w])]
+            for which in touched:
+                self.lists[which] = [t for t in self.lists[which] if t["id"] not in ids]
+        self._changed(*touched)
 
-    def clear(self):
+    def clear(self, which="local"):
+        which = which if which in LISTS else "local"
         with self.lock:
-            self.tracks, self.list_name = [], ""
-        self.save()
-        self.emit("playlist")
+            self.lists[which], self.names[which] = [], ""
+        self._changed(which)
 
     # ---- titles and covers ----
     # read in the background, so a big folder never holds up the song that
@@ -653,19 +689,41 @@ class Library:
         if not track.get("cover"):
             return None
         name = "yt-" + hashlib.sha1(track["cover"].encode()).hexdigest()[:16] + ".jpg"
-        return os.path.join(CACHE_DIR, "covers", name)
+        return os.path.join(STREAM_COVERS, name)
 
     def keep_cover(self, track, picture):
-        """Keep a YouTube Music song's cover, (mime, bytes), as a file."""
+        """Keep a YouTube Music song's cover, (mime, bytes), as a file in the
+        runtime folder."""
         path = self._stream_cover(track)
         return self._write_cover(path, picture[1]) if path else None
 
     @staticmethod
+    def forget_stream_covers(folder=STREAM_COVERS):
+        """Remove the YouTube Music covers kept in a folder: the runtime one
+        when the player closes, or the cache, where the previous version
+        kept them."""
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return
+        for name in names:
+            if name.startswith("yt-"):
+                try:
+                    os.remove(os.path.join(folder, name))
+                except OSError:
+                    pass
+        if folder == STREAM_COVERS:
+            try:
+                os.rmdir(folder)
+            except OSError:
+                pass
+
+    @staticmethod
     def _write_cover(path, data):
-        """Write a cover into the cache, which keeps the last forty."""
+        """Write a cover file; its folder keeps the last forty."""
         folder = os.path.dirname(path)
         try:
-            os.makedirs(folder, exist_ok=True)
+            os.makedirs(folder, mode=0o700, exist_ok=True)
             with open(path + ".tmp", "wb") as fh:
                 fh.write(data)
             os.replace(path + ".tmp", path)
@@ -740,9 +798,29 @@ class Library:
     def playlist_files(self):
         with self.lock:
             paths = list(dict.fromkeys(self._found_lists + self._remembered))
-        found = [{"name": os.path.splitext(os.path.basename(p))[0], "path": p}
-                 for p in paths if os.path.isfile(p)]
+        found = [{"name": os.path.splitext(os.path.basename(p))[0], "path": p,
+                  "list": self._playlist_list(p)} for p in paths if os.path.isfile(p)]
         return sorted(found, key=lambda item: _natural(item["name"]))
+
+    def _playlist_list(self, path):
+        """The list a saved playlist belongs with: YouTube Music when it holds
+        only YouTube Music songs, My Music otherwise (read again when the
+        file changes)."""
+        try:
+            info = os.stat(path)
+        except OSError:
+            return "local"
+        stamp = (info.st_mtime_ns, info.st_size)
+        with self.lock:
+            known = self._playlist_lists.get(path)
+        if known and known[0] == stamp:
+            return known[1]
+        entries = read_playlist(path)
+        which = "youtube" if entries and all(
+            "://" in entry and ytmusic.video_id(entry) for entry in entries) else "local"
+        with self.lock:
+            self._playlist_lists[path] = (stamp, which)
+        return which
 
     def _remember(self, path):
         with self.lock:
@@ -774,8 +852,10 @@ class Library:
         return unique
 
     def open_playlist(self, path):
-        """Load a saved playlist as the Now Playing list. A playlist that
-        only names a stream becomes a radio station. Returns what to play."""
+        """Load a saved playlist: its files become My Music, its YouTube
+        Music songs the YouTube Music list (a playlist holds one kind, but the
+        previous version could mix them). A playlist that only names a
+        stream becomes a radio station. Returns what to play."""
         path = os.path.abspath(path)
         chosen = self.playlist_tracks(path)
         name = os.path.splitext(os.path.basename(path))[0]
@@ -785,17 +865,22 @@ class Library:
                 return None
             return {"station": self.save_station(None, name, stream)}
         with self.lock:
-            self.tracks, self.list_name = chosen, name
+            for which in LISTS:
+                part = [t for t in chosen if list_for(t) == which]
+                if part:
+                    self.lists[which], self.names[which] = part, name
         self._remember(path)
         self._tag(chosen[0]["id"])
         self.save()
         self.emit("playlist")
         return chosen[0]["id"]
 
-    def save_playlist(self, path):
+    def save_playlist(self, path, which="local"):
+        """Write one of the Now Playing lists as an .m3u file."""
+        which = which if which in LISTS else "local"
         with self.lock:
-            tracks = [dict(t) for t in self.tracks]
-            self.list_name = os.path.splitext(os.path.basename(path))[0]
+            tracks = [dict(t) for t in self.lists[which]]
+            self.names[which] = os.path.splitext(os.path.basename(path))[0]
         write_playlist(path, tracks)
         self._remember(os.path.abspath(path))
         self.save()
@@ -843,14 +928,16 @@ class Library:
                 started=info.get("started") is not False,   # a YouTube Music song: heard yet
             )
             track = self.by_id.get(now["id"])
+            if track is not None and track.get("source"):
+                track = None   # a YouTube Music song is never the resume point
             if now["station"] is not None:
                 self.resume = {"station": now["station"]}
             elif track is not None:
                 position = now["position"] if now["mode"] != "stopped" else 0
                 self.resume = {"path": track["path"], "position": round(position, 1)}
-            else:
-                self.resume = None
-            due = time.monotonic() - self._resume_saved > 15 or now["mode"] != "playing"
+            # otherwise the last file or station stays the resume point; the next start checks it is still listed
+            due = (now["station"] is not None or track is not None) and (
+                time.monotonic() - self._resume_saved > 15 or now["mode"] != "playing")
             if due:
                 self._resume_saved = time.monotonic()
         if due:

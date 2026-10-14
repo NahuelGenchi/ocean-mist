@@ -8,9 +8,13 @@
   const audio = $('audio');
   const probe = new Audio(); probe.preload = 'metadata';
 
+  const LISTS = { local: 'My Music', youtube: 'YouTube Music' };   // the Now Playing lists
   const state = {
-    tracks: [], settings: { volume: 0.5, muted: false, vis: 0, shuffle: false, repeat: false, hue: 0, zoom: 1 },
-    stations: [], playlists: [], folders: [], listName: '',
+    lists: { local: [], youtube: [] },   // the songs of each, in order
+    names: { local: '', youtube: '' },   // the saved playlist (or page) each came from
+    show: 'local',      // the list the Now Playing pane shows
+    settings: { volume: 0.5, muted: false, vis: 0, shuffle: false, repeat: false, hue: 0, zoom: 1 },
+    stations: [], playlists: [], folders: [],
     cur: null,          // id of the loaded track
     station: null,      // id of the radio station tuned in (then cur is null)
     radioTitle: '',     // what the station says it is playing
@@ -39,19 +43,22 @@
   }
   async function refresh() {
     const data = await (await fetch(base + 'api/state')).json();
-    const known = new Map(state.tracks.map((t) => [t.id, t]));
-    const shown = (t) => (t ? [t.title, t.artist, t.album, t.art].join('\n') : '');
-    const before = shown(track(state.cur));
-    state.tracks = data.tracks.map((t) => Object.assign(t, { duration: t.duration || (known.get(t.id) || {}).duration || 0 }));
+    const known = new Map([...state.lists.local, ...state.lists.youtube].map((t) => [t.id, t]));
+    const looks = (t) => (t ? [t.title, t.artist, t.album, t.art].join('\n') : '');
+    const before = looks(track(state.cur));
+    for (const which of Object.keys(LISTS)) {
+      const got = data.lists[which];
+      state.lists[which] = got.tracks.map((t) => Object.assign(t, { duration: t.duration || (known.get(t.id) || {}).duration || 0 }));
+      state.names[which] = got.name || '';
+    }
     state.stations = data.stations || []; state.playlists = data.playlists || [];
-    state.folders = data.folders || []; state.listName = data.list || '';
+    state.folders = data.folders || [];
     const first = !refresh.loaded;
     if (first) { Object.assign(state.settings, data.settings); refresh.loaded = true; applySettings(); }
     state.queue = state.queue.filter((id) => track(id) || !known.has(id));  // removed songs leave the queue
     if (state.cur !== null && !track(state.cur)) stop(true);
     else if (state.station !== null && !station(state.station)) stop(true);
-    else if (state.station === null && shown(track(state.cur)) !== before) showTrack();  // its tags were read meanwhile
-    $('np-label').textContent = state.listName || 'Now Playing';
+    else if (state.station === null && looks(track(state.cur)) !== before) showTrack();  // its tags were read meanwhile
     render();
     probeNext();
     fire('state', first);
@@ -61,9 +68,14 @@
   }
 
   // ---- helpers ----
-  const track = (id) => state.tracks.find((t) => t.id === id);
+  const track = (id) => state.lists.local.find((t) => t.id === id) || state.lists.youtube.find((t) => t.id === id);
   const station = (id) => state.stations.find((s) => s.id === id);
-  const indexOf = (id) => state.tracks.findIndex((t) => t.id === id);
+  const listOf = (t) => (isStream(t) ? 'youtube' : 'local');   // the list a song belongs in
+  const shown = () => state.lists[state.show];
+  const inView = (id) => shown().find((t) => t.id === id);
+  const listLabel = () => state.names[state.show] || LISTS[state.show];
+  // the list playback goes through: the current song's, or else the one in view
+  const playing = () => { const t = track(state.cur); return t ? state.lists[listOf(t)] : shown(); };
   function clock(seconds, pad) {
     if (!isFinite(seconds) || seconds < 0) seconds = 0;
     const s = Math.floor(seconds % 60), m = Math.floor(seconds / 60) % 60, h = Math.floor(seconds / 3600);
@@ -114,8 +126,9 @@
   // ---- transport ----
   let cueAt = 0;   // where a song restored from the last session should continue
   function play(id) {
-    const t = track(id);
+    const t = track(id), was = track(state.cur);
     if (!t) return;
+    if (!was || listOf(was) !== listOf(t)) state.show = listOf(t);   // the pane follows the music to its list
     if (state.cur !== null && state.cur !== id) state.history.push(state.cur);
     state.queue = state.queue.filter((q) => q !== id);
     state.station = null; state.radioTitle = ''; cueAt = 0;
@@ -172,7 +185,7 @@
     if (state.station !== null) { if (state.mode === 'playing') stop(); else playStation(state.station); return; }
     if (state.mode === 'playing') { audio.pause(); setMode('paused'); return; }
     if (state.cur === null || state.mode === 'stopped') {
-      const first = track(state.sel) || track(state.cur) || state.tracks[0];
+      const first = inView(state.sel) || track(state.cur) || shown()[0];
       if (!first) { api('open-files'); return; }
       if (state.mode === 'stopped' && state.cur === first.id && audio.src) { ensureGraph(); start(); setMode('playing'); return; }
       play(first.id); return;
@@ -200,33 +213,34 @@
       if (n > 1) playStation(state.stations[(i + dir + n) % n].id);
       return;
     }
-    if (!state.tracks.length) return;
-    while (dir > 0 && state.queue.length) {
+    while (dir > 0 && state.queue.length) {   // "Play next" songs first, from either list
       const id = state.queue.shift();
       if (track(id)) { play(id); return; }
     }
-    let i = indexOf(state.cur);
+    const tracks = playing();
+    if (!tracks.length) return;
+    let i = tracks.findIndex((t) => t.id === state.cur);
     if (dir < 0) {
       if (audio.currentTime > 3 && !auto) { audio.currentTime = 0; return; }
       if (state.settings.shuffle && state.history.length) { const back = state.history.pop(); const keep = state.history.slice(); play(back); state.history = keep; return; }
-      i = i <= 0 ? state.tracks.length - 1 : i - 1;
-    } else if (state.settings.shuffle && state.tracks.length > 1) {
+      i = i <= 0 ? tracks.length - 1 : i - 1;
+    } else if (state.settings.shuffle && tracks.length > 1) {
       // every song once per pass; the list only starts over if repeat is on
-      let left = state.tracks.filter((t) => !state.heard.has(t.id));
+      let left = tracks.filter((t) => !state.heard.has(t.id));
       if (!left.length) {
         if (auto && repeatMode() === 'off') { if (carryOn()) return; state.heard.clear(); stop(); render(); return; }
         state.heard.clear();
-        left = state.tracks.filter((t) => t.id !== state.cur);
+        left = tracks.filter((t) => t.id !== state.cur);
       }
-      i = indexOf(left[Math.floor(Math.random() * left.length)].id);
+      i = tracks.indexOf(left[Math.floor(Math.random() * left.length)]);
     } else {
       i += 1;
-      if (i >= state.tracks.length) {
-        if (auto && repeatMode() === 'off') { if (carryOn()) return; stop(); state.sel = state.tracks[0].id; render(); return; }
+      if (i >= tracks.length) {
+        if (auto && repeatMode() === 'off') { if (carryOn()) return; stop(); state.sel = tracks[0].id; render(); return; }
         i = 0;
       }
     }
-    play(state.tracks[i].id);
+    play(tracks[i].id);
   }
   // the list ran out by itself: premium.js may carry on with similar songs
   const carryOn = () => !!(Mist.carryOn && Mist.carryOn(track(state.cur)));
@@ -234,10 +248,10 @@
   function upcoming() {
     const queued = state.queue.find((id) => track(id));
     if (queued !== undefined) return queued;
-    const i = indexOf(state.cur);
+    const tracks = playing(), i = tracks.findIndex((t) => t.id === state.cur);
     if (state.settings.shuffle || state.station !== null || i < 0) return null;
-    if (i + 1 < state.tracks.length) return state.tracks[i + 1].id;
-    return repeatMode() === 'all' ? state.tracks[0].id : null;
+    if (i + 1 < tracks.length) return tracks[i + 1].id;
+    return repeatMode() === 'all' ? tracks[0].id : null;
   }
   function setMode(mode) {
     state.mode = mode;
@@ -359,7 +373,7 @@
 
   // what the host passes on from the keyboard's media keys and the desktop's controls
   function control(action, value) {
-    const loaded = state.cur !== null || state.station !== null || state.tracks.length > 0;
+    const loaded = state.cur !== null || state.station !== null || state.lists.local.length > 0 || state.lists.youtube.length > 0;
     if (action === 'playpause') { if (loaded) toggle(); }
     else if (action === 'play') { if (loaded && state.mode !== 'playing') toggle(); }
     else if (action === 'pause') { if (state.mode === 'playing') toggle(); }
@@ -409,7 +423,12 @@
     $('vis-art').hidden = !useArt;
     if (useArt) $('vis-art').src = base + 'art/' + t.id;
     $('vis').style.visibility = preset.draw ? 'visible' : 'hidden';
-    $('empty-hint').hidden = state.tracks.length > 0 || state.station !== null;
+    emptyHint();
+  }
+  // "No music loaded", while nothing is on and the list in view is empty
+  function emptyHint() {
+    $('empty-hint').hidden = state.cur !== null || state.station !== null || shown().length > 0;
+    $('hint-list').textContent = listLabel();
   }
   function setVis(i) {
     state.settings.vis = Visuals.select(i);
@@ -455,15 +474,17 @@
   // ---- the playlist pane ----
   const list = $('playlist');
   function render() {
-    list.innerHTML = state.tracks.map((t) => {
+    const tracks = shown();
+    list.innerHTML = tracks.map((t) => {
       const queued = state.queue.indexOf(t.id);
       return `<div class="row${t.id === state.cur ? ' cur' : ''}${t.id === state.sel ? ' sel' : ''}" data-id="${t.id}">` +
         `<span class="t">${esc(t.title)}</span>${queued >= 0 ? `<span class="q" title="Plays next">${queued + 1}</span>` : ''}` +
         `<span class="d">${t.duration ? clock(t.duration) : ''}</span></div>`;
     }).join('');
-    const total = state.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
+    const total = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     $('total-time').textContent = 'Total Time: ' + clock(total);
-    $('empty-hint').hidden = state.tracks.length > 0 || state.station !== null;
+    $('np-label').textContent = listLabel();
+    emptyHint();
     const current = list.querySelector('.cur');
     if (current && render.lastCur !== state.cur) { current.scrollIntoView({ block: 'nearest' }); render.lastCur = state.cur; }
     fire('render');
@@ -490,7 +511,7 @@
     e.preventDefault();
     const id = rowId(e); if (id === null) return;
     state.sel = id; render();
-    trackMenu(e, id, [null, { label: 'Clear playlist', run: () => api('clear') }]);
+    trackMenu(e, id, [null, { label: 'Clear playlist', run: () => api('clear', { list: state.show }) }]);
   });
 
   // drag a row to another place in the list
@@ -523,9 +544,9 @@
     list.classList.remove('dragging');
     $('drop-line').hidden = true;
     if (d.before === d.id) return;
-    const rest = state.tracks.filter((t) => t.id !== d.id);
+    const rest = shown().filter((t) => t.id !== d.id);
     const at = d.before === null ? rest.length : rest.findIndex((t) => t.id === d.before);
-    state.tracks = [...rest.slice(0, at), track(d.id), ...rest.slice(at)];
+    state.lists[state.show] = [...rest.slice(0, at), track(d.id), ...rest.slice(at)];
     state.sel = d.id;
     render();
     api('move', { ids: [d.id], before: d.before });
@@ -537,7 +558,7 @@
   let probing = false;
   function probeNext() {
     if (probing) return;
-    const t = state.tracks.find((x) => !x.duration && !x.probed && !isStream(x));
+    const t = state.lists.local.find((x) => !x.duration && !x.probed);
     if (!t) return;
     probing = true; t.probed = true;
     const done = () => { probing = false; probe.onloadedmetadata = probe.onerror = null; probeNext(); };
@@ -689,7 +710,7 @@
     { label: 'Open files…', hint: 'Ctrl+O', run: () => api('open-files') },
     { label: 'Open folder…', run: () => api('open-folder') },
     { label: 'Open playlist…', run: () => api('open-playlist') },
-    { label: 'Save playlist as…', disabled: !state.tracks.length, run: () => api('save-playlist') },
+    { label: 'Save playlist as…', disabled: !shown().length, run: () => api('save-playlist', { list: state.show }) },
   ];
   function mainMenu(anchor, above) {
     const rect = anchor.getBoundingClientRect(), mode = repeatMode(), zoom = state.settings.zoom || 1;
@@ -707,18 +728,21 @@
       { label: 'Notify on song change', checked: !!state.settings.notify, run: () => { state.settings.notify = !state.settings.notify; saveSettings(); } },
       { label: 'Compact mode', hint: 'Ctrl+2', run: () => Mist.skins.apply() },
       null,
-      { label: 'Clear playlist', disabled: !state.tracks.length, run: () => api('clear') },
+      { label: 'Clear playlist', disabled: !shown().length, run: () => api('clear', { list: state.show }) },
     ], { above });
   }
-  // the drop-down at the top right: the saved playlists
+  // the drop-down at the top right: the two lists, and the saved playlists of the one in view
   function playPlaylist(path) {
     api('play-playlist', { path }).then((r) => { if (!r.ok) flash('That playlist has no songs that can be found'); });
   }
+  function showList(which) { state.show = which; render(); }
   function listMenu(anchor) {
     const rect = anchor.getBoundingClientRect();
-    const lists = state.playlists.map((p) => ({ label: p.name, checked: p.name === state.listName, run: () => playPlaylist(p.path) }));
-    menu(rect.left, rect.bottom + 1, [...fileItems(), null,
-      ...(lists.length ? lists : [{ label: '(no saved playlists)', disabled: true }])]);
+    const lists = Object.keys(LISTS).map((which) => ({ label: LISTS[which], checked: state.show === which, run: () => showList(which) }));
+    const saved = state.playlists.filter((p) => p.list === state.show)
+      .map((p) => ({ label: p.name, checked: p.name === state.names[state.show], run: () => playPlaylist(p.path) }));
+    menu(rect.left, rect.bottom + 1, [...lists, null, ...fileItems(), null,
+      ...(saved.length ? saved : [{ label: '(no saved playlists)', disabled: true }])]);
   }
   const colors = [['Blue (original)', 0], ['Purple', 40], ['Pink', 90], ['Red', 130], ['Orange', 165], ['Green', 250], ['Teal', 300]];
   function applyHue() {
@@ -855,8 +879,8 @@
     else if (key === 'arrowleft') seekTo(position() - 5);
     else if (key === 'arrowright') seekTo(position() + 5);
     else if (key === 'arrowup' || key === 'arrowdown') setVolume(state.settings.volume + (key === 'arrowup' ? 0.05 : -0.05));
-    else if (key === 'delete' && state.sel !== null && state.view === 'now') api('remove', { ids: [state.sel] });
-    else if (key === 'enter' && state.sel !== null && state.view === 'now') play(state.sel);
+    else if (key === 'delete' && inView(state.sel) && state.view === 'now') api('remove', { ids: [state.sel] });
+    else if (key === 'enter' && inView(state.sel) && state.view === 'now') play(state.sel);
     else if (key === 'f11' || (e.altKey && key === 'enter')) api('fullscreen');
     else if (key === 'escape') { closeMenus(); if (document.body.classList.contains('fullscreen')) api('fullscreen'); }
     else handled = false;

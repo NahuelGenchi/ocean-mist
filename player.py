@@ -27,7 +27,6 @@ from library import (APP_ID, AUDIO_EXTENSIONS, PAGE_SETTINGS, PLAYLIST_EXTENSION
                      Library, is_playlist, music_dir)
 from ytmusic import YTError, YTMusic
 
-APP_ID = os.environ.get("OCEAN_MIST_APP_ID", APP_ID)   # tests run beside the real player
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI_DIR = os.path.join(HERE, "ui")
 MIN_SIZE = (580, 460)
@@ -278,7 +277,7 @@ class Handler(BaseHTTPRequestHandler):
         elif cmd == "remove":
             library.remove(set(ids))
         elif cmd == "clear":
-            library.clear()
+            library.clear(str(msg.get("list") or "local"))
         elif cmd == "move":
             library.move(set(ids), msg.get("before"))
         elif cmd == "add-ids":
@@ -300,7 +299,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     if isinstance(target, int):
                         start = msg.get("start")
-                        listed = any(t["id"] == start for t in library.tracks)
+                        listed = library.list_of(start) is not None
                         target = {"id": start if listed else target, "stay": bool(msg.get("stay"))}
                     library.request_play(target)
         elif cmd in ("yt-play", "yt-add"):
@@ -323,7 +322,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 try:
                     with library.lock:
-                        listed = {t.get("video") for t in library.tracks}
+                        listed = {t.get("video") for t in library.lists["youtube"]}
                     chosen = library.add_streams(self._similar(track["video"], listed))
                     result["first"] = chosen[0]["id"] if chosen else None
                 except YTError as error:
@@ -400,7 +399,7 @@ def run_app(argv):
             elif cmd == "open-playlist":
                 app.choose("playlist")
             elif cmd == "save-playlist":
-                app.choose("save")
+                app.choose("save", which=str(msg.get("list") or "local"))
             elif cmd == "add-folder":
                 app.choose("library")
             elif cmd == "zoom":
@@ -556,7 +555,9 @@ def run_app(argv):
             # the default policy only lets silent media start by itself, and
             # a song opened from Files has to start without a click
             policies = WebKit2.WebsitePolicies(autoplay=WebKit2.AutoplayPolicy.ALLOW)
-            view = WebKit2.WebView(settings=settings, website_policies=policies)
+            # ephemeral: WebKit keeps no cache or site data on disk, so YouTube
+            # Music covers shown in the page stay in memory too
+            view = WebKit2.WebView(settings=settings, website_policies=policies, is_ephemeral=True)
             view.set_background_color(Gdk.RGBA(0, 0, 0, 0))
             view.set_zoom_level(self.zoom)
             view.connect("context-menu", lambda *a: not os.environ.get("OCEAN_MIST_DEBUG"))
@@ -656,9 +657,12 @@ def run_app(argv):
             elif not (self.window.is_maximized() or self.fullscreen):
                 library.settings["size"] = list(self.window.get_size())
             with library.lock:   # the last report may be a few seconds old
-                if library.resume and "path" in library.resume and library.now["mode"] == "playing":
+                track = library.by_id.get(library.now["id"])
+                if (track and library.resume and library.resume.get("path") == track["path"]
+                        and library.now["mode"] == "playing"):
                     library.resume["position"] = round(library.position(), 1)
             library.save()
+            library.forget_stream_covers()
             self.withdraw_notification("song")
             self.window = None
 
@@ -740,9 +744,10 @@ def run_app(argv):
                 self.library.request_play(first)
             Gtk.drag_finish(context, True, False, time)
 
-        def choose(self, kind, play=True):
+        def choose(self, kind, play=True, which="local"):
             """A file dialog: music to open ("files", "folder"), a playlist to
-            load ("playlist") or write ("save"), a folder for the library."""
+            load ("playlist") or write ("save", from the Now Playing list
+            `which`), a folder for the library."""
             library = self.library
             title, action = {
                 "files": ("Open music files", Gtk.FileChooserAction.OPEN),
@@ -770,7 +775,7 @@ def run_app(argv):
                 dialog.set_current_folder(start)
             if kind == "save":
                 dialog.set_do_overwrite_confirmation(True)
-                name = (library.list_name or "Playlist").replace("/", "-")   # "Similar to AC/DC"
+                name = (library.names.get(which) or "Playlist").replace("/", "-")   # "Similar to AC/DC"
                 dialog.set_current_name(name + ".m3u")
 
             def done(dlg, response):
@@ -778,13 +783,13 @@ def run_app(argv):
                 dlg.destroy()
                 self._dialog = None
                 if paths:
-                    self.chosen(kind, paths, play)
+                    self.chosen(kind, paths, play, which)
 
             dialog.connect("response", done)
             self._dialog = dialog
             dialog.show()
 
-        def chosen(self, kind, paths, play=True):
+        def chosen(self, kind, paths, play=True, which="local"):
             """What to do with the files a dialog came back with."""
             library = self.library
             if kind in ("files", "folder"):
@@ -807,7 +812,7 @@ def run_app(argv):
                 if os.path.splitext(path)[1].lower() not in (".m3u", ".m3u8"):
                     path += ".m3u"
                 try:
-                    library.save_playlist(path)
+                    library.save_playlist(path, which)
                     library.emit("notice", text="Playlist saved: " + os.path.basename(path))
                 except OSError as error:
                     library.emit("notice", text=f"Could not save the playlist ({error.strerror})")
