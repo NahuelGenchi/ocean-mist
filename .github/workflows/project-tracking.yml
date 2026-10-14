@@ -1,0 +1,142 @@
+name: Project tracking
+
+on:
+  push:
+    branches: [main]
+  issues:
+    types: [opened, edited, reopened, closed, milestoned, demilestoned, labeled, unlabeled]
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, closed, milestoned, demilestoned, labeled, unlabeled]
+  workflow_dispatch:
+
+# Metadata only. No checkout, dependencies, tests, or builds.
+permissions:
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: project-tracking
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile issue and PR metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Maintain milestones and tracking labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+
+          const root = `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}`;
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const headers = {
+            Authorization: `Bearer ${process.env.GH_TOKEN}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+            'X-GitHub-Api-Version': '2022-11-28'
+          };
+          async function api(path, method = 'GET', body) {
+            const response = await fetch(root + path, {
+              method, headers, signal: AbortSignal.timeout(30000),
+              ...(body === undefined ? {} : { body: JSON.stringify(body) })
+            });
+            if (!response.ok) {
+              const error = new Error(`GitHub API ${method} ${path}: HTTP ${response.status}`);
+              error.status = response.status;
+              throw error;
+            }
+            return response.status === 204 ? null : response.json();
+          }
+          async function list(path) {
+            const result = [];
+            for (let page = 1; ; page++) {
+              const batch = await api(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+              result.push(...batch);
+              if (batch.length < 100) return result;
+            }
+          }
+
+          const definitions = {
+            M0: ['M0 — Project foundation', 'Repository import, documentation, agent instructions, and traceable issue-to-PR delivery.'],
+            M1: ['M1 — Classic player', 'The Windows Media Player 9 look and local listening: visualizations, equalizer, library, radio and playlists, plus defects and their fixes.'],
+            M2: ['M2 — Streaming services', 'Music from streaming services inside the player, with the same controls, equalizer and visualizations.'],
+            M3: ['M3 — Release', 'Packaging, installation and versioned releases, without personal music, settings or credentials.']
+          };
+          const existingMilestones = await list('/milestones?state=all');
+          const milestones = {};
+          for (const [key, [title, description]] of Object.entries(definitions)) {
+            milestones[key] = existingMilestones.find(item => item.title === title)
+              ?? await api('/milestones', 'POST', { title, description });
+          }
+          const labelDefinitions = [
+            ['documentation', '0075ca', 'Project documentation and instructions'],
+            ['research', '7057ff', 'Source-backed investigation and design decisions'],
+            ['implementation', '0e8a16', 'Player, interface, and tooling implementation'],
+            ['bug', 'd73a4a', 'A reported defect'],
+            ['enhancement', 'a2eeef', 'Improvement to existing behavior'],
+            ['operations', '5319e7', 'Repository and development operations'],
+            ['needs-tracking', 'b60205', 'PR needs a valid closing issue or matching milestone']
+          ];
+          const existingLabels = new Set((await list('/labels')).map(item => item.name));
+          for (const [name, color, description] of labelDefinitions) {
+            if (!existingLabels.has(name)) await api('/labels', 'POST', { name, color, description });
+          }
+
+          const full = ['push', 'workflow_dispatch'].includes(process.env.GITHUB_EVENT_NAME);
+          const items = await list(`/issues?state=${full ? 'all' : 'open'}`);
+          const target = event.issue?.number ?? event.pull_request?.number;
+          if (target && !items.some(item => item.number === target)) items.push(await api(`/issues/${target}`));
+          // Process issues first so PRs inherit the current milestone, including during bootstrap.
+          items.sort((a, b) => Number(Boolean(a.pull_request)) - Number(Boolean(b.pull_request)) || a.number - b.number);
+          const byNumber = new Map(items.map(item => [item.number, item]));
+          const needsTracking = [];
+          for (const item of items) {
+            const path = `/issues/${item.number}`;
+            const body = item.body ?? '';
+            const labels = new Set(item.labels.map(label => label.name));
+            const milestoneKey = body.match(/(?:^Milestone:\s*|^### Milestone\s*\n\s*)(M[0-3])\b/im)?.[1];
+            let desired = item.milestone ?? milestones[milestoneKey ?? 'M1'];
+            let incomplete = false;
+            if (item.pull_request) {
+              // Ignore examples/comments; closing references must be standalone same-repo lines.
+              const prose = body.replace(/<!--[^]*?-->/g, '').replace(/```[^]*?```/g, '').replace(/~~~[^]*?~~~/g, '');
+              const numbers = [...new Set([...prose.matchAll(/^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([1-9]\d*)[.!]?\s*$/gim)].map(match => Number(match[1])))];
+              const linked = [];
+              for (const number of numbers) {
+                let issue = byNumber.get(number);
+                if (!issue) {
+                  try { issue = await api(`/issues/${number}`); }
+                  catch (error) { if (error.status === 404) continue; throw error; }
+                }
+                if (!issue.pull_request) linked.push(issue);
+              }
+              if (!item.milestone && linked[0]?.milestone) desired = linked[0].milestone;
+              incomplete = linked.length === 0 || linked.length !== numbers.length
+                || linked.some(issue => issue.milestone?.number !== desired.number);
+              if (incomplete) needsTracking.push(item.number);
+            }
+            if (!item.milestone) {
+              await api(path, 'PATCH', { milestone: desired.number });
+              item.milestone = desired;
+            }
+            const prefix = item.title.match(/^(docs|research|feat|fix|enh|ops)(?:\([^)]*\))?:/i)?.[1]?.toLowerCase();
+            const fromPrefix = { docs: 'documentation', research: 'research', feat: 'implementation', fix: 'bug', enh: 'enhancement', ops: 'operations' }[prefix];
+            const fromForm = body.match(/^### Work type\s*\n\s*(documentation|research|implementation|bug|enhancement|operations)\b/im)?.[1]?.toLowerCase();
+            const wanted = [fromForm ?? fromPrefix];
+            if (incomplete) wanted.push('needs-tracking');
+            const additions = [...new Set(wanted.filter(label => label && !labels.has(label)))];
+            if (additions.length) await api(`${path}/labels`, 'POST', { labels: additions });
+            if (item.pull_request && !incomplete && labels.has('needs-tracking')) {
+              await api(`${path}/labels/needs-tracking`, 'DELETE');
+            }
+          }
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `# Project tracking\n\nReconciled ${items.length} issue/PR records. Initial milestones and labels are present.\n\n`
+            + (needsTracking.length ? `PRs needing tracking: ${needsTracking.map(number => '#' + number).join(', ')}.\n\n` : 'No processed PRs need tracking repairs.\n\n')
+            + 'Metadata operations only. No source checkout, builds, or tests. This job is not branch protection.\n');
+          NODE
