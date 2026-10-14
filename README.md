@@ -247,7 +247,7 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 Every change, however small, follows the same trail:
 
 ```mermaid
-flowchart LR
+flowchart TB
     issue["<b>Issue</b><br/>goal, scope, milestone"] --> branch["<b>Branch</b><br/>type/issue-slug"] --> pr["<b>Pull request</b><br/>closes the issue,<br/>same milestone"] --> main["<b>main</b>"]
 ```
 
