@@ -1,6 +1,8 @@
 // Premium Services: YouTube Music inside the player. The host (ytmusic.py)
 // searches and opens albums, artists and playlists; their songs go into the
-// Now Playing list beside the files and play like them.
+// YouTube Music list, a Now Playing list of its own beside My Music, and play
+// like files. That list, like what is searched and opened here, is kept in
+// memory only.
 (() => {
   const { $, state, api, on, esc, clock, menu, base, sentence } = Mist;
   const SEARCHES = [['all', 'Top results'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']];
@@ -8,12 +10,15 @@
   const yt = {
     words: '',                // what was searched for
     kind: 'songs',            // the search the box runs
-    node: { kind: 'search', value: 'songs' },   // what the table shows: a search, or a page ('album:ID')
+    // what the table shows: the YouTube Music list ('now'), a search, a page
+    // ('album:ID') or a saved playlist ('list', its path)
+    node: { kind: 'search', value: 'songs' },
     results: {},              // 'kind\nwords' -> { items, more } or { error } or { loading }
     pages: {},                // 'album:ID' -> the page, or { error } or { loading }
+    saved: {},                // playlist path -> { items } or { loading }
     recent: [],               // pages opened, the latest first: { key, title }
     back: [],                 // what the table showed before
-    open: true,               // the "Recently opened" branch
+    open: { recent: true, lists: true },   // the tree's branches
     found: null, rows: [], sel: -1, tree: [],
   };
   const same = (a, b) => a && b && a.kind === b.kind && a.value === b.value;
@@ -21,11 +26,16 @@
   const playable = (item) => !!item && (item.kind === 'song' || item.kind === 'video') && !!item.video;
   const song = (item) => ({ video: item.video, title: item.title, artist: item.artist, album: item.album, year: item.year,
     duration: item.duration, cover: item.cover, artist_id: item.artist_id, album_id: item.album_id });
+  // a song of the YouTube Music list or of a saved playlist, as a row like a search result's
+  const asItem = (t) => Object.assign(song(t), { kind: 'song', track: t.id });
+  const savedName = (path) => (state.playlists.find((p) => p.path === path) || {}).name || '';
   const playing = () => { const t = Mist.track(state.cur); return t && t.video; };
   const shownPage = () => (yt.node.kind === 'page' && yt.found && !yt.found.loading && !yt.found.error ? yt.found : null);
 
   // ---- getting results and pages ----
   function load(node) {
+    if (node.kind === 'now') return;
+    if (node.kind === 'list') { loadSaved(node.value); return; }
     if (node.kind === 'search') {
       const words = yt.words, key = node.value + '\n' + words;
       if (!words || (yt.results[key] && !yt.results[key].error)) return;
@@ -46,6 +56,13 @@
     });
   }
   const split = (key) => { const at = key.indexOf(':'); return [key.slice(0, at), key.slice(at + 1)]; };
+  function loadSaved(path) {   // read again each time, as the file may have changed
+    if (!yt.saved[path]) yt.saved[path] = { loading: true };
+    api('playlist-tracks', { path }).then((r) => {
+      yt.saved[path] = { items: (r.tracks || []).filter(Mist.isStream).map(asItem) };
+      if (same(yt.node, { kind: 'list', value: path })) drawRows(true);
+    });
+  }
   function remember(key, title) {
     yt.recent = [{ key, title: title || 'Untitled' }, ...yt.recent.filter((p) => p.key !== key)].slice(0, 12);
     drawTree();
@@ -81,10 +98,13 @@
 
   function compute() {
     const node = yt.node;
-    yt.found = node.kind === 'search' ? yt.results[node.value + '\n' + yt.words] : yt.pages[node.value];
+    yt.found = node.kind === 'search' ? yt.results[node.value + '\n' + yt.words]
+      : node.kind === 'page' ? yt.pages[node.value]
+      : node.kind === 'list' ? yt.saved[node.value]
+      : { items: state.lists.youtube.map(asItem) };
     const rows = [], found = yt.found;
     if (found && !found.loading && !found.error) {
-      if (node.kind === 'search') for (const item of found.items) rows.push({ item });
+      if (node.kind !== 'page') for (const item of found.items) rows.push({ item });
       else {
         const groups = found.groups || [];
         if (groups.length && (found.tracks || []).length) rows.push({ group: 'Songs' });
@@ -110,6 +130,8 @@
     if (node.kind === 'search' && !yt.words) return 'Type what you are looking for in the search box at the top right, then press Enter.';
     if (!found || found.loading) return node.kind === 'search' ? 'Searching YouTube Music…' : 'Opening…';
     if (found.error) return esc(sentence(found.error));
+    if (node.kind === 'now') return 'Nothing is in the YouTube Music list. The songs you play or add here go into it.';
+    if (node.kind === 'list') return 'This playlist has no songs that can be found.';
     return node.kind === 'search' ? `YouTube Music found nothing for “${esc(yt.words)}”.` : 'There is nothing to play here.';
   }
   function drawRows(keep) {
@@ -131,16 +153,18 @@
     }
     // the count, and more results for a search
     const found = yt.found, items = yt.rows.filter((r) => r.item);
+    const listing = node.kind !== 'search';   // the songs of a page, a saved playlist or the list
     let text = '';
     if (found && found.loading) text = node.kind === 'search' ? 'Searching…' : 'Opening…';
     else if (items.length) {
-      const noun = page ? NOUNS.songs : NOUNS[node.value], n = page ? songs.length : items.length;
-      text = `${n} ${n === 1 ? noun[0] : noun[1]}` + (page && total ? `, ${clock(total)}` : '');
+      const noun = listing ? NOUNS.songs : NOUNS[node.value], n = listing ? songs.length : items.length;
+      text = `${n} ${n === 1 ? noun[0] : noun[1]}` + (listing && total ? `, ${clock(total)}` : '');
     }
     $('yt-count').textContent = text;
     $('yt-more').hidden = !(node.kind === 'search' && found && found.more);
     $('yt-more').textContent = found && found.busy ? 'Getting more…' : 'More results';
     $('yt-back').disabled = !yt.back.length;
+    $('yt-queue').hidden = node.kind === 'now';   // already in it
     drawCover();
   }
   // the cover of the chosen row, or of the open page
@@ -155,34 +179,50 @@
 
   // ---- the tree on the left ----
   function drawTree() {
-    const rows = SEARCHES.map(([value, label]) => ({ depth: 0, label, node: { kind: 'search', value } }));
-    rows.push({ depth: 0, label: 'Recently opened', fold: true });
-    if (yt.open) {
+    const rows = [{ depth: 0, label: 'Now Playing', node: { kind: 'now' } }];
+    for (const [value, label] of SEARCHES) rows.push({ depth: 0, label, node: { kind: 'search', value } });
+    rows.push({ depth: 0, label: 'Recently opened', fold: 'recent' });
+    if (yt.open.recent) {
       for (const page of yt.recent) rows.push({ depth: 1, label: page.title, node: { kind: 'page', value: page.key } });
       if (!yt.recent.length) rows.push({ depth: 1, label: '(nothing yet)', dim: true });
+    }
+    rows.push({ depth: 0, label: 'My Playlists', fold: 'lists' });
+    if (yt.open.lists) {
+      const saved = state.playlists.filter((p) => p.list === 'youtube');
+      for (const p of saved) rows.push({ depth: 1, label: p.name, node: { kind: 'list', value: p.path } });
+      if (!saved.length) rows.push({ depth: 1, label: '(none saved yet)', dim: true });
     }
     yt.tree = rows;
     $('yt-tree').innerHTML = rows.map((r, i) =>
       `<div class="node${same(r.node, yt.node) ? ' sel' : ''}${r.dim ? ' dim' : ''}" data-i="${i}" style="padding-left:${3 + r.depth * 11}px">` +
-      `<i class="${r.fold ? (yt.open ? 'minus' : 'plus') : ''}"></i><span>${esc(r.label)}</span></div>`).join('');
+      `<i class="${r.fold ? (yt.open[r.fold] ? 'minus' : 'plus') : ''}"></i><span>${esc(r.label)}</span></div>`).join('');
   }
   function draw() { drawTree(); drawRows(); }
   const treeRow = (e) => { const el = e.target.closest('.node'); return el && yt.tree[Number(el.dataset.i)]; };
   $('yt-tree').addEventListener('click', (e) => {
     const row = treeRow(e);
     if (!row) return;
-    if (row.fold) { yt.open = !yt.open; drawTree(); return; }
+    if (row.fold) { yt.open[row.fold] = !yt.open[row.fold]; drawTree(); return; }
     if (row.node) show(row.node);
   });
-  $('yt-tree').addEventListener('dblclick', (e) => { const row = treeRow(e); if (row && row.node) playRows(null); });
+  $('yt-tree').addEventListener('dblclick', (e) => {
+    const row = treeRow(e);
+    if (!row || !row.node || row.node.kind === 'now') return;
+    if (row.node.kind !== 'list') { playRows(null); return; }
+    api('play-playlist', { path: row.node.value, stay: true })
+      .then((r) => { if (!r.ok) Mist.flash('That playlist has no songs that can be found'); });
+  });
 
   // ---- playing ----
-  // the songs the table shows become the Now Playing list, from one of them on
+  // the songs the table shows become the YouTube Music list, from one of them on
   function playRows(item) {
     const songs = yt.rows.map((r) => r.item).filter(playable);
     if (!songs.length) return;
+    const start = playable(item) ? item : songs[0];
+    if (yt.node.kind === 'now') { Mist.play(start.track); return; }   // the list itself: play on from there
     const page = shownPage();
-    api('yt-play', { items: songs.map(song), start: (playable(item) ? item : songs[0]).video, name: page ? page.title : '' });
+    const name = page ? page.title : yt.node.kind === 'list' ? savedName(yt.node.value) : '';
+    api('yt-play', { items: songs.map(song), start: start.video, name });
   }
   async function playItem(item, add) {   // an album or a playlist, from its row
     const page = await pageOf(item);
@@ -225,6 +265,7 @@
     const i = rowAt(e), item = i >= 0 && yt.rows[i].item;
     if (!item) return;
     select(i);
+    if (yt.node.kind === 'now') { Mist.trackMenu(e, item.track); return; }   // the list's own menu, as in Now Playing
     if (playable(item)) {
       menu(e.clientX, e.clientY, [
         { label: 'Play', run: () => playRows(item) },
@@ -289,8 +330,14 @@
       { label: 'Go to artist', disabled: !t.artist_id, run: () => goTo('artist', t.artist_id) });
   });
   on('view', (view) => { if (view !== 'premium') return; draw(); if (!yt.words) $('yt-search').focus(); });
+  on('state', () => {
+    if (state.view !== 'premium') return;
+    drawTree();
+    if (yt.node.kind === 'list') loadSaved(yt.node.value);
+  });
   on('render', () => {
     if (state.view !== 'premium') return;
+    if (yt.node.kind === 'now') { drawRows(true); return; }
     const video = playing();
     for (const tr of $('yt-rows').children) {
       const row = yt.rows[Number(tr.dataset.i)], item = row && row.item;

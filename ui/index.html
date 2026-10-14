@@ -26,9 +26,9 @@
   <button id="shade" class="tint nodrag" title="Menu"><svg viewBox="0 0 10 10"><path d="M2.500 4L5 1.800 7.500 4M2.500 6L5 8.200 7.500 6" fill="none" stroke="currentColor" stroke-width="1.500"/></svg></button>
   <div id="mini-title">Ocean Mist</div>
   <div id="corner" class="drag tint">
-    <div id="np-select" class="nodrag" title="Open music or a saved playlist">
+    <div id="np-select" class="nodrag" title="Switch between My Music and YouTube Music, open music or a saved playlist">
       <svg class="np-ico" viewBox="0 0 13 13"><path d="M1.500 1.500h7l3 3v7h-10z" fill="#fff" stroke="#6f86c4"/><path d="M8.500 1.500v3h3" fill="#dfe8fb" stroke="#6f86c4"/><path d="M4.300 5.200l4 2.500-4 2.500z" fill="#2f55b5"/></svg>
-      <span id="np-label">Now Playing</span>
+      <span id="np-label">My Music</span>
       <svg class="np-chev" viewBox="0 0 10 7"><path d="M1.200 1.200L5 5l3.800-3.800" fill="none" stroke="#131c44" stroke-width="2.200"/></svg>
     </div>
     <button id="w-full" class="wbtn nodrag" title="Return to full mode"><svg viewBox="0 0 12 12"><path d="M2 7.500V10h2.500M10 4.500V2H7.500M2.300 9.700l3-3M9.700 2.300l-3 3" fill="none" stroke="currentColor" stroke-width="1.500"/></svg></button>
@@ -59,7 +59,8 @@
       <img id="vis-art" alt="" hidden>
       <div id="empty-hint" hidden>
         <b>No music loaded</b>
-        Open the <u>Now Playing</u> menu at the top right and choose <u>Open files…</u>,<br>or drop music files onto this window.
+        <span id="hint-local">Open the <u id="hint-list">My Music</u> menu at the top right and choose <u>Open files…</u>,<br>or drop music files onto this window.</span>
+        <span id="hint-youtube" hidden>Find songs in <u>Premium Services</u> to fill this list,<br>or choose <u>My Music</u> in the menu at the top right.</span>
       </div>
       <div id="eq" class="tint" hidden>
         <div class="eq-head">

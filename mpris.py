@@ -81,7 +81,10 @@ class Mpris:
             track = library.by_id.get(now["id"])
             track = dict(track) if track else None
             station = library.station(now["station"]) if now["station"] is not None else None
-            count = len(library.tracks) if station is None else len(library.stations)
+            which = library.list_of(now["id"])   # the list playback goes through
+            count = (len(library.stations) if station is not None
+                     else len(library.lists[which]) if which
+                     else sum(len(tracks) for tracks in library.lists.values()))
         metadata = {"mpris:trackid": GLib.Variant("o", NO_TRACK)}
         if station is not None:
             metadata = {

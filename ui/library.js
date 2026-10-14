@@ -1,5 +1,7 @@
 // Media Library: everything in the music folders, by artist, album or genre,
 // plus the saved playlists. The files stay where they are; this only lists them.
+// Local music only: its Now Playing is My Music, and YouTube Music has its
+// own list in Premium Services.
 (() => {
   const { $, state, api, on, esc, clock, menu, base } = Mist;
   const PAGE = 400;   // rows drawn at a time; more are added while scrolling
@@ -40,8 +42,9 @@
     }
     add(0, 'My Playlists', null, { fold: 'lists' });
     if (lib.open.lists) {
-      for (const p of state.playlists) add(1, p.name, { kind: 'list', value: p.path });
-      if (!state.playlists.length) add(1, '(none saved yet)', null, { dim: true });
+      const saved = state.playlists.filter((p) => p.list === 'local');
+      for (const p of saved) add(1, p.name, { kind: 'list', value: p.path });
+      if (!saved.length) add(1, '(none saved yet)', null, { dim: true });
     }
     lib.tree = rows;
     $('lib-tree').innerHTML = rows.map((r, i) =>
@@ -67,8 +70,8 @@
   // ---- the table ----
   function compute() {
     const node = lib.node;
-    let rows = node.kind === 'now' ? state.tracks
-      : node.kind === 'list' ? (lib.lists[node.value] || [])
+    let rows = node.kind === 'now' ? state.lists.local
+      : node.kind === 'list' ? (lib.lists[node.value] || []).filter((t) => !t.source)   // a mix from before keeps its files here
       : node.kind === 'all' ? lib.tracks
       : lib.tracks.filter((t) => (t[node.kind] || '') === node.value);
     const q = plain(lib.filter.trim());
@@ -88,7 +91,7 @@
     lib.rows = rows;
   }
   const rowHtml = (t) =>
-    `<tr class="${t.id === state.cur ? 'cur ' : ''}${t.id === lib.sel ? 'sel' : ''}" data-id="${t.id}" title="${esc(t.source ? 'YouTube Music' : t.folder + '/' + t.file)}">` +
+    `<tr class="${t.id === state.cur ? 'cur ' : ''}${t.id === lib.sel ? 'sel' : ''}" data-id="${t.id}" title="${esc(t.folder + '/' + t.file)}">` +
     `<td>${esc(t.title)}</td><td>${esc(t.artist)}</td><td>${esc(t.album)}</td><td class="num">${t.duration ? clock(t.duration) : ''}</td></tr>`;
   function emptyText() {
     if (lib.filter.trim()) return 'Nothing matches the search.';
@@ -174,7 +177,7 @@
   $('lib-play').addEventListener('click', () => playRows(lib.sel));
   $('lib-queue').addEventListener('click', () => addToList(lib.sel !== null ? [lib.sel] : lib.rows.map((t) => t.id)));
   $('lib-remove').addEventListener('click', () => { if (lib.sel !== null) api('remove', { ids: [lib.sel] }); });
-  $('lib-clear').addEventListener('click', () => api('clear'));
+  $('lib-clear').addEventListener('click', () => api('clear', { list: 'local' }));
   $('lib-search').addEventListener('input', (e) => { lib.filter = e.target.value; drawRows(); });
 
   // ---- keeping up ----
