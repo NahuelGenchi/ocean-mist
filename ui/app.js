@@ -429,6 +429,8 @@
   function emptyHint() {
     $('empty-hint').hidden = state.cur !== null || state.station !== null || shown().length > 0;
     $('hint-list').textContent = listLabel();
+    $('hint-local').hidden = state.show !== 'local';   // files go to My Music only
+    $('hint-youtube').hidden = state.show !== 'youtube';
   }
   function setVis(i) {
     state.settings.vis = Visuals.select(i);

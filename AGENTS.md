@@ -13,14 +13,14 @@ Never describe something as working or complete unless a recorded check establis
 | Path | Contents |
 | :--- | :--- |
 | `player.py` | The host: window, input shape, HTTP server, file dialogs, zoom, compact mode, notifications |
-| `library.py` | Now Playing list, media library scan, saved playlists, radio stations, settings, resume point |
+| `library.py` | The two Now Playing lists (My Music, saved in `state.json`; YouTube Music, in memory only), media library scan, saved playlists, radio stations, settings, resume point (a file or a station) |
 | `tags.py` | Titles, covers and lengths from MP3, FLAC, Ogg Vorbis, Opus, M4A and WAV, standard library only |
 | `radio.py` | Relays an internet radio stream to the page and reads its song titles |
 | `ytmusic.py` | YouTube Music without an account: search, albums, artists, playlists, similar songs, covers, and each song's audio (HLS segments repacked as MP4 fragments), standard library only |
 | `mpris.py` | The desktop's media controls and media keys (MPRIS) |
 | `ui/frame.js` | The sculpted frame and the compact frame, drawn as SVG |
-| `ui/app.js` | Playback core, menus, queue, keyboard, the Media Source feed for YouTube Music songs; exposes `window.Mist` to the other scripts |
-| `ui/premium.js` | Premium Services: the YouTube Music view, and similar songs when the list runs out |
+| `ui/app.js` | Playback core, the two lists and the switch between them, menus, queue, keyboard, the Media Source feed for YouTube Music songs; exposes `window.Mist` to the other scripts |
+| `ui/premium.js` | Premium Services: the YouTube Music view with its Now Playing list and saved playlists, and similar songs when the list runs out |
 | `ui/eq.js`, `ui/library.js`, `ui/radio.js`, `ui/skins.js`, `ui/visuals.js` | Equalizer, Media Library, Radio Tuner, Skin Chooser, visualizations |
 | `ui/fonts/` | Tahoma look-alike fonts from the Wine project, under their own license (LGPL 2.1 or later; see its `README.md`) |
 | `data/` | Application icon and desktop entry template |
@@ -45,16 +45,18 @@ Never describe something as working or complete unless a recorded check establis
   ```sh
   OCEAN_MIST_APP_ID=io.github.nahuelgenchi.OceanMistTest \
   XDG_CONFIG_HOME=/tmp/ocean-mist-test/config XDG_CACHE_HOME=/tmp/ocean-mist-test/cache \
-  python3 player.py
+  XDG_DATA_HOME=/tmp/ocean-mist-test/data python3 player.py
   ```
 
   Settings live in `$XDG_CONFIG_HOME/ocean-mist/state.json`; put `"muted": true` in its `"settings"` object before a check that plays anything.
-- WebKitGTK behavior worth knowing: script run from the host counts as a user gesture, so it hides autoplay problems; a seek on a song that has never played is ignored; a cross-origin stream is silent through Web Audio, which is why radio goes through the local relay; media only loads in a real, visible window. It cannot play HLS, which is why YouTube Music songs reach the page as MP4 fragments through Media Source; there, a seek made before the song first plays does work.
+- WebKitGTK behavior worth knowing: script run from the host counts as a user gesture, so it hides autoplay problems; a seek on a song that has never played is ignored; a cross-origin stream is silent through Web Audio, which is why radio goes through the local relay; media only loads in a real, visible window. It cannot play HLS, which is why YouTube Music songs reach the page as MP4 fragments through Media Source; there, a seek made before the song first plays does work. An ephemeral view (`is_ephemeral`) still sets up the default context's cache and data folders on disk; only an ephemeral `WebContext`, which the player uses, keeps everything in memory.
 - Record what a check covered and what it did not, in the PR.
 
 ## Private data
 
 Music files, personal playlists, `state.json`, the tag and cover cache, and any account credentials or tokens stay out of commits, issues and PRs. So do YouTube's audio addresses (`googlevideo.com`): they carry the IP address of whoever asked for them, so never print them in a check's output either. Screenshots use generated sample music with invented names, never a real library.
+
+Nothing from a streaming service is written to disk: the YouTube Music list, searches and covers stay in memory, the covers for the media controls go to `$XDG_RUNTIME_DIR` and are removed on close, the page's web context is ephemeral, and `state.json` holds files and stations only. A playlist the user saves is the one exception, on purpose. Keep it that way: storing anything else from a service is the owner's decision.
 
 ## Tracking and delivery
 

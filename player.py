@@ -555,9 +555,12 @@ def run_app(argv):
             # the default policy only lets silent media start by itself, and
             # a song opened from Files has to start without a click
             policies = WebKit2.WebsitePolicies(autoplay=WebKit2.AutoplayPolicy.ALLOW)
-            # ephemeral: WebKit keeps no cache or site data on disk, so YouTube
-            # Music covers shown in the page stay in memory too
-            view = WebKit2.WebView(settings=settings, website_policies=policies, is_ephemeral=True)
+            # an ephemeral context: WebKit keeps its cache and site data in memory
+            # and makes no folders on disk, so YouTube Music covers shown in the
+            # page are gone when the player closes (an ephemeral view alone still
+            # sets up the default context's folders)
+            context = WebKit2.WebContext.new_ephemeral()
+            view = WebKit2.WebView(web_context=context, settings=settings, website_policies=policies)
             view.set_background_color(Gdk.RGBA(0, 0, 0, 0))
             view.set_zoom_level(self.zoom)
             view.connect("context-menu", lambda *a: not os.environ.get("OCEAN_MIST_DEBUG"))

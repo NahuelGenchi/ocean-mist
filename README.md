@@ -99,7 +99,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Now Playing list</strong></td>
-    <td>Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as the list.</td>
+    <td>Two lists, one player: My Music for your files and YouTube Music for what you play from Premium Services, kept apart and switched at the list's top right. Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Playlists</strong></td>
@@ -111,7 +111,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>YouTube Music</strong></td>
-    <td>In Premium Services: search for songs, albums, artists and playlists, open them with their covers, and play them in the Now Playing list beside your own files, with the equalizer and the visualizations. When the list runs out, similar songs carry on (<em>Autoplay similar songs</em> in the menu turns that off). No account, no sign-in, nothing else to install.</td>
+    <td>In Premium Services: search for songs, albums, artists and playlists, open them with their covers, and play them in a YouTube Music list of their own, with the equalizer and the visualizations. When the list runs out, similar songs carry on (<em>Autoplay similar songs</em> in the menu turns that off). The list lives in memory only and starts empty each time; save it as a playlist to keep it. No account, no sign-in, nothing else to install.</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Formats</strong></td>
@@ -127,7 +127,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Small comforts</strong></td>
-    <td>Picks up where you left off. A sleep timer stops the music after a set time or at the end of the song.</td>
+    <td>Picks up where you left off in your files or on the radio. A sleep timer stops the music after a set time or at the end of the song.</td>
   </tr>
 </table>
 
@@ -180,8 +180,10 @@ After that, Ocean Mist appears in the app menu and in the "Open with" list for m
 
 | What | Where |
 | :--- | :--- |
-| Settings, the current list, stations, where you left off | `~/.config/ocean-mist/state.json` |
-| Tag cache and covers | `~/.cache/ocean-mist/` |
+| Settings, My Music, stations, where you left off | `~/.config/ocean-mist/state.json` |
+| Tag cache and your files' covers | `~/.cache/ocean-mist/` |
+
+Nothing from YouTube Music is kept there, or anywhere else on disk unless you save a playlist: its list, searches and covers stay in memory, and the page keeps no web cache or site data. The covers it hands to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes.
 
 Your music files are only ever read, never changed. Developed on Ubuntu 26.04 with GNOME on Wayland and Python 3.14; other setups have not been tried yet.
 
@@ -232,7 +234,7 @@ flowchart LR
 | Path | What is in it |
 | :--- | :--- |
 | `player.py` | The host: window, input shape, local server, file dialogs, sizes, notifications |
-| `library.py` | The Now Playing list, the library scan, playlists, stations, settings |
+| `library.py` | The two Now Playing lists (My Music is saved, YouTube Music stays in memory), the library scan, playlists, stations, settings |
 | `tags.py` | Tag, cover and length reader for six formats, standard library only |
 | `radio.py` | Relays a station to the page and reads its song titles |
 | `ytmusic.py` | YouTube Music: searches, albums, artists, playlists, similar songs and covers, and each song's audio repacked for the page, standard library only |
