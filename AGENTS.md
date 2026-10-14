@@ -34,7 +34,7 @@ Never describe something as working or complete unless a recorded check establis
 ## Working well here
 
 - Start from the active issue, then read only the code involved.
-- The look is the point. The frame is measured against the original player, so compare with a reference before changing its shape, sizes or colours, and say in the PR what was compared.
+- The look is the point. The frame is measured against the original player, so compare with a reference before changing its shape, sizes or colors, and say in the PR what was compared.
 - Keep it dependency-free: no build step, no Python packages, no JavaScript libraries, unless the issue says otherwise.
 - Never run a check against the owner's own player or settings. Use a separate instance and scratch folders, and keep it muted:
 
@@ -45,7 +45,7 @@ Never describe something as working or complete unless a recorded check establis
   ```
 
   Settings live in `$XDG_CONFIG_HOME/ocean-mist/state.json`; put `"muted": true` in its `"settings"` object before a check that plays anything.
-- WebKitGTK behaviour worth knowing: script run from the host counts as a user gesture, so it hides autoplay problems; a seek on a song that has never played is ignored; a cross-origin stream is silent through Web Audio, which is why radio goes through the local relay; media only loads in a real, visible window.
+- WebKitGTK behavior worth knowing: script run from the host counts as a user gesture, so it hides autoplay problems; a seek on a song that has never played is ignored; a cross-origin stream is silent through Web Audio, which is why radio goes through the local relay; media only loads in a real, visible window.
 - Record what a check covered and what it did not, in the PR.
 
 ## Private data
