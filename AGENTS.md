@@ -4,7 +4,7 @@
 
 Ocean Mist is a music player for Linux with the look of Windows Media Player 9: the sculpted frame, the visualizations, a 10-band equalizer, a media library, internet radio and playlists. The interface is a local web page (`ui/`) shown in a frameless WebKitGTK window; `player.py` owns the window and a small HTTP server bound to 127.0.0.1 that feeds the page. There is no build step and nothing to install beyond GTK 3, WebKitGTK 4.1 and GStreamer; the Python side uses the standard library only. `README.md` describes the features.
 
-It is an unofficial fan project, not affiliated with Microsoft.
+It is an unofficial fan project, not affiliated with Microsoft, and licensed under GPL-3.0-or-later (`LICENSE`).
 
 Never describe something as working or complete unless a recorded check establishes it. A syntax check is not proof that the player behaves.
 
@@ -20,7 +20,7 @@ Never describe something as working or complete unless a recorded check establis
 | `ui/frame.js` | The sculpted frame and the compact frame, drawn as SVG |
 | `ui/app.js` | Playback core, menus, queue, keyboard; exposes `window.Mist` to the other scripts |
 | `ui/eq.js`, `ui/library.js`, `ui/radio.js`, `ui/skins.js`, `ui/visuals.js` | Equalizer, Media Library, Radio Tuner, Skin Chooser, visualizations |
-| `ui/fonts/` | Tahoma look-alike fonts from the Wine project (LGPL 2.1) |
+| `ui/fonts/` | Tahoma look-alike fonts from the Wine project, under their own license (LGPL 2.1 or later; see its `README.md`) |
 | `data/` | Application icon and desktop entry template |
 | `docs/` | Tracking guide and README images |
 
@@ -36,6 +36,7 @@ Never describe something as working or complete unless a recorded check establis
 - Start from the active issue, then read only the code involved.
 - The look is the point. The frame is measured against the original player, so compare with a reference before changing its shape, sizes or colors, and say in the PR what was compared.
 - Keep it dependency-free: no build step, no Python packages, no JavaScript libraries, unless the issue says otherwise.
+- Anything bundled from elsewhere (fonts, images, sounds) needs a license compatible with GPL-3.0-or-later, its notices next to the files and a line in the README credits, as in `ui/fonts/`.
 - Never run a check against the owner's own player or settings. Use a separate instance and scratch folders, and keep it muted:
 
   ```sh

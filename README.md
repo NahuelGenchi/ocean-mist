@@ -11,6 +11,7 @@
     <img src="https://img.shields.io/badge/Python-3-2f55b5?style=flat-square&logo=python&logoColor=white" alt="Python 3">
     <img src="https://img.shields.io/badge/build%20step-none-2e9e6b?style=flat-square" alt="No build step">
     <img src="https://img.shields.io/badge/status-early%20days-d9902f?style=flat-square" alt="Status: early days">
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-1f8aa8?style=flat-square" alt="License: GPL-3.0-or-later"></a>
   </p>
   <p>
     <a href="#a-look-around">A look around</a> &nbsp;·&nbsp;
@@ -31,7 +32,7 @@
 </p>
 
 > [!NOTE]
-> Ocean Mist is an unofficial fan project. It is not affiliated with, endorsed by or connected to Microsoft. Windows and Windows Media are trademarks of Microsoft.
+> Ocean Mist is an unofficial fan project. It is not affiliated with, endorsed by or connected to Microsoft. Windows, Windows Media and the Windows logo are trademarks of Microsoft.
 
 ## A look around
 
@@ -256,7 +257,11 @@ Found a bug or have an idea? [Open a work item](https://github.com/NahuelGenchi/
 ## Credits
 
 - The look pays tribute to **Windows Media Player 9 Series** by Microsoft. The frame, buttons and visualizations here are redrawn in SVG and canvas; no code or image files from the original are included.
-- The interface font is the **Tahoma replacement from the [Wine](https://www.winehq.org/) project**, under the LGPL 2.1.
+- The interface font is the **Tahoma replacement from the [Wine](https://www.winehq.org/) project**, under the LGPL 2.1 or later; its notices are in [`ui/fonts`](ui/fonts/README.md).
 - The four stations that come preset are from **[SomaFM](https://somafm.com/)**, listener-supported radio.
 
-**License:** not chosen yet; see [#3](https://github.com/NahuelGenchi/ocean-mist/issues/3). Until it is, the code is published for reading and trying out, and the fonts keep their own license.
+## License
+
+Ocean Mist is free software: you can use, study, share and change it under the terms of the [GNU General Public License](LICENSE), version 3 or (at your option) any later version. If you share a changed version, its source goes with it, under the same license. It comes with no warranty.
+
+The license covers Ocean Mist's own code and artwork. It does not cover the bundled fonts, which keep [their own license](ui/fonts/README.md) (LGPL 2.1 or later), or Microsoft's trademarks, including the Windows logo drawn in the frame.
