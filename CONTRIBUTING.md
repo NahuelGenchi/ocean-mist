@@ -34,6 +34,10 @@ A change to the frame's shape, sizes or colors is compared against a reference o
 
 Keep music files, personal playlists, settings files, caches and account credentials out of commits, issues, and PRs. Screenshots use generated sample music with invented names. The ignore rules are an accidental-staging guard, not permission to collect that data. If a secret is exposed, stop sharing it and revoke it.
 
+## License
+
+Ocean Mist is licensed under GPL-3.0-or-later ([LICENSE](LICENSE)), and contributions are accepted under the same license. Anything bundled from elsewhere, such as fonts, images or sounds, needs a license compatible with it, its notices kept next to the files (as in [`ui/fonts/`](ui/fonts/README.md)) and a line in the README credits.
+
 ## Documentation standard
 
 Write clear English. Prefer specific paths and actionable instructions. Distinguish **implemented**, **planned**, **blocked**, and **unknown**. Do not invent commands, measurements, or compatibility. Update documentation in the same PR as the change it describes. Keep `README.md` approachable and `AGENTS.md` limited to what agents need in every session.
