@@ -2,7 +2,7 @@
 
 ## The project
 
-Ocean Mist is a music player for Linux with the look of Windows Media Player 9: the sculpted frame, the visualizations, a 10-band equalizer, a media library, internet radio and playlists. The interface is a local web page (`ui/`) shown in a frameless WebKitGTK window; `player.py` owns the window and a small HTTP server bound to 127.0.0.1 that feeds the page. There is no build step and nothing to install beyond GTK 3, WebKitGTK 4.1 and GStreamer; the Python side uses the standard library only. `README.md` describes the features.
+Ocean Mist is a music player for Linux with the look of Windows Media Player 9: the sculpted frame, the visualizations, a 10-band equalizer, a media library, internet radio, playlists and YouTube Music. The interface is a local web page (`ui/`) shown in a frameless WebKitGTK window; `player.py` owns the window and a small HTTP server bound to 127.0.0.1 that feeds the page. There is no build step and nothing to install beyond GTK 3, WebKitGTK 4.1 and GStreamer; the Python side uses the standard library only. `README.md` describes the features.
 
 It is an unofficial fan project, not affiliated with Microsoft, and licensed under GPL-3.0-or-later (`LICENSE`).
 
@@ -16,9 +16,11 @@ Never describe something as working or complete unless a recorded check establis
 | `library.py` | Now Playing list, media library scan, saved playlists, radio stations, settings, resume point |
 | `tags.py` | Titles, covers and lengths from MP3, FLAC, Ogg Vorbis, Opus, M4A and WAV, standard library only |
 | `radio.py` | Relays an internet radio stream to the page and reads its song titles |
+| `ytmusic.py` | YouTube Music without an account: search, albums, artists, playlists, similar songs, covers, and each song's audio (HLS segments repacked as MP4 fragments), standard library only |
 | `mpris.py` | The desktop's media controls and media keys (MPRIS) |
 | `ui/frame.js` | The sculpted frame and the compact frame, drawn as SVG |
-| `ui/app.js` | Playback core, menus, queue, keyboard; exposes `window.Mist` to the other scripts |
+| `ui/app.js` | Playback core, menus, queue, keyboard, the Media Source feed for YouTube Music songs; exposes `window.Mist` to the other scripts |
+| `ui/premium.js` | Premium Services: the YouTube Music view, and similar songs when the list runs out |
 | `ui/eq.js`, `ui/library.js`, `ui/radio.js`, `ui/skins.js`, `ui/visuals.js` | Equalizer, Media Library, Radio Tuner, Skin Chooser, visualizations |
 | `ui/fonts/` | Tahoma look-alike fonts from the Wine project, under their own license (LGPL 2.1 or later; see its `README.md`) |
 | `data/` | Application icon and desktop entry template |
@@ -28,8 +30,9 @@ Never describe something as working or complete unless a recorded check establis
 
 - `python3 player.py [FILES OR FOLDERS...]` runs the player.
 - `python3 player.py --serve PORT [FILES...]` serves the interface without a window, at `http://127.0.0.1:PORT/dev/`, for work on the page alone.
-- `python3 -m py_compile player.py library.py tags.py radio.py mpris.py` and `for f in ui/*.js; do node --check "$f"; done` are the source checks. There is no test suite yet.
+- `python3 -m py_compile player.py library.py tags.py radio.py mpris.py ytmusic.py` and `for f in ui/*.js; do node --check "$f"; done` are the source checks. There is no test suite yet.
 - `OCEAN_MIST_DEBUG=1` logs the HTTP requests and enables the web inspector.
+- `python3 ytmusic.py search|album|artist|playlist|radio|audio ...` prints what the YouTube Music engine gets, without the player (the full list is in its docstring).
 
 ## Working well here
 
@@ -46,12 +49,12 @@ Never describe something as working or complete unless a recorded check establis
   ```
 
   Settings live in `$XDG_CONFIG_HOME/ocean-mist/state.json`; put `"muted": true` in its `"settings"` object before a check that plays anything.
-- WebKitGTK behavior worth knowing: script run from the host counts as a user gesture, so it hides autoplay problems; a seek on a song that has never played is ignored; a cross-origin stream is silent through Web Audio, which is why radio goes through the local relay; media only loads in a real, visible window.
+- WebKitGTK behavior worth knowing: script run from the host counts as a user gesture, so it hides autoplay problems; a seek on a song that has never played is ignored; a cross-origin stream is silent through Web Audio, which is why radio goes through the local relay; media only loads in a real, visible window. It cannot play HLS, which is why YouTube Music songs reach the page as MP4 fragments through Media Source; there, a seek made before the song first plays does work.
 - Record what a check covered and what it did not, in the PR.
 
 ## Private data
 
-Music files, personal playlists, `state.json`, the tag and cover cache, and any account credentials or tokens stay out of commits, issues and PRs. Screenshots use generated sample music with invented names, never a real library.
+Music files, personal playlists, `state.json`, the tag and cover cache, and any account credentials or tokens stay out of commits, issues and PRs. So do YouTube's audio addresses (`googlevideo.com`): they carry the IP address of whoever asked for them, so never print them in a check's output either. Screenshots use generated sample music with invented names, never a real library.
 
 ## Tracking and delivery
 

@@ -88,7 +88,7 @@
     lib.rows = rows;
   }
   const rowHtml = (t) =>
-    `<tr class="${t.id === state.cur ? 'cur ' : ''}${t.id === lib.sel ? 'sel' : ''}" data-id="${t.id}" title="${esc(t.folder + '/' + t.file)}">` +
+    `<tr class="${t.id === state.cur ? 'cur ' : ''}${t.id === lib.sel ? 'sel' : ''}" data-id="${t.id}" title="${esc(t.source ? 'YouTube Music' : t.folder + '/' + t.file)}">` +
     `<td>${esc(t.title)}</td><td>${esc(t.artist)}</td><td>${esc(t.album)}</td><td class="num">${t.duration ? clock(t.duration) : ''}</td></tr>`;
   function emptyText() {
     if (lib.filter.trim()) return 'Nothing matches the search.';

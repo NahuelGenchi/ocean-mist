@@ -1,6 +1,7 @@
 """What the player knows: the Now Playing list, the media library, saved
 playlists, radio stations and the settings. Everything lives in state.json;
-the files themselves are only ever read."""
+the files themselves are only ever read. YouTube Music songs sit in the same
+list as files; their "path" is the song's address on music.youtube.com."""
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import time
 import urllib.parse
 
 import tags
+import ytmusic
 
 APP_ID = "io.github.nahuelgenchi.OceanMist"
 CONFIG_DIR = os.path.join(
@@ -31,7 +33,8 @@ COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 
 # settings the page may change; the rest (window size, zoom, folders) are the host's
 PAGE_SETTINGS = ("volume", "muted", "vis", "shuffle", "repeat", "hue",
-                 "eq", "eq_on", "eq_preset", "eq_open", "notify")
+                 "eq", "eq_on", "eq_preset", "eq_open", "notify", "yt_radio")
+STREAM_FIELDS = ("title", "artist", "album", "year", "duration", "cover", "artist_id", "album_id")
 DEFAULT_STATIONS = (
     ("SomaFM: Groove Salad", "https://somafm.com/groovesalad.pls"),
     ("SomaFM: Drone Zone", "https://somafm.com/dronezone.pls"),
@@ -86,8 +89,10 @@ def folder_cover(folder):
     return None
 
 
-def read_playlist(path):
-    """The entries of an .m3u/.m3u8/.pls file: file paths and stream addresses."""
+def read_playlist(path, labels=None):
+    """The entries of an .m3u/.m3u8/.pls file: file paths and stream addresses.
+    `labels`, a dict, gets each entry's (seconds, "artist - title") when an
+    #EXTINF line gives them."""
     try:
         with open(path, "rb") as fh:
             raw = fh.read(4 << 20)
@@ -99,7 +104,7 @@ def read_playlist(path):
         text = raw.decode("latin-1")
     folder = os.path.dirname(os.path.abspath(path))
     pls = path.lower().endswith(".pls")
-    entries = []
+    entries, label = [], None
     for line in text.splitlines():
         line = line.strip()
         if pls:
@@ -107,17 +112,27 @@ def read_playlist(path):
             if not key.strip().lower().startswith("file"):
                 continue
             line = line.strip()
+        if line.upper().startswith("#EXTINF:"):
+            seconds, _, name = line[8:].partition(",")
+            try:
+                label = (max(0.0, float(seconds.strip())), name.strip())
+            except ValueError:
+                label = (0.0, name.strip())
         if not line or line.startswith("#"):
             continue
         if re.match(r"[a-z][a-z0-9+.-]*://", line, re.I):
             if not line.lower().startswith("file://"):
                 entries.append(line)
+                if label and labels is not None:
+                    labels[line] = label
+                label = None
                 continue
             line = urllib.parse.unquote(urllib.parse.urlparse(line).path)
         target = os.path.normpath(os.path.join(folder, os.path.expanduser(line)))
         if not os.path.exists(target) and "\\" in line:   # written on Windows
             target = os.path.normpath(os.path.join(folder, line.replace("\\", "/")))
         entries.append(target)
+        label = None
     return entries
 
 
@@ -125,11 +140,15 @@ def write_playlist(path, tracks):
     folder = os.path.dirname(os.path.abspath(path))
     lines = ["#EXTM3U"]
     for track in tracks:
-        label = track["title"]
-        if track["artist"]:
+        label = "" if track.get("bare") else track["title"]   # a song not looked up yet has no title
+        if track["artist"] and label:
             label = f'{track["artist"]} - {label}'
+        label = " ".join(label.split())   # one line, whatever the tags hold
         seconds = int(round(track["duration"])) if track["duration"] else -1
         lines.append(f"#EXTINF:{seconds},{label}")
+        if track.get("source"):   # a YouTube Music song: its address
+            lines.append(track["path"])
+            continue
         inside = os.path.relpath(track["path"], folder)
         lines.append(track["path"] if inside.startswith("..") else inside)
     tmp = path + ".tmp"
@@ -163,12 +182,12 @@ class Library:
             "volume": 0.5, "muted": False, "vis": 0, "shuffle": False,
             "repeat": False, "hue": 0, "eq": [0] * 10, "eq_on": False,
             "eq_preset": "Flat", "eq_open": False, "notify": False,
-            "zoom": 1, "mini": False,
+            "yt_radio": True, "zoom": 1, "mini": False,
         }
         self.listeners = set()
         self.pending_play = None  # what to start once the page is listening
         self.now = {"id": None, "station": None, "mode": "stopped",
-                    "position": 0.0, "duration": 0.0, "title": "", "at": 0.0}
+                    "position": 0.0, "duration": 0.0, "title": "", "at": 0.0, "started": False}
         self.on_now = None        # called (from any thread) when it changes
         self.resume = None        # {"path", "position"} or {"station"}
         self._resume_offer = None
@@ -205,16 +224,43 @@ class Library:
         self.stations = [s for s in stations if s.get("url")]
         self._remembered = [p for p in saved.get("playlists", []) if isinstance(p, str)]
         self.list_name = saved.get("list", "")
-        self.add_paths(saved.get("playlist", []), announce=False)
+        self._restore(saved.get("playlist", []))
         self.resume = self._resume_offer = saved.get("resume") or None
 
-    def save(self):
+    def _restore(self, entries):
+        """The saved Now Playing list: file paths, and YouTube Music songs
+        with what was known about them (so they show without asking YouTube)."""
         with self.lock:
+            chosen, listed = [], set()
+            for entry in entries if isinstance(entries, list) else []:
+                if isinstance(entry, dict):
+                    track = self._stream(dict(entry, video=entry.get("yt")))
+                elif isinstance(entry, str) and _is_audio(entry) and os.path.isfile(entry):
+                    track = self._entry(os.path.abspath(entry))
+                else:
+                    continue
+                if track and track["id"] not in listed:
+                    listed.add(track["id"])
+                    chosen.append(track)
+            self.tracks = chosen
+
+    @staticmethod
+    def _saved(track):
+        if not track.get("source"):
+            return track["path"]
+        saved = {"yt": track["video"]}
+        for key in STREAM_FIELDS:
+            if track.get(key) and not (key == "title" and track.get("bare")):
+                saved[key] = track[key]
+        return saved
+
+    def save(self):
+        with self.lock:   # written inside it too, so two saves cannot mix in the file
             data = {"settings": dict(self.settings),
-                    "playlist": [t["path"] for t in self.tracks],
+                    "playlist": [self._saved(t) for t in self.tracks],
                     "list": self.list_name, "stations": list(self.stations),
                     "playlists": list(self._remembered), "resume": self.resume}
-        _write_json(STATE_FILE, data)
+            _write_json(STATE_FILE, data)
 
     def _save_cache(self):
         with self.lock:
@@ -278,6 +324,8 @@ class Library:
 
     @staticmethod
     def _public(track):
+        if track.get("source"):
+            return {k: v for k, v in track.items() if k != "path"} | {"file": "", "folder": ""}
         return {k: v for k, v in track.items() if k != "path"} | {
             "file": os.path.basename(track["path"]),
             "folder": os.path.dirname(track["path"]),
@@ -302,6 +350,82 @@ class Library:
                 self._reader = threading.Thread(target=self._read_tags, daemon=True)
                 self._reader.start()
         return track
+
+    def _stream(self, item):
+        """The track for a YouTube Music song, made on first sight, with what
+        a search or a page said about it (caller holds the lock)."""
+        video = str(item.get("video") or "")
+        if not ytmusic.VIDEO_ID.match(video):
+            return None
+        path = ytmusic.WATCH + video
+        track = self.by_path.get(path)
+        if track is None:
+            track = {"id": self._next_id, "path": path, "source": "youtube", "video": video,
+                     "title": video, "artist": "", "album": "", "year": "", "genre": "",
+                     "track": 0, "duration": 0, "art": False, "cover": "",
+                     "artist_id": "", "album_id": "", "bare": True}
+            self._next_id += 1
+            self.by_id[track["id"]] = self.by_path[path] = track
+            self._tagged.add(track["id"])   # nothing to read from a file
+        for key in STREAM_FIELDS:
+            value = item.get(key)
+            if key == "duration":
+                try:
+                    value = round(min(86400.0, max(0.0, float(value or 0))), 2)
+                except (TypeError, ValueError):
+                    value = 0
+            else:
+                value = str(value or "").strip()[:300]
+                if key == "cover" and not ytmusic.PICTURE_HOSTS.match(value):
+                    value = ""
+                elif key in ("artist_id", "album_id") and not ytmusic.BROWSE_ID.match(value):
+                    value = ""
+            if value:
+                track[key] = value
+        if str(item.get("title") or "").strip():
+            track.pop("bare", None)
+        track["art"] = bool(track["cover"])
+        return track
+
+    def add_streams(self, items, replace=False, name=""):
+        """Put YouTube Music songs in the Now Playing list: after what is
+        there, or as the whole list (named `name`). Returns their tracks."""
+        with self.lock:
+            chosen, listed = [], set()
+            for item in items[:ytmusic.PLAYLIST_LIMIT]:
+                track = self._stream(item) if isinstance(item, dict) else None
+                if track and track["id"] not in listed:
+                    listed.add(track["id"])
+                    chosen.append(track)
+            if not chosen:
+                return []
+            if replace:
+                self.tracks, self.list_name = chosen, str(name or "")[:200]
+            else:
+                listed = {t["id"] for t in self.tracks}
+                self.tracks += [t for t in chosen if t["id"] not in listed]
+        self.save()
+        self.emit("playlist")
+        return chosen
+
+    def stream_found(self, video, details):
+        """What YouTube said about a song while getting it ready, for its
+        track if that knew less (it came from a bare address)."""
+        changed = False
+        with self.lock:
+            track = self.by_path.get(ytmusic.WATCH + str(video))
+            if track is None:
+                return
+            for key in ("title", "artist", "duration", "cover"):
+                if details.get(key) and (not track.get(key) or track.get("bare")):
+                    changed = changed or track.get(key) != details[key]
+                    track[key] = details[key]
+            if track.pop("bare", None):
+                changed = True
+            track["art"] = bool(track["cover"])
+        if changed:
+            self.save()
+            self.emit("playlist")
 
     def track(self, track_id):
         with self.lock:
@@ -489,11 +613,15 @@ class Library:
                 self._cache_dirty = True
 
     def cover(self, track_id):
-        """A track's cover: (mime, bytes) from its tag, a file path, or None."""
+        """A track's cover: (mime, bytes) from its tag, a file path, or None.
+        A YouTube Music song's cover is a file once it was fetched (keep_cover)."""
         with self.lock:
             track = self.by_id.get(track_id)
             art = self.art.get(track_id)
             cached = self._covers.get(track["path"]) if track else None
+        if track is not None and track.get("source"):
+            path = self._stream_cover(track)
+            return path if path and os.path.isfile(path) else None
         if track is None or not art:
             return None
         if art is not True:
@@ -515,19 +643,38 @@ class Library:
             return art
         mime, data = art
         ext = {"image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}.get(mime, ".jpg")
-        folder = os.path.join(CACHE_DIR, "covers")
-        path = os.path.join(folder, hashlib.sha1(data).hexdigest()[:16] + ext)
+        path = os.path.join(CACHE_DIR, "covers", hashlib.sha1(data).hexdigest()[:16] + ext)
         if not os.path.exists(path):
-            try:
-                os.makedirs(folder, exist_ok=True)
-                with open(path, "wb") as fh:
-                    fh.write(data)
-                old = sorted((os.path.join(folder, n) for n in os.listdir(folder)),
-                             key=os.path.getmtime)
-                for stale in old[:-40]:
-                    os.remove(stale)
-            except OSError:
-                return None
+            return self._write_cover(path, data)
+        return path
+
+    @staticmethod
+    def _stream_cover(track):
+        if not track.get("cover"):
+            return None
+        name = "yt-" + hashlib.sha1(track["cover"].encode()).hexdigest()[:16] + ".jpg"
+        return os.path.join(CACHE_DIR, "covers", name)
+
+    def keep_cover(self, track, picture):
+        """Keep a YouTube Music song's cover, (mime, bytes), as a file."""
+        path = self._stream_cover(track)
+        return self._write_cover(path, picture[1]) if path else None
+
+    @staticmethod
+    def _write_cover(path, data):
+        """Write a cover into the cache, which keeps the last forty."""
+        folder = os.path.dirname(path)
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(path + ".tmp", "wb") as fh:
+                fh.write(data)
+            os.replace(path + ".tmp", path)
+            old = sorted((os.path.join(folder, n) for n in os.listdir(folder)),
+                         key=os.path.getmtime)
+            for stale in old[:-40]:
+                os.remove(stale)
+        except OSError:
+            return None
         return path
 
     # ---- the media library ----
@@ -603,11 +750,28 @@ class Library:
                 self._remembered.append(path)
 
     def playlist_tracks(self, path):
-        """The songs of a saved playlist that still exist, as tracks."""
-        files = [p for p in read_playlist(path)
-                 if "://" not in p and os.path.isfile(p) and _is_audio(p)]
+        """The songs of a saved playlist that still exist, as tracks; YouTube
+        Music addresses become YouTube Music songs."""
+        labels, chosen = {}, []
         with self.lock:
-            return [self._entry(p) for p in dict.fromkeys(files)]
+            for entry in dict.fromkeys(read_playlist(path, labels)):
+                video = ytmusic.video_id(entry) if "://" in entry else None
+                if video:
+                    seconds, name = labels.get(entry, (0, ""))
+                    artist, _, title = name.partition(" - ")
+                    if not title:
+                        artist, title = "", name
+                    known = self.by_path.get(ytmusic.WATCH + video)
+                    chosen.append(known if known and not known.get("bare") else self._stream(
+                        {"video": video, "title": title, "artist": artist, "duration": seconds}))
+                elif "://" not in entry and _is_audio(entry) and os.path.isfile(entry):
+                    chosen.append(self._entry(entry))
+        unique, listed = [], set()
+        for track in chosen:
+            if track and track["id"] not in listed:
+                listed.add(track["id"])
+                unique.append(track)
+        return unique
 
     def open_playlist(self, path):
         """Load a saved playlist as the Now Playing list. A playlist that
@@ -676,6 +840,7 @@ class Library:
                 position=float(info.get("position") or 0),
                 duration=float(info.get("duration") or 0),
                 title=str(info.get("title") or ""), at=time.monotonic(),
+                started=info.get("started") is not False,   # a YouTube Music song: heard yet
             )
             track = self.by_id.get(now["id"])
             if now["station"] is not None:

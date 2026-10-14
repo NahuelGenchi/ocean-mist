@@ -110,6 +110,10 @@ When the music matters more than the window, the player shrinks to a small bar t
     <td>Plays internet radio stations from a stream address or a <code>.pls</code> / <code>.m3u</code> link, and shows the song title when the station sends one. Add your own stations by address.</td>
   </tr>
   <tr>
+    <td width="170" valign="top"><strong>YouTube Music</strong></td>
+    <td>In Premium Services: search for songs, albums, artists and playlists, open them with their covers, and play them in the Now Playing list beside your own files, with the equalizer and the visualizations. When the list runs out, similar songs carry on (<em>Autoplay similar songs</em> in the menu turns that off). No account, no sign-in, nothing else to install.</td>
+  </tr>
+  <tr>
     <td width="170" valign="top"><strong>Formats</strong></td>
     <td>MP3, FLAC, Ogg Vorbis, Opus, M4A/AAC and WAV. Titles, covers and lengths are read by the player itself.</td>
   </tr>
@@ -126,6 +130,9 @@ When the music matters more than the window, the player shrinks to a small bar t
     <td>Picks up where you left off. A sleep timer stops the music after a set time or at the end of the song.</td>
   </tr>
 </table>
+
+> [!NOTE]
+> YouTube Music support is unofficial. Ocean Mist is not affiliated with or endorsed by Google or YouTube, and it talks to YouTube Music the way the website does rather than through a published API, so a change on their side can break it until the player is updated. YouTube's terms of service apply to what you play. YouTube and YouTube Music are trademarks of Google LLC.
 
 ## Get started
 
@@ -200,7 +207,9 @@ The keyboard's media keys reach the player through the desktop's media controls 
 
 ## How it works
 
-The window has no title bar and no borders of its own: it is a transparent, frameless GTK window showing a local web page, and the page draws the whole player: the frame in SVG, the visualizations on a canvas. `player.py` owns the window and runs a small server on `127.0.0.1` that hands the page its files, your songs and the radio streams. Nothing is served outside your computer, and the only network traffic is the radio station you tune to.
+The window has no title bar and no borders of its own: it is a transparent, frameless GTK window showing a local web page, and the page draws the whole player: the frame in SVG, the visualizations on a canvas. `player.py` owns the window and runs a small server on `127.0.0.1` that hands the page its files, your songs, the radio streams and YouTube Music. Nothing is served outside your computer. The only network traffic is the radio station you tune to and what you search for and play in Premium Services.
+
+YouTube Music has no public API for a player like this one, so `ytmusic.py` makes the same requests the YouTube Music apps make: searches, albums, artists, playlists and similar songs, then each song's audio. That audio arrives as AAC in pieces a few seconds long; `ytmusic.py` repacks each piece as MP4 and the page plays them through Media Source, so no YouTube code, player or app runs.
 
 ```mermaid
 flowchart LR
@@ -211,10 +220,12 @@ flowchart LR
     library["<b>library.py</b><br/>lists, library, settings"]
     tags["<b>tags.py</b><br/>titles, covers, lengths"]
     radio["<b>radio.py</b><br/>station relay"]
+    ytmusic["<b>ytmusic.py</b><br/>YouTube Music"]
     mpris["<b>mpris.py</b><br/>media keys"]
     page <-->|"HTTP on 127.0.0.1"| host
     host --> library --> tags
     host --> radio
+    host --> ytmusic
     host --> mpris
 ```
 
@@ -224,17 +235,19 @@ flowchart LR
 | `library.py` | The Now Playing list, the library scan, playlists, stations, settings |
 | `tags.py` | Tag, cover and length reader for six formats, standard library only |
 | `radio.py` | Relays a station to the page and reads its song titles |
+| `ytmusic.py` | YouTube Music: searches, albums, artists, playlists, similar songs and covers, and each song's audio repacked for the page, standard library only |
 | `mpris.py` | The desktop's media controls |
-| `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations |
+| `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations, `premium.js` is Premium Services |
 | `data/` | Application icon and menu entry |
 
 ## Roadmap
 
 Ocean Mist is young. What is on this page works today; these parts of the original are not there:
 
-- **Media Guide, Copy from CD, Copy to CD or Device and Premium Services** are in the task bar because the original had them, and open a short note instead.
+- **Media Guide, Copy from CD and Copy to CD or Device** are in the task bar because the original had them, and open a short note instead.
 - **Gapless playback** between songs is not built yet.
-- **Streaming services** are planned, not started.
+- **YouTube Music** has no sign-in yet, so your own playlists, likes and uploads are not there, and live streams do not play.
+- **Other streaming services** are not started.
 
 | Milestone | Outcome |
 | :--- | :--- |

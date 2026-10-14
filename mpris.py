@@ -93,7 +93,8 @@ class Mpris:
             metadata = {
                 "mpris:trackid": GLib.Variant("o", f"{PATH}/track/{track['id']}"),
                 "xesam:title": GLib.Variant("s", track["title"]),
-                "xesam:url": GLib.Variant("s", GLib.filename_to_uri(track["path"], None)),
+                "xesam:url": GLib.Variant("s", track["path"] if track.get("source")   # a link already
+                                          else GLib.filename_to_uri(track["path"], None)),
             }
             length = now["duration"] or track["duration"]
             if length:

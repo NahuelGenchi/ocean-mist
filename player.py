@@ -4,8 +4,8 @@
 The interface is a local web page (ui/) shown in a frameless WebKit window.
 This file is the host: it owns the window and a small HTTP server bound to
 127.0.0.1 that feeds the page its files. library.py keeps the lists, tags.py
-reads titles and covers, radio.py relays stations, mpris.py talks to the
-desktop's media controls.
+reads titles and covers, radio.py relays stations, ytmusic.py talks to
+YouTube Music, mpris.py talks to the desktop's media controls.
 
     player.py [FILES OR FOLDERS...]     open the player and play them; a single
                                         song brings its folder along as the queue,
@@ -25,12 +25,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import radio
 from library import (APP_ID, AUDIO_EXTENSIONS, PAGE_SETTINGS, PLAYLIST_EXTENSIONS,
                      Library, is_playlist, music_dir)
+from ytmusic import YTError, YTMusic
 
 APP_ID = os.environ.get("OCEAN_MIST_APP_ID", APP_ID)   # tests run beside the real player
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI_DIR = os.path.join(HERE, "ui")
 MIN_SIZE = (580, 460)
 ZOOMS = (1, 1.25, 1.5, 1.75, 2)
+SIMILAR = 25   # songs added at a time when similar songs carry on after the list
 
 
 # -- http ---------------------------------------------------------------------
@@ -38,6 +40,7 @@ ZOOMS = (1, 1.25, 1.5, 1.75, 2)
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     library = None
+    music = None  # YTMusic
     token = ""
     host = None  # object with window/dialog methods, or None in --serve mode
 
@@ -53,11 +56,12 @@ class Handler(BaseHTTPRequestHandler):
         return urllib.parse.unquote(path[len(prefix):])
 
     def _send(self, status, body=b"", content_type="text/plain", extra=None):
+        extra = dict(extra or {})
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for key, value in (extra or {}).items():
+        self.send_header("Cache-Control", extra.pop("Cache-Control", "no-store"))
+        for key, value in extra.items():
             self.send_header(key, value)
         self.end_headers()
         if self.command != "HEAD":
@@ -132,11 +136,18 @@ class Handler(BaseHTTPRequestHandler):
         if route.startswith("art/"):
             track = self._track(route[4:])
             art = self.library.cover(track["id"]) if track else None
+            if art is None and track and track.get("cover"):   # a YouTube Music song's, fetched once
+                try:
+                    art = self.library.keep_cover(track, self.music.picture(track["cover"]))
+                except YTError:
+                    art = None
             if isinstance(art, tuple):
                 return self._send(200, art[1], art[0])
             return self._file(art) if art else self._send(404, b"no art")
         if route.startswith("radio/"):
             return self._radio(route[6:])
+        if route.startswith("yt/"):
+            return self._youtube(route[3:])
         if route == "api/state":
             return self._json(self.library.snapshot())
         if route == "api/library":
@@ -175,6 +186,44 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         radio.relay(upstream, self.wfile.write,
                     lambda title: library.emit("radio-title", id=station["id"], title=title))
+
+    def _youtube(self, what):
+        """YouTube Music for the page: searches and pages as JSON, a song as
+        an initialization segment and numbered pieces of MP4, and covers."""
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        ask = lambda key: (query.get(key) or [""])[0]
+        music = self.music
+        try:
+            if what == "search":
+                return self._json(music.search(ask("q"), ask("kind")))
+            if what == "more":
+                return self._json(music.more(ask("token"), ask("kind")))
+            if what in ("album", "artist", "playlist"):
+                return self._json(getattr(music, what)(ask("id")))
+            if what == "picture":
+                kind, data = music.picture(ask("u"))
+                return self._send(200, data, kind, {"Cache-Control": "max-age=86400"})
+            if what.startswith("song/"):
+                video, _, part = what[5:].partition("/")
+                if not part:
+                    song = music.song(video)
+                    self.library.stream_found(video, song.details)
+                    return self._json(song.info())
+                if part == "init":
+                    return self._send(200, music.init(video), "audio/mp4")
+                if part.isascii() and part.isdigit():
+                    return self._send(200, music.piece(video, int(part)), "audio/mp4")
+        except YTError as error:
+            return self._json({"error": str(error), "general": error.general}, 502)
+        except (BrokenPipeError, ConnectionResetError):
+            return None
+        self._send(404, b"not found")
+
+    def _similar(self, video, skip):
+        """Songs like this one that are not in `skip` (video ids), for the
+        Now Playing list; YTError when YouTube Music cannot say."""
+        songs = [s for s in self.music.radio(video) if s["video"] not in skip]
+        return songs[:SIMILAR]
 
     def _events(self):
         box = self.library.subscribe()
@@ -221,6 +270,9 @@ class Handler(BaseHTTPRequestHandler):
                 library.on_now()
         elif cmd == "now":
             library.set_now(msg)
+            upcoming = library.track(msg.get("next"))
+            if upcoming and upcoming.get("video"):   # a YouTube Music song plays next: get it ready
+                self.music.prefetch(upcoming["video"])
         elif cmd == "duration":
             library.set_duration(msg.get("id"), float(msg.get("seconds") or 0))
         elif cmd == "remove":
@@ -251,6 +303,31 @@ class Handler(BaseHTTPRequestHandler):
                         listed = any(t["id"] == start for t in library.tracks)
                         target = {"id": start if listed else target, "stay": bool(msg.get("stay"))}
                     library.request_play(target)
+        elif cmd in ("yt-play", "yt-add"):
+            items = [i for i in msg.get("items", []) if isinstance(i, dict)]
+            if cmd == "yt-play" and msg.get("similar") and items:   # the song, then songs like it
+                try:
+                    items += self._similar(str(items[0].get("video")), {items[0].get("video")})
+                except YTError as error:
+                    result["notice"] = str(error)
+            chosen = library.add_streams(items, replace=cmd == "yt-play", name=msg.get("name"))
+            result["ids"] = [t["id"] for t in chosen]
+            if cmd == "yt-play" and chosen:   # asked for from Premium Services: the page stays there
+                start = next((t["id"] for t in chosen if t["video"] == msg.get("start")),
+                             chosen[0]["id"])
+                library.request_play({"id": start, "stay": True})
+        elif cmd == "yt-similar":   # the list ran out on a YouTube Music song: carry on
+            track = library.track(msg.get("id"))
+            if not track or not track.get("video"):
+                result = {"ok": False, "error": "that is not a YouTube Music song"}
+            else:
+                try:
+                    with library.lock:
+                        listed = {t.get("video") for t in library.tracks}
+                    chosen = library.add_streams(self._similar(track["video"], listed))
+                    result["first"] = chosen[0]["id"] if chosen else None
+                except YTError as error:
+                    result = {"ok": False, "error": str(error), "general": error.general}
         elif cmd == "station-save":
             if str(msg.get("url") or "").strip():
                 result["id"] = library.save_station(
@@ -266,8 +343,9 @@ class Handler(BaseHTTPRequestHandler):
         self._json(result)
 
 
-def start_server(library, token, port=0, host=None):
+def start_server(library, token, port=0, host=None, music=None):
     Handler.library, Handler.token, Handler.host = library, token, host
+    Handler.music = music or YTMusic()
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -347,7 +425,10 @@ def run_app(argv):
             self.zoom = 1.0
             self.mini = False
             self.full_size = None     # the window's size outside compact mode
+            self.music = YTMusic()
             self._announced = None
+            self._covers = set()      # YouTube Music songs whose cover was asked for
+            self._waiting = set()     # ...and is still on its way
 
         def do_startup(self):
             Gtk.Application.do_startup(self)
@@ -358,7 +439,7 @@ def run_app(argv):
             if library.settings.get("mini") and size:   # closed in compact mode: open in it
                 self.mini, self.mini_size = True, tuple(size)
                 self.full_size = list(library.settings.get("size", (760, 538)))
-            self.server = start_server(library, self.token, host=Host(self))
+            self.server = start_server(library, self.token, host=Host(self), music=self.music)
             library.on_now = lambda: GLib.idle_add(self._now_changed)
             try:
                 self.mpris = Mpris(
@@ -388,10 +469,34 @@ def run_app(argv):
             self.library.emit("control", action=action, value=value)
 
         def _now_changed(self):
+            self._fetch_cover()
             if self.mpris is not None:
                 self.mpris.update()
             self._announce()
             return False
+
+        def _fetch_cover(self):
+            """A YouTube Music song's cover for the desktop's media controls
+            and the notification, fetched once in a thread; they are told
+            again when it is in."""
+            library = self.library
+            with library.lock:
+                track = library.by_id.get(library.now["id"])
+                track = dict(track) if track else None
+            if (not track or not track.get("cover") or track["id"] in self._covers
+                    or library.cover(track["id"])):
+                return
+            self._covers.add(track["id"])
+            self._waiting.add(track["id"])
+
+            def run():
+                try:
+                    library.keep_cover(track, self.music.picture(track["cover"]))
+                except YTError:
+                    pass
+                GLib.idle_add(lambda: self._waiting.discard(track["id"]) or self._now_changed())
+
+            threading.Thread(target=run, daemon=True).start()
 
         def _announce(self):
             """A desktop notification when another song starts."""
@@ -403,6 +508,10 @@ def run_app(argv):
                 wanted = bool(library.settings.get("notify"))
             if now["mode"] != "playing" or (track is None and station is None):
                 return
+            if not now["started"]:
+                return   # a YouTube Music song is announced once it is heard, so one that cannot play is not
+            if track is not None and track["id"] in self._waiting:
+                return   # its cover is on the way; this runs again when it is in
             key = (now["id"], now["station"], now["title"])
             if key == self._announced:
                 return
@@ -661,7 +770,8 @@ def run_app(argv):
                 dialog.set_current_folder(start)
             if kind == "save":
                 dialog.set_do_overwrite_confirmation(True)
-                dialog.set_current_name((library.list_name or "Playlist") + ".m3u")
+                name = (library.list_name or "Playlist").replace("/", "-")   # "Similar to AC/DC"
+                dialog.set_current_name(name + ".m3u")
 
             def done(dlg, response):
                 paths = dlg.get_filenames() if response == Gtk.ResponseType.ACCEPT else []
@@ -754,7 +864,7 @@ def main():
         library.load()
         library.add_paths(sys.argv[3:])
         library.scan()
-        server = start_server(library, "dev", port=int(sys.argv[2]))
+        server = start_server(library, "dev", port=int(sys.argv[2]), music=YTMusic())
         print(f"http://127.0.0.1:{server.server_address[1]}/dev/", flush=True)
         threading.Event().wait()
         return 0
