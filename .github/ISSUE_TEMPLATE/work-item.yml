@@ -1,0 +1,57 @@
+name: Work item
+description: Track a feature, bug, enhancement, document, research decision, or repository operation.
+title: ""
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every change needs an issue, a milestone, and a linked delivery PR. Reuse an existing issue when it already covers the work.
+        Never include music files, personal playlists, settings files, or account credentials.
+  - type: dropdown
+    id: work-type
+    attributes:
+      label: Work type
+      options:
+        - implementation
+        - bug
+        - enhancement
+        - documentation
+        - research
+        - operations
+    validations:
+      required: true
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Milestone
+      description: Choose the outcome this work belongs to; use the sidebar for a deliberately created later milestone.
+      options:
+        - M0 — Project foundation
+        - M1 — Classic player
+        - M2 — Streaming services
+        - M3 — Release
+      default: 1
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Goal and scope
+      description: State the desired result, the exact files or parts of the player involved, and what is out of scope. For bugs, include what you did, what you expected, and what happened.
+    validations:
+      required: true
+  - type: textarea
+    id: completion
+    attributes:
+      label: Completion criteria
+      description: Define the concrete deliverable and how it will be checked (source checks, a live check in the player, or review).
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Dependencies, evidence, and constraints
+      description: Link related issues, screenshots, logs (sanitized), and primary sources.
+      placeholder: "Dependencies: none known. Evidence: ... Constraints: ..."
+    validations:
+      required: true
