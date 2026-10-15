@@ -99,7 +99,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Now Playing list</strong></td>
-    <td>Two lists, one player: My Music for your files and YouTube Music for what you play from Premium Services, kept apart and switched at the list's top right. Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
+    <td>Two lists, one player: My Music for your files and YouTube Music for what you play from Premium Services (Apple Music's songs too), kept apart and switched at the list's top right. Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Playlists</strong></td>
@@ -112,6 +112,10 @@ When the music matters more than the window, the player shrinks to a small bar t
   <tr>
     <td width="170" valign="top"><strong>YouTube Music</strong></td>
     <td>In Premium Services: search for songs, albums, artists and playlists, open them with their covers, and play them in a YouTube Music list of their own, with the equalizer and the visualizations. When the list runs out, similar songs carry on (<em>Autoplay similar songs</em> in the menu turns that off). The list lives in memory only and starts empty each time; save it as a playlist to keep it. Nothing else to install, and no account needed: sign in through Firefox to bring in your playlists and Liked music, like songs and add them to your playlists (see <em>Signing in to YouTube Music</em> below).</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Apple Music</strong></td>
+    <td>In Premium Services: sign in through Firefox and browse your Apple Music library the way the website shows it: Recently added, Playlists, Albums, Artists and Songs, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. Play puts the songs in the YouTube Music list. Apple's own audio is protected, so each song plays from YouTube Music instead: when its turn comes, Ocean Mist looks up the same title and artist there and plays the best match. Nothing is created or changed in either account, and nothing of Apple's is kept on disk (see <em>Signing in to Apple Music</em> below).</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Formats</strong></td>
@@ -132,7 +136,7 @@ When the music matters more than the window, the player shrinks to a small bar t
 </table>
 
 > [!NOTE]
-> YouTube Music support is unofficial. Ocean Mist is not affiliated with or endorsed by Google or YouTube, and it talks to YouTube Music the way the website does rather than through a published API, so a change on their side can break it until the player is updated. YouTube's terms of service apply to what you play. YouTube and YouTube Music are trademarks of Google LLC.
+> YouTube Music and Apple Music support is unofficial. Ocean Mist is not affiliated with or endorsed by Google, YouTube or Apple, and it talks to YouTube Music, and to Apple Music's own web player, the way their websites do rather than through a published API, so a change on their side can break it until the player is updated. Their terms of service apply to what you play. YouTube and YouTube Music are trademarks of Google LLC. Apple and Apple Music are trademarks of Apple Inc.
 
 ## Get started
 
@@ -183,7 +187,7 @@ After that, Ocean Mist appears in the app menu and in the "Open with" list for m
 | Settings, My Music, stations, where you left off | `~/.config/ocean-mist/state.json` |
 | Tag cache and your files' covers | `~/.cache/ocean-mist/` |
 
-Nothing from YouTube Music is kept there, or anywhere else on disk unless you save a playlist: its list, searches and covers stay in memory, and so does your library when you sign in. The page keeps no web cache or site data. The covers it hands to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes. Of a sign-in, `state.json` only notes which Firefox profile you chose.
+Nothing from YouTube Music or Apple Music is kept there, or anywhere else on disk unless you save a playlist: the list, searches and covers stay in memory, and so do your libraries when you sign in. The pages keep no web cache or site data. The covers they hand to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes, and so does a small folder of rules that keeps Apple's page from signing you out. Of a sign-in, `state.json` only notes which Firefox profile you chose for each service.
 
 Your music files are only ever read, never changed. Developed on Ubuntu 26.04 with GNOME on Wayland and Python 3.14; other setups have not been tried yet.
 
@@ -218,6 +222,37 @@ Ocean Mist looks for your Firefox profiles where Firefox from Mozilla or from yo
 
 </details>
 
+<details>
+<summary><strong>Signing in to Apple Music</strong></summary>
+
+<br>
+
+Apple lets only developers who pay Apple use its music API, and Ocean Mist asks for no such account. It does what a browser tab does instead, and the sign-in is again Firefox's, on Apple's own page: Ocean Mist has no sign-in form of its own and never sees your password.
+
+1. In Premium Services, open **Apple Music** and choose **Sign in…**, then **Sign in with Firefox**.
+2. If Firefox is signed in to Apple Music at music.apple.com already, that is all. If not, Firefox opens on Apple's page: sign in there, and Ocean Mist carries on by itself.
+3. If more than one of your Firefox profiles is signed in, choose the one Ocean Mist should use. Ocean Mist keeps to the one you chose.
+
+Recently added, Playlists, Albums, Artists and Songs then show under Apple Music in the order Apple gives them. Albums, playlists and artists open as pages, with their covers, and the long lists (Songs, mostly) load a page at a time as you scroll or press **Show more**.
+
+**How a song plays.** Apple's own audio is protected by DRM, which Ocean Mist does not unlock. So **Play** puts the songs in the YouTube Music list, as Apple songs. When one is about to play (and the one after it, so there is no gap), Ocean Mist looks up the same title and artist on YouTube Music, picks the result whose title, artist and length agree best, and plays that song with the equalizer and the visualizations like any other. If YouTube Music has nothing that matches, the status line says which song it did not find, and the list goes on to the next one. The match is kept in memory for the session only, so a saved playlist keeps the Apple address of its songs and finds them again each time. What plays is the YouTube Music version, which can differ from the one in your library (a remaster, say); Ocean Mist prefers the studio version over a live take or a remix that your song is not, and skips a song rather than play one that does not match well enough.
+
+What Ocean Mist reads, and when:
+
+- It reads the sign-in only while you are signed in (or signing in): the one cookie Apple's web player signs in with, from the cookie file of the Firefox profile you chose, read-only and straight into memory. No copy goes to disk, and the file is never written to. While you sign in, it reads every profile's cookie file this way, to see which ones are signed in, and the profiles' names, to tell them apart. Only the cookies of the normal browsing window count, not those of containers or private windows.
+- It hands that cookie to a view of music.apple.com that has no window: Apple's web player, starting up as it does in any browser tab. The view keeps everything in memory (no cache, no site data) and closes after ten minutes without a request.
+- It asks the page for your library with read-only requests, and never itself for your name, email address or photo. **Nothing in your Apple Music account is changed**, and Ocean Mist has no way to change it: it does not add, remove, rate or reorder anything. Before the page loads, every request that would sign you out is blocked, because a sign-out there would end the one in Firefox too; if that block cannot be put in place, the page is not opened.
+- Searching for a song to play uses YouTube Music anonymously, with only its title and artist. Nothing is created in any account.
+
+**Sign out**, at the top of any Apple Music list, only stops Ocean Mist from using the sign-in: Firefox stays signed in. To sign out of Apple Music itself, do it in Firefox. If you sign out there, or clear Firefox's cookies, Ocean Mist is signed out too.
+
+Ocean Mist looks for your Firefox profiles in the same places as for YouTube Music, and Firefox is the only browser it can read. Whether a song of yours plays here depends only on YouTube Music having it.
+
+> [!CAUTION]
+> These are Apple's own web-player requests, not a published API, and signed in they are tied to your account. Apple could change the page, sign the session out, or restrict the account. Ocean Mist makes them only for what you ask, at a person's pace, and reads only.
+
+</details>
+
 ## Keyboard
 
 | Keys | Action |
@@ -238,9 +273,11 @@ The keyboard's media keys reach the player through the desktop's media controls 
 
 ## How it works
 
-The window has no title bar and no borders of its own: it is a transparent, frameless GTK window showing a local web page, and the page draws the whole player: the frame in SVG, the visualizations on a canvas. `player.py` owns the window and runs a small server on `127.0.0.1` that hands the page its files, your songs, the radio streams and YouTube Music. Nothing is served outside your computer. The only network traffic is the radio station you tune to, and what you search for, play and, signed in, open or change in Premium Services.
+The window has no title bar and no borders of its own: it is a transparent, frameless GTK window showing a local web page, and the page draws the whole player: the frame in SVG, the visualizations on a canvas. `player.py` owns the window and runs a small server on `127.0.0.1` that hands the page its files, your songs, the radio streams, YouTube Music and Apple Music. Nothing is served outside your computer. The only network traffic is the radio station you tune to, and what you search for, play and, signed in, open or change in Premium Services.
 
 YouTube Music has no public API for a player like this one, so `ytmusic.py` makes the same requests the YouTube Music apps make: searches, albums, artists, playlists and similar songs, then each song's audio. That audio arrives as AAC in pieces a few seconds long; `ytmusic.py` repacks each piece as MP4 and the page plays them through Media Source, so no YouTube code, player or app runs. When you have signed in, the requests for your library and its changes carry the sign-in that `firefox.py` reads from Firefox, signed the way the website signs its own; all the others stay anonymous.
+
+Apple Music has no public API for a program like this one either, and its audio is protected, so `apple.py` takes a different road: it opens music.apple.com, Apple's web player, in a view of its own that has no window, signed in with the one cookie `firefox.py` reads from Firefox, and asks the page's own MusicKit for your library. The view blocks every request that would sign you out, changes nothing in your account and closes when it is not used. When an Apple song is about to play, `apple.py` looks up the same title and artist on YouTube Music through `ytmusic.py`, and the page plays that song as it does any other.
 
 ```mermaid
 flowchart LR
@@ -252,12 +289,14 @@ flowchart LR
     library["<b>library.py</b><br/>lists, library, settings"]
     tags["<b>tags.py</b><br/>titles, covers, lengths"]
     ytmusic["<b>ytmusic.py</b><br/>YouTube Music"]
-    firefox["<b>firefox.py</b><br/>your sign-in"]
+    apple["<b>apple.py</b><br/>Apple Music"]
+    firefox["<b>firefox.py</b><br/>your sign-ins"]
     mpris["<b>mpris.py</b><br/>media keys"]
     page <-->|"HTTP on 127.0.0.1"| host
     host --> radio
     host --> library --> tags
     host --> ytmusic
+    host --> apple
     host --> firefox
     host --> mpris
 ```
@@ -265,13 +304,14 @@ flowchart LR
 | Path | What is in it |
 | :--- | :--- |
 | `player.py` | The host: window, input shape, local server, file dialogs, sizes, notifications |
-| `library.py` | The two Now Playing lists (My Music is saved, YouTube Music stays in memory), the library scan, playlists, stations, settings |
+| `library.py` | The two Now Playing lists (My Music is saved, YouTube Music, with the Apple Music songs in it, stays in memory), the library scan, playlists, stations, settings |
 | `tags.py` | Tag, cover and length reader for six formats, standard library only |
 | `radio.py` | Relays a station to the page and reads its song titles |
 | `ytmusic.py` | YouTube Music: searches, albums, artists, playlists, similar songs and covers, and each song's audio repacked for the page; signed in, your library, likes and playlist changes. Standard library only |
-| `firefox.py` | Reads the YouTube sign-in of the Firefox profile you chose into memory when a request needs it, read-only, standard library only |
+| `apple.py` | Apple Music: your library, read through Apple's own web page in a windowless view, and the YouTube Music match that gives each Apple song its audio |
+| `firefox.py` | Reads the YouTube and Apple Music sign-ins of the Firefox profile you chose into memory when a request needs them, read-only, standard library only |
 | `mpris.py` | The desktop's media controls |
-| `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations, `premium.js` is Premium Services |
+| `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations, `premium.js` is Premium Services (YouTube Music and Apple Music) |
 | `data/` | Application icon and menu entry |
 
 ## Roadmap
@@ -281,7 +321,8 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 - **Media Guide, Copy from CD and Copy to CD or Device** are in the task bar because the original had them, and open a short note instead.
 - **Gapless playback** between songs is not built yet.
 - **YouTube Music** signs in through Firefox only. Library albums, artists, songs and uploads are not there yet, playlists cannot be made or renamed, and live streams do not play.
-- **Other streaming services** are not started.
+- **Apple Music** is read-only, and plays through YouTube Music rather than with Apple's own audio: a song YouTube Music does not have is skipped, and the version that plays may differ from yours. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
+- **Spotify** and other streaming services are not started.
 
 | Milestone | Outcome |
 | :--- | :--- |

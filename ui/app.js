@@ -295,7 +295,9 @@
     feed = null;
   }
   async function need(f, part) {   // a part of the song from the host; its error message otherwise
-    const r = await fetch(`${base}yt/song/${f.t.video}${part}`, { signal: f.ctrl.signal });
+    // a song of Apple Music plays from YouTube Music: the host finds it there when its turn comes
+    const what = f.t.apple ? 'apple/song/' + encodeURIComponent(f.t.apple) : 'yt/song/' + f.t.video;
+    const r = await fetch(`${base}${what}${part}`, { signal: f.ctrl.signal });
     if (r.ok) return r;
     const why = await r.json().catch(() => ({}));
     throw Object.assign(new Error(why.error || 'the player could not get this song'), { general: !!why.general });
