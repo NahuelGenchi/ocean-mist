@@ -47,6 +47,16 @@ class Handler(BaseHTTPRequestHandler):
         if os.environ.get("OCEAN_MIST_DEBUG"):
             sys.stderr.write("http: " + fmt % args + "\n")
 
+    def handle_one_request(self):
+        """A request, read and answered. A page that stops waiting for the
+        answer (it moved on, or its window closed) just ends the connection;
+        any other error is reported. YouTube Music and the radio code deal
+        with their own network failures, so these errors are the page's."""
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+
     def _route(self):
         path = urllib.parse.urlparse(self.path).path
         prefix = f"/{self.token}/"
@@ -105,15 +115,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             fh.seek(start)
             left = end - start + 1
-            try:
-                while left > 0:
-                    chunk = fh.read(min(262144, left))
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    left -= len(chunk)
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+            while left > 0:
+                chunk = fh.read(min(262144, left))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                left -= len(chunk)
 
     def do_HEAD(self):
         self.do_GET()
@@ -214,8 +221,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, music.piece(video, int(part)), "audio/mp4")
         except YTError as error:
             return self._json({"error": str(error), "general": error.general}, 502)
-        except (BrokenPipeError, ConnectionResetError):
-            return None
         self._send(404, b"not found")
 
     def _similar(self, video, skip):
