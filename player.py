@@ -365,7 +365,7 @@ def run_app(argv):
     gi.require_version("WebKit2", "4.1")
     from gi.repository import Gdk, Gio, GLib, Gtk, WebKit2
 
-    from mpris import BUS_NAME, Mpris
+    from mpris import Mpris
 
     EDGES = {
         "n": Gdk.WindowEdge.NORTH, "s": Gdk.WindowEdge.SOUTH,
@@ -449,8 +449,7 @@ def run_app(argv):
                 self.mpris = Mpris(
                     self.get_dbus_connection(), APP_ID, library, self.control,
                     lambda: self.window and self.window.present(),
-                    lambda: self.window.close() if self.window else self.quit(),
-                    BUS_NAME + ("Test" if "OCEAN_MIST_APP_ID" in os.environ else ""))
+                    lambda: self.window.close() if self.window else self.quit())
             except Exception as error:   # no session bus: no media keys, that is all
                 if os.environ.get("OCEAN_MIST_DEBUG"):
                     print("mpris:", error, file=sys.stderr)

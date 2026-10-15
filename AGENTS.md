@@ -43,12 +43,18 @@ Never describe something as working or complete unless a recorded check establis
 - Never run a check against the owner's own player or settings. Use a separate instance and scratch folders, and keep it muted:
 
   ```sh
-  OCEAN_MIST_APP_ID=io.github.nahuelgenchi.OceanMistTest \
-  XDG_CONFIG_HOME=/tmp/ocean-mist-test/config XDG_CACHE_HOME=/tmp/ocean-mist-test/cache \
-  XDG_DATA_HOME=/tmp/ocean-mist-test/data python3 player.py
+  T=/tmp/ocean-mist-test/Issue123
+  OCEAN_MIST_APP_ID=io.github.nahuelgenchi.OceanMistTest.Issue123 \
+  XDG_CONFIG_HOME=$T/config XDG_CACHE_HOME=$T/cache XDG_DATA_HOME=$T/data python3 player.py
   ```
 
-  Settings live in `$XDG_CONFIG_HOME/ocean-mist/state.json`; put `"muted": true` in its `"settings"` object before a check that plays anything.
+  Settings live in `$XDG_CONFIG_HOME/ocean-mist/state.json`. Write it before the first launch, as `{"settings": {"muted": true, "folders": ["/tmp/ocean-mist-test/Issue123/music"]}}`: muted, and with the check's generated sample music as the media library, which otherwise scans `~/Music`.
+- Other checks may be running at the same time, so each instance gets an app id and scratch folders of its own, named after its check (`Issue123` above, `Issue123B` for a second instance). The app id is the instance's name on the session bus. Its media controls (MPRIS) answer at the app id with `org.mpris.MediaPlayer2` in place of `io.github.nahuelgenchi`, here `org.mpris.MediaPlayer2.OceanMistTest.Issue123`; send the check's media-control calls there and nowhere else. A launch under an app id that is already on the bus goes to the instance holding it: the files open there, replacing its My Music, and the new process exits at once, without a word. So before a windowed launch, list the Ocean Mist names on the bus and make sure neither of the instance's names is there:
+
+  ```sh
+  gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.ListNames | grep -o "'[^']*OceanMist[^']*'"
+  ```
 - WebKitGTK behavior worth knowing: script run from the host counts as a user gesture, so it hides autoplay problems; a seek on a song that has never played is ignored; a cross-origin stream is silent through Web Audio, which is why radio goes through the local relay; media only loads in a real, visible window. It cannot play HLS, which is why YouTube Music songs reach the page as MP4 fragments through Media Source; there, a seek made before the song first plays does work. An ephemeral view (`is_ephemeral`) still sets up the default context's cache and data folders on disk; only an ephemeral `WebContext`, which the player uses, keeps everything in memory.
 - Record what a check covered and what it did not, in the PR.
 

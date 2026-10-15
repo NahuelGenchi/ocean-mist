@@ -3,7 +3,6 @@ and previous keys work, and puts the song in GNOME's notification panel and
 on the lock screen."""
 from gi.repository import Gio, GLib
 
-BUS_NAME = "org.mpris.MediaPlayer2.OceanMist"
 PATH = "/org/mpris/MediaPlayer2"
 ROOT = "org.mpris.MediaPlayer2"
 PLAYER = "org.mpris.MediaPlayer2.Player"
@@ -57,12 +56,19 @@ XML = """
 LOOP = {"off": "None", "all": "Playlist", "one": "Track"}
 
 
+def bus_name(app_id):
+    """The name on the bus follows the app id: org.mpris.MediaPlayer2.OceanMist
+    for the player, and for a test instance, which runs under an app id of its
+    own, a name of its own (io.github.nahuelgenchi.OceanMistTest.Check answers
+    at org.mpris.MediaPlayer2.OceanMistTest.Check)."""
+    return "org.mpris.MediaPlayer2." + app_id.removeprefix("io.github.nahuelgenchi.")
+
+
 class Mpris:
     """Publishes the player on the session bus. `control(action, value)` is
     called with what the desktop asks for; `raise_window` and `quit` too."""
 
-    def __init__(self, connection, app_id, library, control, raise_window, quit,
-                 bus_name=BUS_NAME):
+    def __init__(self, connection, app_id, library, control, raise_window, quit):
         self.connection, self.library, self.app_id = connection, library, app_id
         self.control, self.raise_window, self.quit = control, raise_window, quit
         self.sent = {}
@@ -71,7 +77,7 @@ class Mpris:
         for interface in node.interfaces:
             connection.register_object(PATH, interface, self._call, self._get, self._set)
         Gio.bus_own_name_on_connection(
-            connection, bus_name, Gio.BusNameOwnerFlags.NONE, None, None)
+            connection, bus_name(app_id), Gio.BusNameOwnerFlags.NONE, None, None)
 
     # ---- what the desktop reads ----
     def _state(self):
