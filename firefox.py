@@ -5,12 +5,16 @@ Firefox, on Google's own page, and when you ask Ocean Mist for something of
 your account (your library, a like, a change to a playlist), it reads that
 sign-in from Firefox's cookie file and makes the request with it.
 
+The sign-in is that of the Firefox profile you chose. When you sign in and
+more than one profile has a YouTube sign-in, you choose among them, by the
+names Firefox's profile menu shows; Ocean Mist then keeps to that profile.
+
 The file is opened read-only and read straight into memory, with the changes
 Firefox still keeps in its write-ahead log: no copy goes to disk, nothing is
-written, and Firefox is not disturbed. Only the YouTube cookies of the most recently
-used signed-in session are taken, and they are let go once the request is
-made. The next request reads them again, so they are always the ones
-Firefox has now. Standard library only.
+written, and Firefox is not disturbed. Only the profile's YouTube cookies
+are taken, and they are let go once the request is made. The next request
+reads them again, so they are always the ones Firefox has now. Standard
+library only.
 
     python3 firefox.py      which profiles have a YouTube sign-in (no values)
 """
@@ -52,22 +56,29 @@ def roots():
             os.path.join(home, ".var", "app", "org.mozilla.firefox", "config", "mozilla", "firefox"))
 
 
+def _listing(root):
+    """A root's profiles.ini: {folder: its name there}."""
+    listing = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        listing.read(os.path.join(root, "profiles.ini"), encoding="utf-8")
+    except (configparser.Error, UnicodeDecodeError):
+        pass
+    found = {}
+    for section in listing.sections():
+        path = listing.get(section, "Path", fallback="")
+        if path:
+            relative = listing.get(section, "IsRelative", fallback="1") != "0"
+            found[os.path.realpath(os.path.join(root, path) if relative else path)] = listing.get(
+                section, "Name", fallback="")
+    return found
+
+
 def profiles():
     """The profile folders that have a cookie file, each once: those in the
     usual places, and those a profiles.ini lists, wherever they are."""
     found = []
     for root in roots():
-        folders = glob.glob(os.path.join(glob.escape(root), "*", ""))
-        listing = configparser.ConfigParser(interpolation=None, strict=False)
-        try:
-            listing.read(os.path.join(root, "profiles.ini"), encoding="utf-8")
-        except (configparser.Error, UnicodeDecodeError):
-            pass
-        for section in listing.sections():
-            path = listing.get(section, "Path", fallback="")
-            if path:
-                relative = listing.get(section, "IsRelative", fallback="1") != "0"
-                folders.append(os.path.join(root, path) if relative else path)
+        folders = glob.glob(os.path.join(glob.escape(root), "*", "")) + list(_listing(root))
         for folder in folders:
             folder = os.path.realpath(folder)
             if folder not in found and os.path.isfile(os.path.join(folder, "cookies.sqlite")):
@@ -129,12 +140,12 @@ def _contents(path):
         return b""
 
 
-def open_cookies(folder):
-    """A profile's cookie database as an sqlite3 connection to a copy that
-    lives in memory only; None when there is none to read."""
+def _snapshot(path, table):
+    """A database Firefox has open, as an sqlite3 connection to a copy that
+    lives in memory only; None when there is none to read, or it has no
+    `table`."""
     if not hasattr(sqlite3.Connection, "deserialize"):
         raise RuntimeError(NEEDS_NEWER_PYTHON)
-    path = os.path.join(folder, "cookies.sqlite")
     for _ in range(3):
         start = _contents(path + "-wal")[:32]
         db, wal = _contents(path), _contents(path + "-wal")
@@ -149,11 +160,47 @@ def open_cookies(folder):
         con = sqlite3.connect(":memory:")
         try:
             con.deserialize(bytes(image))
-            con.execute("SELECT count(*) FROM moz_cookies").fetchone()
+            con.execute(f'SELECT count(*) FROM "{table}"').fetchone()   # reads all of the table
             return con
         except sqlite3.DatabaseError:   # caught in the middle of a write: read again
             con.close()
     return None
+
+
+def open_cookies(folder):
+    """A profile's cookie database, in memory only (see _snapshot)."""
+    return _snapshot(os.path.join(folder, "cookies.sqlite"), "moz_cookies")
+
+
+def names():
+    """What each profile is called, as Firefox's profile menu shows it:
+    {folder: name}. The names of a profile group come from the group's own
+    database; profiles.ini then lists only one profile of the group."""
+    found = {}
+    for root in roots():
+        found.update({folder: name for folder, name in _listing(root).items() if name})
+        for group in sorted(glob.glob(os.path.join(glob.escape(root), "Profile Groups", "*.sqlite"))):
+            try:
+                con = _snapshot(group, "Profiles")
+            except (OSError, RuntimeError):   # names only label the profiles: go on without
+                con = None
+            if con is None:
+                continue
+            try:
+                for path, name in con.execute("SELECT path, name FROM Profiles"):
+                    if isinstance(path, str) and isinstance(name, str) and name.strip():
+                        found[os.path.realpath(os.path.join(root, path))] = name.strip()
+            except sqlite3.DatabaseError:
+                pass
+            finally:
+                con.close()
+    return found
+
+
+def name_of(folder):
+    """A profile's name as Firefox shows it, or its folder's when it has none."""
+    folder = os.path.realpath(folder)
+    return names().get(folder) or os.path.basename(folder).split(".", 1)[-1]
 
 
 # ---- the sign-in ----
@@ -220,24 +267,36 @@ def _signed_in(folder, now):
     return (used, cookies) if used else None
 
 
-def session():
-    """The most recently used YouTube sign-in among Firefox's profiles, or
-    None. Read now, each time: keep it only as long as a request needs it."""
-    best, now = None, time.time()
+def signed_in():
+    """The profiles that have a YouTube sign-in, the most recently used
+    first: [(folder, name)]. No cookie is kept."""
+    now, found = time.time(), []
     for folder in profiles():
-        found = _signed_in(folder, now)
-        if found and (best is None or found[0] > best[0]):
-            best = found + (folder,)
-    return Session(best[1], _agent(best[2])) if best else None
+        sign = _signed_in(folder, now)
+        if sign:
+            found.append((sign[0], folder))
+    called = names() if found else {}
+    return [(folder, called.get(folder) or os.path.basename(folder).split(".", 1)[-1])
+            for _, folder in sorted(found, reverse=True)]
+
+
+def session(folder):
+    """The YouTube sign-in of one of Firefox's profiles (a folder that
+    profiles() lists) as Firefox has it now, or None. Read now, each time:
+    keep it only as long as a request needs it."""
+    folder = os.path.realpath(folder)
+    found = _signed_in(folder, time.time()) if folder in profiles() else None
+    return Session(found[1], _agent(folder)) if found else None
 
 
 if __name__ == "__main__":
     now = time.time()
-    folders = profiles()
+    folders, called = profiles(), names()
     for folder in folders:
         found = _signed_in(folder, now)
-        name = os.path.relpath(folder, os.path.expanduser("~"))
-        print(f"{name}: " + (f"signed in to YouTube, last used {max(0, int((now - found[0] / 1e6) / 60))} min ago"
-                             if found else "no YouTube sign-in"))
+        where = os.path.relpath(folder, os.path.expanduser("~"))
+        print(f"{where} ({called.get(folder) or 'no name'}): "
+              + (f"signed in to YouTube, last used {max(0, int((now - found[0] / 1e6) / 60))} min ago"
+                 if found else "no YouTube sign-in"))
     if not folders:
         print("no Firefox profile found")

@@ -201,8 +201,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(music.more(ask("token"), ask("kind")))
             if what in ("album", "artist", "playlist"):
                 return self._json(getattr(music, what)(ask("id")))
-            if what == "library":   # your playlists, signed in
-                return self._json(music.library(self._signed()))
+            if what == "library":   # your playlists, signed in, and the Firefox profile they come through
+                folder = self.library.settings.get("yt_account")
+                found = music.library(self._signed())
+                found["profile"] = firefox.name_of(folder) if isinstance(folder, str) and folder else ""
+                return self._json(found)
             if what == "mine":   # one of them, or Liked music, signed in
                 return self._json(music.playlist(ask("id"), self._signed()))
             if what == "picture":
@@ -226,22 +229,24 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found")
 
     @staticmethod
-    def _firefox():
-        """Firefox's YouTube sign-in now, or None; YTError when it cannot be read."""
+    def _firefox(read, *args):
+        """read(*args) of firefox.py, with what goes wrong worded as YTError."""
         try:
-            return firefox.session()
+            return read(*args)
         except RuntimeError as error:   # an older Python
             raise YTError(str(error), signed_out=True) from None
         except OSError:
             raise YTError("Ocean Mist could not read the sign-in from Firefox", signed_out=True) from None
 
     def _signed(self):
-        """The YouTube sign-in as Firefox has it now, for one request. Firefox
-        is read only once you chose to sign in; YTError when you have not, or
-        when Firefox has no sign-in any more."""
-        if not self.library.settings.get("yt_account"):
+        """The YouTube sign-in of the Firefox profile you chose, as Firefox
+        has it now, for one request. Firefox is read only once you chose to
+        sign in; YTError when you have not, or when that profile has no
+        sign-in any more."""
+        folder = self.library.settings.get("yt_account")
+        if not isinstance(folder, str) or not folder:
             raise YTError("sign in to YouTube Music first, under Library", signed_out=True)
-        found = self._firefox()
+        found = self._firefox(firefox.session, folder)
         if found is None:
             raise YTError("Firefox is not signed in to YouTube any more; sign in there again",
                           signed_out=True)
@@ -367,18 +372,24 @@ class Handler(BaseHTTPRequestHandler):
                     result["first"] = chosen[0]["id"] if chosen else None
                 except YTError as error:
                     result = {"ok": False, "error": str(error), "general": error.general}
-        elif cmd == "yt-sign-in":   # you chose to sign in: Firefox's sign-in, or Firefox opened for one
+        elif cmd == "yt-sign-in":   # you chose to sign in: with which Firefox profile, or Firefox opened for one
             try:
-                found = self._firefox() is not None
+                found = self._firefox(firefox.signed_in)
             except YTError as error:
-                found, result = False, {"ok": False, "error": str(error)}
-            if found:
-                library.settings["yt_account"] = True
+                found, result = [], {"ok": False, "error": str(error)}
+            folders = [folder for folder, _ in found]
+            chosen = str(msg.get("profile") or "")
+            if chosen not in folders:   # not chosen yet, or no longer signed in
+                chosen = folders[0] if len(folders) == 1 else ""
+            if chosen:
+                library.settings["yt_account"] = chosen
                 library.save()
+            elif found:   # more than one profile is signed in: you choose
+                result["choices"] = [{"profile": folder, "name": name} for folder, name in found]
             elif result["ok"] and msg.get("open") and not self._open_in_firefox(firefox.SIGN_IN):
                 result = {"ok": False, "error": "Ocean Mist reads the sign-in from Firefox, "
                                                 "and Firefox was not found"}
-            result["signed_in"] = found
+            result["signed_in"] = bool(chosen)
         elif cmd == "yt-sign-out":   # Ocean Mist stops using the sign-in; Firefox stays signed in
             library.settings["yt_account"] = False
             library.save()

@@ -183,7 +183,7 @@ After that, Ocean Mist appears in the app menu and in the "Open with" list for m
 | Settings, My Music, stations, where you left off | `~/.config/ocean-mist/state.json` |
 | Tag cache and your files' covers | `~/.cache/ocean-mist/` |
 
-Nothing from YouTube Music is kept there, or anywhere else on disk unless you save a playlist: its list, searches and covers stay in memory, and so does your library when you sign in. The page keeps no web cache or site data. The covers it hands to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes. Of a sign-in, `state.json` only notes that you chose it.
+Nothing from YouTube Music is kept there, or anywhere else on disk unless you save a playlist: its list, searches and covers stay in memory, and so does your library when you sign in. The page keeps no web cache or site data. The covers it hands to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes. Of a sign-in, `state.json` only notes which Firefox profile you chose.
 
 Your music files are only ever read, never changed. Developed on Ubuntu 26.04 with GNOME on Wayland and Python 3.14; other setups have not been tried yet.
 
@@ -198,19 +198,20 @@ Ocean Mist has no sign-in form of its own and never sees your password. You sign
 
 1. In Premium Services, choose **Library**, then **Sign in with Firefox**.
 2. If Firefox is signed in to YouTube already, that is all. If not, Firefox opens on YouTube Music's sign-in page: sign in there, and Ocean Mist carries on by itself.
+3. If more than one of your Firefox profiles is signed in to YouTube, choose the one Ocean Mist should use. They are listed by the names Firefox's profile menu shows, and Ocean Mist keeps to the one you chose.
 
 Your playlists and Liked music then show under Library, and play like any playlist. Right-click a song to like it, to take the like back or to add it to one of your playlists. In a playlist of your own, you can also take a song out.
 
 What Ocean Mist reads, and when:
 
 - It reads the sign-in only while you are signed in (or signing in), and only when it asks for something of your account: your library, a playlist of yours, a like, a change to a playlist.
-- It reads it from Firefox's cookie file, read-only and straight into memory: no copy goes to disk, and the file is never written to. It takes only the YouTube cookies of the most recently used sign-in, not those of containers, and lets them go once the request is made.
-- It never asks Google for your name, email address or photo. Your library, likes and playlists stay in memory, like the YouTube Music list. The only thing remembered is that you chose to sign in.
+- It reads it from the cookie file of the Firefox profile you chose, read-only and straight into memory: no copy goes to disk, and the file is never written to. It takes only the YouTube cookies, not those of containers, and lets them go once the request is made. While you sign in, it reads every profile's cookie file this way, to see which ones are signed in. It also reads the profiles' names, to tell them apart.
+- It never asks Google for your name, email address or photo. Your library, likes and playlists stay in memory, like the YouTube Music list. The only thing remembered is which Firefox profile you chose.
 - Searches, albums, artists, similar songs and the music itself are still asked for anonymously, so they do not show in your YouTube history.
 
 **Sign out**, at the top of Library, only stops Ocean Mist from using the sign-in: Firefox stays signed in. To sign out of YouTube itself, do it in Firefox. If you sign out there, or clear Firefox's cookies, Ocean Mist is signed out too.
 
-Ocean Mist looks for your Firefox profiles where Firefox from Mozilla or from your distribution, the Snap and the Flatpak keep them, and signing in needs Python 3.11 or newer. Other browsers are not supported. If several Google accounts are signed in at once, the first one is used.
+Ocean Mist looks for your Firefox profiles where Firefox from Mozilla or from your distribution, the Snap and the Flatpak keep them, and signing in needs Python 3.11 or newer. Other browsers are not supported. If several Google accounts are signed in at once in that profile, the first one is used.
 
 > [!CAUTION]
 > These are YouTube Music's own web requests, not a published API, and signed in they are tied to your account. YouTube could sign the session out, or restrict the account. Ocean Mist makes them only for what you ask, at a person's pace.
@@ -268,7 +269,7 @@ flowchart LR
 | `tags.py` | Tag, cover and length reader for six formats, standard library only |
 | `radio.py` | Relays a station to the page and reads its song titles |
 | `ytmusic.py` | YouTube Music: searches, albums, artists, playlists, similar songs and covers, and each song's audio repacked for the page; signed in, your library, likes and playlist changes. Standard library only |
-| `firefox.py` | Reads your YouTube sign-in from Firefox into memory when a request needs it, read-only, standard library only |
+| `firefox.py` | Reads the YouTube sign-in of the Firefox profile you chose into memory when a request needs it, read-only, standard library only |
 | `mpris.py` | The desktop's media controls |
 | `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations, `premium.js` is Premium Services |
 | `data/` | Application icon and menu entry |

@@ -23,6 +23,7 @@
     library: null,            // your playlists, signed in: { items } or { error, signed_out } or { loading }
     liked: {},                // video id -> whether you like it, as your playlists say and as you change it
     waiting: false,           // signing in: Firefox is open on the sign-in page
+    choices: null,            // signing in: the Firefox profiles to choose from, [{ profile, name }]
     note: '',                 // why the last try to sign in did not
     open: { recent: true, lists: true, library: true },   // the tree's branches
     found: null, rows: [], sel: -1, tree: [],
@@ -72,7 +73,7 @@
     if (!signedIn() || (lib && (lib.loading || (lib.items && !again)))) return;
     yt.library = { loading: true };
     get('library').then((r) => {
-      yt.library = r.error ? { error: r.error, signed_out: r.signed_out } : { items: r.items || [] };
+      yt.library = r.error ? { error: r.error, signed_out: r.signed_out } : { items: r.items || [], profile: r.profile || '' };
       drawTree();
       if (yt.node.kind === 'account') drawRows(true);
     });
@@ -166,6 +167,10 @@
       return '<div class="yt-sign">Sign in to YouTube Music in the Firefox window that opened. Ocean Mist goes on as soon as you have.' +
         '<br><button id="yt-cancel">Cancel</button></div>';
     }
+    if (yt.choices) {
+      return '<div class="yt-sign">Firefox is signed in to YouTube in more than one profile. Which one should Ocean Mist use?<br>' +
+        yt.choices.map((c, i) => `<button class="yt-profile" data-i="${i}">${esc(c.name)}</button>`).join(' ') + '</div>';
+    }
     const why = yt.note || error;
     return '<div class="yt-sign">' + (why ? `${esc(sentence(why))}<br><br>` : '') +
       'Sign in to see your playlists and Liked music here, to like songs and to put them in your playlists.<br><br>' +
@@ -186,7 +191,10 @@
     const total = songs.reduce((sum, t) => sum + (t.duration || 0), 0);
     const library = node.kind === 'account' && signedIn() && !(yt.found && yt.found.signed_out);
     $('yt-head').hidden = !page && !library;
-    if (library) $('yt-head').innerHTML = '<b>Library</b><span>Signed in to YouTube Music through Firefox · <a id="yt-signout">Sign out</a></span>';
+    if (library) {
+      const profile = yt.library && yt.library.profile ? ` profile “${esc(yt.library.profile)}”` : '';
+      $('yt-head').innerHTML = `<b>Library</b><span>Signed in to YouTube Music through Firefox${profile} · <a id="yt-signout">Sign out</a></span>`;
+    }
     if (page) {
       const bits = [page.kind === 'artist' ? page.info : page.artist, page.kind === 'album' ? page.label : '', page.year,
         page.kind !== 'artist' && songs.length ? `${songs.length} ${songs.length === 1 ? 'song' : 'songs'}${total ? ', ' + clock(total) : ''}` : ''];
@@ -306,6 +314,7 @@
   }
   $('yt-rows').addEventListener('click', (e) => {
     if (e.target.id === 'yt-signin') { signIn(); return; }
+    if (e.target.classList.contains('yt-profile')) { if (yt.choices) signIn(yt.choices[Number(e.target.dataset.i)].profile); return; }
     if (e.target.id === 'yt-cancel') { yt.waiting = false; drawRows(true); return; }
     const i = rowAt(e); if (i >= 0) select(i);
   });
@@ -356,12 +365,13 @@
 
   // ---- your account, signed in through Firefox ----
   let tries = 0;   // each try to sign in has its number: a cancelled one stops, even when another starts
-  async function signIn() {
+  // `profile`: the Firefox profile you chose, when more than one is signed in
+  async function signIn(profile) {
     const turn = ++tries, current = () => yt.waiting && tries === turn;
-    yt.waiting = true; yt.note = ''; drawRows(true);
-    let r = await api('yt-sign-in', { open: true });   // Firefox opens on the sign-in page if it has none
+    yt.waiting = true; yt.note = ''; yt.choices = null; drawRows(true);
+    let r = await api('yt-sign-in', { open: true, profile });   // Firefox opens on the sign-in page if it has none
     const until = Date.now() + 10 * 60 * 1000;
-    while (r.ok && !r.signed_in && current() && Date.now() < until) {
+    while (r.ok && !r.signed_in && !r.choices && current() && Date.now() < until) {
       await new Promise((done) => setTimeout(done, 3000));
       if (current()) r = await api('yt-sign-in', {});
     }
@@ -373,13 +383,14 @@
       yt.library = null; yt.liked = {};
       loadLibrary();
       Mist.flash('Signed in to YouTube Music through Firefox');
-    } else if (waited) yt.note = r.ok ? 'Ocean Mist stopped waiting for the sign-in; try again when you are ready' : r.error;
+    } else if (r.ok && r.choices && waited) yt.choices = r.choices;   // not after Cancel
+    else if (waited) yt.note = r.ok ? 'Ocean Mist stopped waiting for the sign-in; try again when you are ready' : r.error;
     draw();
   }
   function signOut() {
     api('yt-sign-out').then(() => {
       state.settings.yt_account = false;
-      yt.library = null; yt.liked = {}; yt.note = '';
+      yt.library = null; yt.liked = {}; yt.note = ''; yt.choices = null;
       for (const key of Object.keys(yt.pages)) if (key.startsWith('mine:')) delete yt.pages[key];
       const yours = (n) => n.kind === 'page' && n.value.startsWith('mine:');
       yt.back = yt.back.filter((n) => !yours(n));
