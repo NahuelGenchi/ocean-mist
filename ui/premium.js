@@ -2,7 +2,8 @@
 // searches and opens albums, artists and playlists; their songs go into the
 // YouTube Music list, a Now Playing list of its own beside My Music, and play
 // like files. That list, like what is searched and opened here, is kept in
-// memory only.
+// memory only. Signed in through Firefox (firefox.py), the Library shows your
+// playlists and Liked music, and songs can be liked and put in your playlists.
 (() => {
   const { $, state, api, on, esc, clock, menu, base, sentence } = Mist;
   const SEARCHES = [['all', 'Top results'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']];
@@ -11,14 +12,20 @@
     words: '',                // what was searched for
     kind: 'songs',            // the search the box runs
     // what the table shows: the YouTube Music list ('now'), a search, a page
-    // ('album:ID') or a saved playlist ('list', its path)
+    // ('album:ID', or 'mine:ID' for one of your playlists), a saved playlist
+    // ('list', its path) or your library ('account')
     node: { kind: 'search', value: 'songs' },
     results: {},              // 'kind\nwords' -> { items, more } or { error } or { loading }
     pages: {},                // 'album:ID' -> the page, or { error } or { loading }
     saved: {},                // playlist path -> { items } or { loading }
     recent: [],               // pages opened, the latest first: { key, title }
     back: [],                 // what the table showed before
-    open: { recent: true, lists: true },   // the tree's branches
+    library: null,            // your playlists, signed in: { items } or { error, signed_out } or { loading }
+    liked: {},                // video id -> whether you like it, as your playlists say and as you change it
+    waiting: false,           // signing in: Firefox is open on the sign-in page
+    choices: null,            // signing in: the Firefox profiles to choose from, [{ profile, name }]
+    note: '',                 // why the last try to sign in did not
+    open: { recent: true, lists: true, library: true },   // the tree's branches
     found: null, rows: [], sel: -1, tree: [],
   };
   const same = (a, b) => a && b && a.kind === b.kind && a.value === b.value;
@@ -31,11 +38,15 @@
   const savedName = (path) => (state.playlists.find((p) => p.path === path) || {}).name || '';
   const playing = () => { const t = Mist.track(state.cur); return t && t.video; };
   const shownPage = () => (yt.node.kind === 'page' && yt.found && !yt.found.loading && !yt.found.error ? yt.found : null);
+  const signedIn = () => !!state.settings.yt_account;
+  const keyOf = (item) => (item.mine ? 'mine' : item.kind) + ':' + item.id;   // your playlists are read signed in
+  const learn = (tracks) => { for (const t of tracks || []) if (t.liked !== undefined) yt.liked[t.video] = t.liked; };
 
   // ---- getting results and pages ----
   function load(node) {
     if (node.kind === 'now') return;
     if (node.kind === 'list') { loadSaved(node.value); return; }
+    if (node.kind === 'account') { loadLibrary(); return; }
     if (node.kind === 'search') {
       const words = yt.words, key = node.value + '\n' + words;
       if (!words || (yt.results[key] && !yt.results[key].error)) return;
@@ -50,9 +61,21 @@
     const [kind, id] = split(node.value);
     yt.pages[node.value] = { loading: true };
     get(`${kind}?id=${encodeURIComponent(id)}`).then((page) => {
-      yt.pages[node.value] = page.error ? { error: page.error } : page;
-      if (!page.error) remember(node.value, page.title);
+      yt.pages[node.value] = page.error ? { error: page.error, signed_out: page.signed_out } : page;
+      if (page.error) { if (page.signed_out) signedOut(page); }
+      else if (kind === 'mine') learn(page.tracks);   // the Library lists it already
+      else remember(node.value, page.title);
       if (same(yt.node, node)) draw();
+    });
+  }
+  function loadLibrary(again) {
+    const lib = yt.library;
+    if (!signedIn() || (lib && (lib.loading || (lib.items && !again)))) return;
+    yt.library = { loading: true };
+    get('library').then((r) => {
+      yt.library = r.error ? { error: r.error, signed_out: r.signed_out } : { items: r.items || [], profile: r.profile || '' };
+      drawTree();
+      if (yt.node.kind === 'account') drawRows(true);
     });
   }
   const split = (key) => { const at = key.indexOf(':'); return [key.slice(0, at), key.slice(at + 1)]; };
@@ -69,12 +92,13 @@
   }
   // an album's or a playlist's songs, for a row that was not opened
   async function pageOf(item) {
-    const key = item.kind + ':' + item.id;
+    const key = keyOf(item), [kind, id] = split(key);
     let page = yt.pages[key];
     if (!page || page.error || page.loading) {
-      page = await get(`${item.kind}?id=${encodeURIComponent(item.id)}`);
-      if (page.error) { Mist.flash(sentence(page.error), 6000); return null; }
-      yt.pages[key] = page; remember(key, page.title);
+      page = await get(`${kind}?id=${encodeURIComponent(id)}`);
+      if (page.error) { failed(page); return null; }
+      yt.pages[key] = page;
+      if (kind === 'mine') learn(page.tracks); else remember(key, page.title);
     }
     return page;
   }
@@ -93,7 +117,7 @@
     yt.words = words;
     show({ kind: 'search', value: yt.kind });
   }
-  function openItem(item) { if (item && item.id) show({ kind: 'page', value: item.kind + ':' + item.id }); }
+  function openItem(item) { if (item && item.id) show({ kind: 'page', value: keyOf(item) }); }
   function goTo(kind, id) { Mist.show('premium'); show({ kind: 'page', value: kind + ':' + id }); }
 
   function compute() {
@@ -101,6 +125,7 @@
     yt.found = node.kind === 'search' ? yt.results[node.value + '\n' + yt.words]
       : node.kind === 'page' ? yt.pages[node.value]
       : node.kind === 'list' ? yt.saved[node.value]
+      : node.kind === 'account' ? (signedIn() ? yt.library : null)
       : { items: state.lists.youtube.map(asItem) };
     const rows = [], found = yt.found;
     if (found && !found.loading && !found.error) {
@@ -127,16 +152,35 @@
   };
   function emptyText() {
     const found = yt.found, node = yt.node;
+    if (node.kind === 'account' && (!signedIn() || (found && found.signed_out))) return signInText(found && found.error);
     if (node.kind === 'search' && !yt.words) return 'Type what you are looking for in the search box at the top right, then press Enter.';
     if (!found || found.loading) return node.kind === 'search' ? 'Searching YouTube Music…' : 'Opening…';
     if (found.error) return esc(sentence(found.error));
     if (node.kind === 'now') return 'Nothing is in the YouTube Music list. The songs you play or add here go into it.';
     if (node.kind === 'list') return 'This playlist has no songs that can be found.';
+    if (node.kind === 'account') return 'There are no playlists in your library yet.';
     return node.kind === 'search' ? `YouTube Music found nothing for “${esc(yt.words)}”.` : 'There is nothing to play here.';
+  }
+  // the Library when you are not signed in: what signing in does, and its button
+  function signInText(error) {
+    if (yt.waiting) {
+      return '<div class="yt-sign">Sign in to YouTube Music in the Firefox window that opened. Ocean Mist goes on as soon as you have.' +
+        '<br><button id="yt-cancel">Cancel</button></div>';
+    }
+    if (yt.choices) {
+      return '<div class="yt-sign">Firefox is signed in to YouTube in more than one profile. Which one should Ocean Mist use?<br>' +
+        yt.choices.map((c, i) => `<button class="yt-profile" data-i="${i}">${esc(c.name)}</button>`).join(' ') + '</div>';
+    }
+    const why = yt.note || error;
+    return '<div class="yt-sign">' + (why ? `${esc(sentence(why))}<br><br>` : '') +
+      'Sign in to see your playlists and Liked music here, to like songs and to put them in your playlists.<br><br>' +
+      'You sign in to YouTube Music in Firefox, on Google’s own page. Ocean Mist reads that sign-in from Firefox ' +
+      'each time it asks for something of your account, and keeps nothing of it. Searches and the music itself stay anonymous.' +
+      '<br><button id="yt-signin">Sign in with Firefox</button></div>';
   }
   function drawRows(keep) {
     compute();
-    const node = yt.node, kind = node.kind === 'search' ? node.value : 'page';
+    const node = yt.node, kind = node.kind === 'search' ? node.value : node.kind === 'account' ? 'playlists' : 'page';
     $('yt-c1').textContent = { albums: 'Album', artists: 'Artist', playlists: 'Playlist' }[kind] || 'Title';
     $('yt-c2').textContent = { artists: '', playlists: 'Made by' }[kind] ?? 'Artist';
     $('yt-c3').textContent = ['albums', 'artists', 'playlists'].includes(kind) ? 'Details' : 'Album';
@@ -145,7 +189,12 @@
     // the header of an open album, artist or playlist
     const page = shownPage(), songs = yt.rows.filter((r) => playable(r.item)).map((r) => r.item);
     const total = songs.reduce((sum, t) => sum + (t.duration || 0), 0);
-    $('yt-head').hidden = !page;
+    const library = node.kind === 'account' && signedIn() && !(yt.found && yt.found.signed_out);
+    $('yt-head').hidden = !page && !library;
+    if (library) {
+      const profile = yt.library && yt.library.profile ? ` profile “${esc(yt.library.profile)}”` : '';
+      $('yt-head').innerHTML = `<b>Library</b><span>Signed in to YouTube Music through Firefox${profile} · <a id="yt-signout">Sign out</a></span>`;
+    }
     if (page) {
       const bits = [page.kind === 'artist' ? page.info : page.artist, page.kind === 'album' ? page.label : '', page.year,
         page.kind !== 'artist' && songs.length ? `${songs.length} ${songs.length === 1 ? 'song' : 'songs'}${total ? ', ' + clock(total) : ''}` : ''];
@@ -153,11 +202,11 @@
     }
     // the count, and more results for a search
     const found = yt.found, items = yt.rows.filter((r) => r.item);
-    const listing = node.kind !== 'search';   // the songs of a page, a saved playlist or the list
+    const listing = node.kind !== 'search' && node.kind !== 'account';   // the songs of a page, a saved playlist or the list
     let text = '';
     if (found && found.loading) text = node.kind === 'search' ? 'Searching…' : 'Opening…';
     else if (items.length) {
-      const noun = listing ? NOUNS.songs : NOUNS[node.value], n = listing ? songs.length : items.length;
+      const noun = listing ? NOUNS.songs : NOUNS[node.kind === 'account' ? 'playlists' : node.value], n = listing ? songs.length : items.length;
       text = `${n} ${n === 1 ? noun[0] : noun[1]}` + (listing && total ? `, ${clock(total)}` : '');
     }
     $('yt-count').textContent = text;
@@ -192,6 +241,15 @@
       for (const p of saved) rows.push({ depth: 1, label: p.name, node: { kind: 'list', value: p.path } });
       if (!saved.length) rows.push({ depth: 1, label: '(none saved yet)', dim: true });
     }
+    rows.push({ depth: 0, label: 'Library', fold: 'library', node: { kind: 'account' } });
+    if (yt.open.library) {
+      const lib = yt.library;
+      if (!signedIn()) rows.push({ depth: 1, label: 'Sign in…', node: { kind: 'account', value: 'sign-in' } });
+      else if (lib && lib.items) {
+        for (const p of lib.items) rows.push({ depth: 1, label: p.title, node: { kind: 'page', value: keyOf(p) } });
+        if (!lib.items.length) rows.push({ depth: 1, label: '(no playlists yet)', dim: true });
+      } else rows.push({ depth: 1, label: lib && lib.error ? '(not signed in)' : '(opening…)', dim: true });
+    }
     yt.tree = rows;
     $('yt-tree').innerHTML = rows.map((r, i) =>
       `<div class="node${same(r.node, yt.node) ? ' sel' : ''}${r.dim ? ' dim' : ''}" data-i="${i}" style="padding-left:${3 + r.depth * 11}px">` +
@@ -202,7 +260,7 @@
   $('yt-tree').addEventListener('click', (e) => {
     const row = treeRow(e);
     if (!row) return;
-    if (row.fold) { yt.open[row.fold] = !yt.open[row.fold]; drawTree(); return; }
+    if (row.fold && (!row.node || e.target.tagName === 'I')) { yt.open[row.fold] = !yt.open[row.fold]; drawTree(); return; }
     if (row.node) show(row.node);
   });
   $('yt-tree').addEventListener('dblclick', (e) => {
@@ -254,7 +312,13 @@
     for (const tr of $('yt-rows').children) tr.classList.toggle('sel', Number(tr.dataset.i) === i);
     drawCover();
   }
-  $('yt-rows').addEventListener('click', (e) => { const i = rowAt(e); if (i >= 0) select(i); });
+  $('yt-rows').addEventListener('click', (e) => {
+    if (e.target.id === 'yt-signin') { signIn(); return; }
+    if (e.target.classList.contains('yt-profile')) { if (yt.choices) signIn(yt.choices[Number(e.target.dataset.i)].profile); return; }
+    if (e.target.id === 'yt-cancel') { yt.waiting = false; drawRows(true); return; }
+    const i = rowAt(e); if (i >= 0) select(i);
+  });
+  $('yt-head').addEventListener('click', (e) => { if (e.target.id === 'yt-signout') signOut(); });
   $('yt-rows').addEventListener('dblclick', (e) => {
     const i = rowAt(e), item = i >= 0 && yt.rows[i].item;
     if (!item) return;
@@ -275,6 +339,7 @@
         null,
         { label: 'Go to album', disabled: !item.album_id, run: () => goTo('album', item.album_id) },
         { label: 'Go to artist', disabled: !item.artist_id, run: () => goTo('artist', item.artist_id) },
+        ...accountItems(item, shownPage()),
       ]);
     } else if (item.kind === 'artist') {
       menu(e.clientX, e.clientY, [{ label: 'Open', run: () => openItem(item) }]);
@@ -297,6 +362,100 @@
       if (yt.found === found) drawRows(true);
     });
   });
+
+  // ---- your account, signed in through Firefox ----
+  let tries = 0;   // each try to sign in has its number: a cancelled one stops, even when another starts
+  // `profile`: the Firefox profile you chose, when more than one is signed in
+  async function signIn(profile) {
+    const turn = ++tries, current = () => yt.waiting && tries === turn;
+    yt.waiting = true; yt.note = ''; yt.choices = null; drawRows(true);
+    let r = await api('yt-sign-in', { open: true, profile });   // Firefox opens on the sign-in page if it has none
+    const until = Date.now() + 10 * 60 * 1000;
+    while (r.ok && !r.signed_in && !r.choices && current() && Date.now() < until) {
+      await new Promise((done) => setTimeout(done, 3000));
+      if (current()) r = await api('yt-sign-in', {});
+    }
+    if (tries !== turn) return;   // a newer try carries on
+    const waited = yt.waiting;
+    yt.waiting = false;
+    if (r.ok && r.signed_in) {
+      state.settings.yt_account = true;
+      yt.library = null; yt.liked = {};
+      loadLibrary();
+      Mist.flash('Signed in to YouTube Music through Firefox');
+    } else if (r.ok && r.choices && waited) yt.choices = r.choices;   // not after Cancel
+    else if (waited) yt.note = r.ok ? 'Ocean Mist stopped waiting for the sign-in; try again when you are ready' : r.error;
+    draw();
+  }
+  function signOut() {
+    api('yt-sign-out').then(() => {
+      state.settings.yt_account = false;
+      yt.library = null; yt.liked = {}; yt.note = ''; yt.choices = null;
+      for (const key of Object.keys(yt.pages)) if (key.startsWith('mine:')) delete yt.pages[key];
+      const yours = (n) => n.kind === 'page' && n.value.startsWith('mine:');
+      yt.back = yt.back.filter((n) => !yours(n));
+      if (yours(yt.node)) yt.node = { kind: 'account' };
+      draw();
+      Mist.flash('Ocean Mist no longer uses your sign-in. Firefox is still signed in to YouTube.', 6000);
+    });
+  }
+  function signedOut(r) { yt.library = { error: r.error, signed_out: true }; drawTree(); }
+  function failed(r) {
+    Mist.flash(sentence(r.error || 'YouTube Music did not answer'), 6000);
+    if (r.signed_out) signedOut(r);
+  }
+  // a page of yours that changed: read again the next time it is shown
+  function stale(key) {
+    delete yt.pages[key];
+    if (same(yt.node, { kind: 'page', value: key })) { load(yt.node); drawRows(true); }
+  }
+  function rate(item, like) {
+    api('yt-like', { video: item.video, like }).then((r) => {
+      if (!r.ok) { failed(r); return; }
+      yt.liked[item.video] = like;
+      Mist.flash(like ? 'Added to Liked music' : 'Removed from Liked music');
+      const liked = yt.pages['mine:VLLM'];
+      if (like || !liked || !liked.tracks) stale('mine:VLLM');
+      else {
+        liked.tracks = liked.tracks.filter((t) => t.video !== item.video);
+        if (shownPage() === liked) drawRows(true);
+      }
+    });
+  }
+  function addTo(playlist, item) {
+    api('yt-playlist-add', { playlist: playlist.id, video: item.video }).then((r) => {
+      if (!r.ok) { failed(r); return; }   // a song that is there already, for one: YouTube Music says so
+      Mist.flash(`Added to “${playlist.title}”`, 5000);
+      stale(keyOf(playlist));
+    });
+  }
+  function takeOut(page, item) {
+    api('yt-playlist-remove', { playlist: page.id, video: item.video, set: item.set }).then((r) => {
+      if (!r.ok) { failed(r); return; }
+      page.tracks = page.tracks.filter((t) => t.set !== item.set);
+      Mist.flash(`Removed from “${page.title}”`);
+      if (shownPage() === page) drawRows(true);
+    });
+  }
+  function playlistChoices(item) {
+    const lib = yt.library;
+    if (!lib || !lib.items) {
+      loadLibrary();
+      return [{ label: lib && lib.error ? '(your playlists could not be read)' : '(reading your playlists…)', disabled: true }];
+    }
+    const own = lib.items.filter((p) => p.own);
+    if (!own.length) return [{ label: '(no playlists of your own)', disabled: true }];
+    return own.map((p) => ({ label: p.title, run: () => addTo(p, item) }));
+  }
+  // what a song's menu gets while you are signed in; `page` is the page it is on
+  function accountItems(item, page) {
+    if (!signedIn() || !playable(item)) return [];
+    const items = [null,
+      yt.liked[item.video] ? { label: 'Remove like', run: () => rate(item, false) } : { label: 'Like', run: () => rate(item, true) },
+      { label: 'Add to playlist', items: playlistChoices(item) }];
+    if (page && page.own && item.set) items.push({ label: 'Remove from playlist', run: () => takeOut(page, item) });
+    return items;
+  }
 
   // ---- tool bar ----
   const chosen = () => (yt.rows[yt.sel] || {}).item || null;
@@ -327,9 +486,15 @@
     items.push(null,
       { label: 'Play similar songs', run: () => similar(t) },
       { label: 'Go to album', disabled: !t.album_id, run: () => goTo('album', t.album_id) },
-      { label: 'Go to artist', disabled: !t.artist_id, run: () => goTo('artist', t.artist_id) });
+      { label: 'Go to artist', disabled: !t.artist_id, run: () => goTo('artist', t.artist_id) },
+      ...accountItems(asItem(t)));
   });
-  on('view', (view) => { if (view !== 'premium') return; draw(); if (!yt.words) $('yt-search').focus(); });
+  on('view', (view) => {
+    if (view !== 'premium') return;
+    loadLibrary();
+    draw();
+    if (!yt.words) $('yt-search').focus();
+  });
   on('state', () => {
     if (state.view !== 'premium') return;
     drawTree();
