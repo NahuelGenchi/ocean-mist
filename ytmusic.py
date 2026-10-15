@@ -1,6 +1,8 @@
 """YouTube Music, spoken to directly: search, albums, artists, playlists,
-similar songs, covers and the audio of a song. Standard library only, and
-no account: nothing is signed in.
+similar songs, covers and the audio of a song, all without an account. And,
+when you have signed in to YouTube Music in Firefox (firefox.py reads that
+sign-in), your library and its changes: likes, and songs added to or removed
+from your playlists. Only those requests are signed in. Standard library only.
 
 These are the requests YouTube Music's own apps make, not a published API,
 so YouTube can change them at any time. What may need updating then is kept
@@ -66,11 +68,13 @@ PICTURES = 64               # covers kept in memory
 RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
 
 OFFLINE = "cannot reach YouTube Music; check the internet connection"
+SIGNED_OUT = "YouTube Music says you are signed out; sign in again in Firefox"
 CHANGED = "YouTube Music changed something Ocean Mist depends on, so the player needs an update"
 
 VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 BROWSE_ID = re.compile(r"^[A-Za-z0-9_-]{2,100}$")
 TOKEN = re.compile(r"^[A-Za-z0-9_%=-]{8,4000}$")
+SET_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")   # a song's place in a playlist
 PICTURE_HOSTS = re.compile(r"^https://(?:[a-z0-9-]+\.)*(?:googleusercontent|ggpht|ytimg)\.com/", re.I)
 AUDIO_HOSTS = re.compile(r"^https://(?:[a-z0-9-]+\.)*(?:googlevideo|youtube)\.com/", re.I)
 DURATION = re.compile(r"^(?:\d+:)?\d{1,2}:\d{2}$")
@@ -88,9 +92,9 @@ class YTError(Exception):
     """What went wrong, worded for the status line. `general` when every
     song would fail the same way, so the player stops instead of skipping."""
 
-    def __init__(self, message, general=False, code=0):
+    def __init__(self, message, general=False, code=0, signed_out=False):
         super().__init__(message)
-        self.general, self.code = general, code
+        self.general, self.code, self.signed_out = general, code, signed_out
 
 
 class Song:
@@ -262,8 +266,9 @@ def _kind(found, page, video, video_type):
     return None
 
 
-def _list_item(renderer):
-    """A row of a list: musicResponsiveListItemRenderer."""
+def _list_item(renderer, signed=False):
+    """A row of a list: musicResponsiveListItemRenderer. A signed-in answer's
+    rows also say where the song is in its playlist and whether you like it."""
     columns = [_runs(_dig(column, "musicResponsiveListItemFlexColumnRenderer", "text"))
                for column in renderer.get("flexColumns") or []]
     columns += [_runs(_dig(column, "musicResponsiveListItemFixedColumnRenderer", "text"))
@@ -290,6 +295,13 @@ def _list_item(renderer):
     playlist = _dig(play, "watchPlaylistEndpoint", "playlistId")
     if playlist and kind in ("album", "playlist"):
         item["playlist"] = playlist
+    if signed and "video" in item:
+        place = _dig(renderer, "playlistItemData", "playlistSetVideoId")
+        if isinstance(place, str) and SET_ID.match(place):
+            item["set"] = place
+        like = _find(renderer.get("menu"), "likeStatus")
+        if like in ("LIKE", "INDIFFERENT", "DISLIKE"):
+            item["liked"] = like == "LIKE"
     return item
 
 
@@ -325,7 +337,7 @@ def _panel_item(entry):
                  _dig(renderer, "thumbnail", "thumbnails"))
 
 
-def _items(contents):
+def _items(contents, signed=False):
     """The music in a shelf's contents, and the token for more of it."""
     items, token = [], None
     for entry in contents or []:
@@ -333,7 +345,7 @@ def _items(contents):
             continue
         item = None
         if "musicResponsiveListItemRenderer" in entry:
-            item = _list_item(entry["musicResponsiveListItemRenderer"])
+            item = _list_item(entry["musicResponsiveListItemRenderer"], signed)
         elif "musicTwoRowItemRenderer" in entry:
             item = _two_row(entry["musicTwoRowItemRenderer"])
         elif "continuationItemRenderer" in entry:
@@ -403,6 +415,45 @@ def _find(node, key, depth=0):
         if found is not None:
             return found
     return None
+
+
+def _signed_in(data):
+    """What an answer says of the sign-in: True or False, None when it does not say."""
+    for service in _dig(data, "responseContext", "serviceTrackingParams") or []:
+        for param in _dig(service, "params") or []:
+            if isinstance(param, dict) and param.get("key") == "logged_in":
+                return param.get("value") == "1"
+    return None
+
+
+def _menu_icons(renderer):
+    """The icons of what a renderer's menu offers: names for it in no language."""
+    icons = set()
+    for entry in _dig(renderer, "menu", "menuRenderer", "items") or []:
+        for inner in entry.values() if isinstance(entry, dict) else ():
+            icon = _dig(inner, "icon", "iconType") or _dig(inner, "defaultIcon", "iconType")
+            if isinstance(icon, str):
+                icons.add(icon)
+    return icons
+
+
+def _continuation(entries):
+    """The token of the "more" entry a list ends with, if it has one."""
+    for entry in reversed(entries or []):
+        token = _dig(entry, "continuationItemRenderer", "continuationEndpoint",
+                     "continuationCommand", "token")
+        if token:
+            return token
+    return None
+
+
+def _bare(playlist):
+    """A playlist's id without the "VL" of its page; YTError for anything else."""
+    playlist = str(playlist)
+    playlist = playlist[2:] if playlist.startswith("VL") else playlist
+    if not BROWSE_ID.match(playlist):
+        raise YTError("that is not a YouTube Music playlist")
+    return playlist
 
 
 def _why(status, reason):
@@ -637,21 +688,31 @@ class YTMusic:
             self.web = web
         return web[:2]
 
-    def _call(self, endpoint, body, query=""):
+    def _call(self, endpoint, body, query="", session=None):
+        """A request of the web client: anonymous, or signed in with
+        `session` (a firefox.Session), which is only used for this one."""
         version, visitor = self._session()
         client = {"clientName": "WEB_REMIX", "clientVersion": version, "hl": "en"}
         headers = {"User-Agent": BROWSER, "Content-Type": "application/json",
                    "Accept-Encoding": "gzip", "Origin": SITE, "Referer": SITE + "/",
                    "X-YouTube-Client-Name": "67", "X-YouTube-Client-Version": version}
-        if visitor:
+        if session is not None:   # the account's own visitor id is among its cookies
+            headers.update(session.headers(SITE))
+        elif visitor:
             client["visitorData"] = headers["X-Goog-Visitor-Id"] = visitor
         payload = json.dumps(dict(body, context={"client": client})).encode()
         try:
             data = json.loads(_open(f"{API}{endpoint}?prettyPrint=false{query}", payload, headers))
         except ValueError:
             raise YTError(CHANGED, general=True) from None
+        except YTError as error:
+            if session is not None and error.code in (401, 403):
+                raise YTError(SIGNED_OUT, general=True, code=error.code, signed_out=True) from None
+            raise
         if not isinstance(data, dict):
             raise YTError(CHANGED, general=True)
+        if session is not None and _signed_in(data) is False:
+            raise YTError(SIGNED_OUT, general=True, signed_out=True)
         return data
 
     # ---- searching ----
@@ -746,10 +807,10 @@ class YTMusic:
         return {"items": items, "more": token}
 
     # ---- pages ----
-    def _page(self, browse_id):
+    def _page(self, browse_id, session=None):
         if not BROWSE_ID.match(str(browse_id)):
             raise YTError("that is not a YouTube Music page")
-        data = self._call("browse", {"browseId": browse_id})
+        data = self._call("browse", {"browseId": browse_id}, session=session)
         header = _header(data)
         if not header and not _sections(data):
             raise YTError(CHANGED, general=True)
@@ -778,46 +839,127 @@ class YTMusic:
                 "info": _text(header.get("secondSubtitle")), "cover": cover,
                 "tracks": tracks, "groups": []}
 
-    def playlist(self, browse_id):
-        """A playlist and its songs (the first thousand of a long one)."""
+    def playlist(self, browse_id, session=None):
+        """A playlist and its songs (the first thousand of a long one).
+        Signed in (`session`), also your private playlists and Liked music,
+        whether you like each song and where it is in the playlist, and
+        "own" when the playlist is yours to change."""
         browse_id = str(browse_id)
         if not browse_id.startswith("VL"):
             browse_id = "VL" + browse_id
-        data, header = self._page(browse_id)
+        signed = session is not None
+        data, header = self._page(browse_id, session)
         found = _details(_runs(header.get("subtitle")) + [SEPARATOR]
                          + _runs(header.get("straplineTextOne")))
         author = found["artist"] or _dig(header, "facepile", "avatarStackViewModel", "text",
                                          "content") or ""
-        tracks, token = [], None
+        tracks, token, own, shelved = [], None, False, False
         for section in _sections(data):
+            own = own or "musicEditablePlaylistDetailHeaderRenderer" in section
             shelf = section.get("musicPlaylistShelfRenderer") or section.get("musicShelfRenderer")
-            if shelf:
-                tracks, token = _items(shelf.get("contents"))
+            if shelf and not shelved:   # the first shelf holds the songs
+                shelved = True
+                tracks, token = _items(shelf.get("contents"), signed)
                 token = token or _shelf_token(shelf)
-                break
         while token and len(tracks) < PLAYLIST_LIMIT:
-            more, token = self._continue(token)
+            more, token = self._continue(token, session)
             if not more:
                 break
             tracks += more
-        return {"kind": "playlist", "id": browse_id, "title": _text(header.get("title")),
+        page = {"kind": "playlist", "id": browse_id, "title": _text(header.get("title")),
                 "artist": str(author), "artist_id": found["artist_id"], "label": "Playlist",
                 "year": found["year"], "info": _text(header.get("secondSubtitle")),
                 "cover": _header_cover(header),
                 "tracks": [t for t in tracks if t.get("video")][:PLAYLIST_LIMIT], "groups": []}
+        if signed:
+            page["own"] = own or "musicEditablePlaylistDetailHeaderRenderer" in (data.get("header") or {})
+        return page
 
-    def _continue(self, token):
+    def _continue(self, token, session=None):
         """More songs of a long playlist."""
         if not TOKEN.match(str(token)):
             return [], None
-        data = self._call("browse", {"continuation": urllib.parse.unquote(token)})
+        signed = session is not None
+        data = self._call("browse", {"continuation": urllib.parse.unquote(token)}, session=session)
         items, more = _items(_dig(data, "onResponseReceivedActions", 0,
-                                  "appendContinuationItemsAction", "continuationItems"))
+                                  "appendContinuationItemsAction", "continuationItems"), signed)
         shelf = _dig(data, "continuationContents", "musicPlaylistShelfContinuation")
         if isinstance(shelf, dict):
-            items, more = _items(shelf.get("contents"))
+            items, more = _items(shelf.get("contents"), signed)
             more = more or _shelf_token(shelf)
         return items, more
+
+    # ---- your account, signed in through Firefox ----
+    def library(self, session):
+        """Your playlists, in the order YouTube Music's library has them:
+        Liked music, the ones you made ("own", which you can change) and
+        the ones you saved."""
+        data = self._call("browse", {"browseId": "FEmusic_liked_playlists"}, session=session)
+        entries, token, asked = [], None, set()
+        for section in _sections(data):
+            for key, inside in (("gridRenderer", "items"), ("musicShelfRenderer", "contents")):
+                block = section.get(key)   # tiles, or the same laid out as a list
+                if isinstance(block, dict):
+                    entries += block.get(inside) or []
+                    token = token or _dig(block, "continuations", 0, "nextContinuationData", "continuation")
+        while len(asked) < 20:   # a long library comes some at a time
+            token = token or _continuation(entries)
+            if not token or token in asked or not TOKEN.match(str(token)):
+                break
+            asked.add(token)
+            more = self._call("browse", {"continuation": urllib.parse.unquote(token)}, session=session)
+            block = (_dig(more, "continuationContents", "gridContinuation")
+                     or _dig(more, "continuationContents", "musicShelfContinuation") or {})
+            entries = [e for e in entries if not _dig(e, "continuationItemRenderer")]
+            entries += (block.get("items") or block.get("contents") or []) + (_dig(
+                more, "onResponseReceivedActions", 0, "appendContinuationItemsAction",
+                "continuationItems") or [])
+            token = _dig(block, "continuations", 0, "nextContinuationData", "continuation")
+        items = []
+        for entry in entries:
+            renderer = _dig(entry, "musicTwoRowItemRenderer")
+            item = _two_row(renderer) if isinstance(renderer, dict) else None
+            if item is None:
+                renderer = _dig(entry, "musicResponsiveListItemRenderer")
+                item = _list_item(renderer) if isinstance(renderer, dict) else None
+            if item and item["kind"] == "playlist" and item.get("id"):
+                icons = _menu_icons(renderer)   # what the library offers for it: yours have Edit and Delete
+                item["mine"], item["own"] = True, "DELETE" in icons or "EDIT" in icons
+                items.append(item)
+        return {"items": items}
+
+    def rate(self, video, like, session):
+        """Like a song, or take your like back."""
+        if not VIDEO_ID.match(str(video)):
+            raise YTError("that is not a YouTube Music song")
+        self._call("like/like" if like else "like/removelike", {"target": {"videoId": video}},
+                   session=session)
+
+    def add_to_playlist(self, playlist, video, session):
+        """Add a song to one of your playlists: True, or False when it is
+        in that playlist already (and so was not added again)."""
+        if not VIDEO_ID.match(str(video)):
+            raise YTError("that is not a YouTube Music song")
+        data = self._call("browse/edit_playlist", {
+            "playlistId": _bare(playlist),
+            "actions": [{"action": "ACTION_ADD_VIDEO", "addedVideoId": video}]}, session=session)
+        if "SUCCEEDED" in str(data.get("status")):
+            return True
+        if _find(data, "confirmDialogRenderer") is not None:   # YouTube Music asks before adding a song twice
+            return False
+        raise YTError("YouTube Music did not add the song to that playlist")
+
+    def remove_from_playlist(self, playlist, video, place, session):
+        """Take a song out of one of your playlists; `place` is where it is
+        in the playlist, as the playlist's page says."""
+        if not VIDEO_ID.match(str(video)) or not SET_ID.match(str(place)):
+            raise YTError("that song is not in a playlist of yours")
+        data = self._call("browse/edit_playlist", {
+            "playlistId": _bare(playlist),
+            "actions": [{"action": "ACTION_REMOVE_VIDEO", "removedVideoId": video,
+                         "setVideoId": place}]}, session=session)
+        if "SUCCEEDED" not in str(data.get("status")):
+            raise YTError("YouTube Music did not take the song out of that playlist")
 
     def artist(self, browse_id):
         """An artist: top songs, then albums, singles, playlists and similar

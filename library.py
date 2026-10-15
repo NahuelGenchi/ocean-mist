@@ -198,6 +198,7 @@ class Library:
             "repeat": False, "hue": 0, "eq": [0] * 10, "eq_on": False,
             "eq_preset": "Flat", "eq_open": False, "notify": False,
             "yt_radio": True, "zoom": 1, "mini": False,
+            "yt_account": False,   # signed in to YouTube Music through Firefox (only that you chose to)
         }
         self.listeners = set()
         self.pending_play = None  # what to start once the page is listening

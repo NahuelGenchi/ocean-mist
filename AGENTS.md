@@ -16,11 +16,12 @@ Never describe something as working or complete unless a recorded check establis
 | `library.py` | The two Now Playing lists (My Music, saved in `state.json`; YouTube Music, in memory only), media library scan, saved playlists, radio stations, settings, resume point (a file or a station) |
 | `tags.py` | Titles, covers and lengths from MP3, FLAC, Ogg Vorbis, Opus, M4A and WAV, standard library only |
 | `radio.py` | Relays an internet radio stream to the page and reads its song titles |
-| `ytmusic.py` | YouTube Music without an account: search, albums, artists, playlists, similar songs, covers, and each song's audio (HLS segments repacked as MP4 fragments), standard library only |
+| `ytmusic.py` | YouTube Music without an account: search, albums, artists, playlists, similar songs, covers, and each song's audio (HLS segments repacked as MP4 fragments); signed in, the library, likes and playlist changes. Standard library only |
+| `firefox.py` | The YouTube sign-in of the user's Firefox: finds the profiles, reads a cookie file and its write-ahead log read-only into memory, and signs a request the way the site does. Standard library only |
 | `mpris.py` | The desktop's media controls and media keys (MPRIS) |
 | `ui/frame.js` | The sculpted frame and the compact frame, drawn as SVG |
 | `ui/app.js` | Playback core, the two lists and the switch between them, menus, queue, keyboard, the Media Source feed for YouTube Music songs; exposes `window.Mist` to the other scripts |
-| `ui/premium.js` | Premium Services: the YouTube Music view with its Now Playing list and saved playlists, and similar songs when the list runs out |
+| `ui/premium.js` | Premium Services: the YouTube Music view with its Now Playing list and saved playlists, the Library (signing in, your playlists, likes and playlist changes), and similar songs when the list runs out |
 | `ui/eq.js`, `ui/library.js`, `ui/radio.js`, `ui/skins.js`, `ui/visuals.js` | Equalizer, Media Library, Radio Tuner, Skin Chooser, visualizations |
 | `ui/fonts/` | Tahoma look-alike fonts from the Wine project, under their own license (LGPL 2.1 or later; see its `README.md`) |
 | `data/` | Application icon and desktop entry template |
@@ -30,9 +31,10 @@ Never describe something as working or complete unless a recorded check establis
 
 - `python3 player.py [FILES OR FOLDERS...]` runs the player.
 - `python3 player.py --serve PORT [FILES...]` serves the interface without a window, at `http://127.0.0.1:PORT/dev/`, for work on the page alone.
-- `python3 -m py_compile player.py library.py tags.py radio.py mpris.py ytmusic.py` and `for f in ui/*.js; do node --check "$f"; done` are the source checks. There is no test suite yet.
+- `python3 -m py_compile player.py library.py tags.py radio.py mpris.py ytmusic.py firefox.py` and `for f in ui/*.js; do node --check "$f"; done` are the source checks. There is no test suite yet.
 - `OCEAN_MIST_DEBUG=1` logs the HTTP requests and enables the web inspector.
 - `python3 ytmusic.py search|album|artist|playlist|radio|audio ...` prints what the YouTube Music engine gets, without the player (the full list is in its docstring).
+- `python3 firefox.py` says which Firefox profiles have a YouTube sign-in, without printing any cookie.
 
 ## Working well here
 
@@ -50,13 +52,16 @@ Never describe something as working or complete unless a recorded check establis
 
   Settings live in `$XDG_CONFIG_HOME/ocean-mist/state.json`; put `"muted": true` in its `"settings"` object before a check that plays anything.
 - WebKitGTK behavior worth knowing: script run from the host counts as a user gesture, so it hides autoplay problems; a seek on a song that has never played is ignored; a cross-origin stream is silent through Web Audio, which is why radio goes through the local relay; media only loads in a real, visible window. It cannot play HLS, which is why YouTube Music songs reach the page as MP4 fragments through Media Source; there, a seek made before the song first plays does work. An ephemeral view (`is_ephemeral`) still sets up the default context's cache and data folders on disk; only an ephemeral `WebContext`, which the player uses, keeps everything in memory.
+- A check that signs in uses the owner's own Firefox sign-in, so it stays read-only and reports counts, never titles. Likes and playlist changes are checked against a local stand-in for YouTube Music; they are tried on the owner's account only with the owner's go-ahead.
 - Record what a check covered and what it did not, in the PR.
 
 ## Private data
 
-Music files, personal playlists, `state.json`, the tag and cover cache, and any account credentials or tokens stay out of commits, issues and PRs. So do YouTube's audio addresses (`googlevideo.com`): they carry the IP address of whoever asked for them, so never print them in a check's output either. Screenshots use generated sample music with invented names, never a real library.
+Music files, personal playlists, `state.json`, the tag and cover cache, and any account credentials, cookies or tokens stay out of commits, issues and PRs, and out of a check's output. So do YouTube's audio addresses (`googlevideo.com`): they carry the IP address of whoever asked for them, so never print them in a check's output either. No client id, secret or key for a service is ever committed. Screenshots use generated sample music with invented names, never a real library.
 
-Nothing from a streaming service is written to disk: the YouTube Music list, searches and covers stay in memory, the covers for the media controls go to `$XDG_RUNTIME_DIR` and are removed on close, the page's web context is ephemeral, and `state.json` holds files and stations only. A playlist the user saves is the one exception, on purpose. Keep it that way: storing anything else from a service is the owner's decision.
+Nothing from a streaming service is written to disk: the YouTube Music list, searches, covers and the signed-in library stay in memory, the covers for the media controls go to `$XDG_RUNTIME_DIR` and are removed on close, the page's web context is ephemeral, and `state.json` holds files and stations only, plus whether the user chose to sign in. A playlist the user saves is the one exception, on purpose. Keep it that way: storing anything else from a service is the owner's decision.
+
+The sign-in stays Firefox's. Ocean Mist reads Firefox's cookie file only while the user is signed in or signing in, read-only and into memory, takes only the YouTube cookies and lets them go after the request. It never writes them anywhere and never asks Google who the user is. Only the requests for the user's account are signed in: searches, pages, similar songs and the audio stay anonymous.
 
 ## Tracking and delivery
 

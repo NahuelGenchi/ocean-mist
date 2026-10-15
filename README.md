@@ -111,7 +111,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>YouTube Music</strong></td>
-    <td>In Premium Services: search for songs, albums, artists and playlists, open them with their covers, and play them in a YouTube Music list of their own, with the equalizer and the visualizations. When the list runs out, similar songs carry on (<em>Autoplay similar songs</em> in the menu turns that off). The list lives in memory only and starts empty each time; save it as a playlist to keep it. No account, no sign-in, nothing else to install.</td>
+    <td>In Premium Services: search for songs, albums, artists and playlists, open them with their covers, and play them in a YouTube Music list of their own, with the equalizer and the visualizations. When the list runs out, similar songs carry on (<em>Autoplay similar songs</em> in the menu turns that off). The list lives in memory only and starts empty each time; save it as a playlist to keep it. Nothing else to install, and no account needed: sign in through Firefox to bring in your playlists and Liked music, like songs and add them to your playlists (see <em>Signing in to YouTube Music</em> below).</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Formats</strong></td>
@@ -183,9 +183,37 @@ After that, Ocean Mist appears in the app menu and in the "Open with" list for m
 | Settings, My Music, stations, where you left off | `~/.config/ocean-mist/state.json` |
 | Tag cache and your files' covers | `~/.cache/ocean-mist/` |
 
-Nothing from YouTube Music is kept there, or anywhere else on disk unless you save a playlist: its list, searches and covers stay in memory, and the page keeps no web cache or site data. The covers it hands to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes.
+Nothing from YouTube Music is kept there, or anywhere else on disk unless you save a playlist: its list, searches and covers stay in memory, and so does your library when you sign in. The page keeps no web cache or site data. The covers it hands to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes. Of a sign-in, `state.json` only notes that you chose it.
 
 Your music files are only ever read, never changed. Developed on Ubuntu 26.04 with GNOME on Wayland and Python 3.14; other setups have not been tried yet.
+
+</details>
+
+<details>
+<summary><strong>Signing in to YouTube Music</strong></summary>
+
+<br>
+
+Ocean Mist has no sign-in form of its own and never sees your password. You sign in to YouTube Music in Firefox, on Google's own page, and Ocean Mist uses that sign-in:
+
+1. In Premium Services, choose **Library**, then **Sign in with Firefox**.
+2. If Firefox is signed in to YouTube already, that is all. If not, Firefox opens on YouTube Music's sign-in page: sign in there, and Ocean Mist carries on by itself.
+
+Your playlists and Liked music then show under Library, and play like any playlist. Right-click a song to like it, to take the like back or to add it to one of your playlists. In a playlist of your own, you can also take a song out.
+
+What Ocean Mist reads, and when:
+
+- It reads the sign-in only while you are signed in (or signing in), and only when it asks for something of your account: your library, a playlist of yours, a like, a change to a playlist.
+- It reads it from Firefox's cookie file, read-only and straight into memory: no copy goes to disk, and the file is never written to. It takes only the YouTube cookies of the most recently used sign-in, not those of containers, and lets them go once the request is made.
+- It never asks Google for your name, email address or photo. Your library, likes and playlists stay in memory, like the YouTube Music list. The only thing remembered is that you chose to sign in.
+- Searches, albums, artists, similar songs and the music itself are still asked for anonymously, so they do not show in your YouTube history.
+
+**Sign out**, at the top of Library, only stops Ocean Mist from using the sign-in: Firefox stays signed in. To sign out of YouTube itself, do it in Firefox. If you sign out there, or clear Firefox's cookies, Ocean Mist is signed out too.
+
+Ocean Mist looks for your Firefox profiles where Firefox from Mozilla or from your distribution, the Snap and the Flatpak keep them, and signing in needs Python 3.11 or newer. Other browsers are not supported. If several Google accounts are signed in at once, the first one is used.
+
+> [!CAUTION]
+> These are YouTube Music's own web requests, not a published API, and signed in they are tied to your account. YouTube could sign the session out, or restrict the account. Ocean Mist makes them only for what you ask, at a person's pace.
 
 </details>
 
@@ -209,9 +237,9 @@ The keyboard's media keys reach the player through the desktop's media controls 
 
 ## How it works
 
-The window has no title bar and no borders of its own: it is a transparent, frameless GTK window showing a local web page, and the page draws the whole player: the frame in SVG, the visualizations on a canvas. `player.py` owns the window and runs a small server on `127.0.0.1` that hands the page its files, your songs, the radio streams and YouTube Music. Nothing is served outside your computer. The only network traffic is the radio station you tune to and what you search for and play in Premium Services.
+The window has no title bar and no borders of its own: it is a transparent, frameless GTK window showing a local web page, and the page draws the whole player: the frame in SVG, the visualizations on a canvas. `player.py` owns the window and runs a small server on `127.0.0.1` that hands the page its files, your songs, the radio streams and YouTube Music. Nothing is served outside your computer. The only network traffic is the radio station you tune to, and what you search for, play and, signed in, open or change in Premium Services.
 
-YouTube Music has no public API for a player like this one, so `ytmusic.py` makes the same requests the YouTube Music apps make: searches, albums, artists, playlists and similar songs, then each song's audio. That audio arrives as AAC in pieces a few seconds long; `ytmusic.py` repacks each piece as MP4 and the page plays them through Media Source, so no YouTube code, player or app runs.
+YouTube Music has no public API for a player like this one, so `ytmusic.py` makes the same requests the YouTube Music apps make: searches, albums, artists, playlists and similar songs, then each song's audio. That audio arrives as AAC in pieces a few seconds long; `ytmusic.py` repacks each piece as MP4 and the page plays them through Media Source, so no YouTube code, player or app runs. When you have signed in, the requests for your library and its changes carry the sign-in that `firefox.py` reads from Firefox, signed the way the website signs its own; all the others stay anonymous.
 
 ```mermaid
 flowchart LR
@@ -223,11 +251,13 @@ flowchart LR
     tags["<b>tags.py</b><br/>titles, covers, lengths"]
     radio["<b>radio.py</b><br/>station relay"]
     ytmusic["<b>ytmusic.py</b><br/>YouTube Music"]
+    firefox["<b>firefox.py</b><br/>your sign-in"]
     mpris["<b>mpris.py</b><br/>media keys"]
     page <-->|"HTTP on 127.0.0.1"| host
     host --> library --> tags
     host --> radio
     host --> ytmusic
+    host --> firefox
     host --> mpris
 ```
 
@@ -237,7 +267,8 @@ flowchart LR
 | `library.py` | The two Now Playing lists (My Music is saved, YouTube Music stays in memory), the library scan, playlists, stations, settings |
 | `tags.py` | Tag, cover and length reader for six formats, standard library only |
 | `radio.py` | Relays a station to the page and reads its song titles |
-| `ytmusic.py` | YouTube Music: searches, albums, artists, playlists, similar songs and covers, and each song's audio repacked for the page, standard library only |
+| `ytmusic.py` | YouTube Music: searches, albums, artists, playlists, similar songs and covers, and each song's audio repacked for the page; signed in, your library, likes and playlist changes. Standard library only |
+| `firefox.py` | Reads your YouTube sign-in from Firefox into memory when a request needs it, read-only, standard library only |
 | `mpris.py` | The desktop's media controls |
 | `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations, `premium.js` is Premium Services |
 | `data/` | Application icon and menu entry |
@@ -248,7 +279,7 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 
 - **Media Guide, Copy from CD and Copy to CD or Device** are in the task bar because the original had them, and open a short note instead.
 - **Gapless playback** between songs is not built yet.
-- **YouTube Music** has no sign-in yet, so your own playlists, likes and uploads are not there, and live streams do not play.
+- **YouTube Music** signs in through Firefox only. Library albums, artists, songs and uploads are not there yet, playlists cannot be made or renamed, and live streams do not play.
 - **Other streaming services** are not started.
 
 | Milestone | Outcome |

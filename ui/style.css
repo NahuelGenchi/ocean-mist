@@ -161,9 +161,9 @@ body.no-pane #pane, body.no-pane #totalbar { display: none; }
 /* ---- media library, radio tuner, skin chooser, premium services ---- */
 #view-library, #view-radio, #view-skins, #view-premium { background: var(--pane); color: #f1f9ff; display: flex; flex-direction: column; }
 .lib-tools { flex: none; display: flex; gap: 5px; align-items: center; height: 26px; padding: 0 6px; background: #636dbc; border-bottom: 1px solid #424883; }
-.lib-tools button, #radio-form button { height: 18px; padding: 0 8px; border-radius: 2px; color: #10182f; background: linear-gradient(#fbfdff, #dbe3f2); box-shadow: 0 0 0 1px #3d4580; white-space: nowrap; }
-.lib-tools button:hover, #radio-form button:hover { background: linear-gradient(#fff, #edf2fb); }
-.lib-tools button:active, #radio-form button:active { background: #c5cfe6; }
+.lib-tools button, #radio-form button, .yt-sign button { height: 18px; padding: 0 8px; border-radius: 2px; color: #10182f; background: linear-gradient(#fbfdff, #dbe3f2); box-shadow: 0 0 0 1px #3d4580; white-space: nowrap; }
+.lib-tools button:hover, #radio-form button:hover, .yt-sign button:hover { background: linear-gradient(#fff, #edf2fb); }
+.lib-tools button:active, #radio-form button:active, .yt-sign button:active { background: #c5cfe6; }
 .lib-tools button svg { display: inline-block; width: 7px; height: 5px; margin: 0 0 1px 5px; }
 .lib-tools button:disabled { color: #8a8fa5; background: linear-gradient(#f4f6fa, #e1e6ef); }
 #lib-search, #yt-search, #radio-form input { width: 150px; height: 18px; border: 1px solid #3d4580; border-radius: 2px; padding: 0 4px; font: inherit; background: #fff; color: #111; outline: none; }
@@ -214,6 +214,10 @@ body.no-pane #pane, body.no-pane #totalbar { display: none; }
 #yt-head b { display: block; font-size: 13px; line-height: 17px; color: #fff; overflow: hidden; text-overflow: ellipsis; }
 .lib-table .yt-group td { height: 21px; padding-top: 5px; font-weight: 700; color: #c9d0f4; }
 .lib-table td.dim { color: #aab2dc; }
+.yt-sign { max-width: 400px; margin: 10px auto; line-height: 15px; }
+.yt-sign button { margin-top: 10px; }
+#yt-head a { color: #d6e4ff; text-decoration: underline; }
+#yt-head a:hover { color: #fff; }
 #yt-more { float: right; margin-left: 10px; color: #d6e4ff; text-decoration: underline; }
 #yt-more:hover { color: #fff; }
 
