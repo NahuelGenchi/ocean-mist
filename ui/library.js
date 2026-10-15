@@ -3,7 +3,7 @@
 // Local music only: its Now Playing is My Music, and YouTube Music has its
 // own list in Premium Services.
 (() => {
-  const { $, state, api, on, esc, clock, menu, base } = Mist;
+  const { $, state, api, on, onPlay, esc, clock, menu, base } = Mist;
   const PAGE = 400;   // rows drawn at a time; more are added while scrolling
   const KINDS = { artist: 'Artist', album: 'Album', genre: 'Genre' };
   const UNKNOWN = { artist: 'Unknown Artist', album: 'Unknown Album', genre: 'Unknown Genre' };
@@ -175,6 +175,7 @@
     ]);
   });
   $('lib-play').addEventListener('click', () => playRows(lib.sel));
+  onPlay('library', () => { if (!lib.rows.some((t) => t.id === lib.sel)) return false; playRows(lib.sel); return true; });
   $('lib-queue').addEventListener('click', () => addToList(lib.sel !== null ? [lib.sel] : lib.rows.map((t) => t.id)));
   $('lib-remove').addEventListener('click', () => { if (lib.sel !== null) api('remove', { ids: [lib.sel] }); });
   $('lib-clear').addEventListener('click', () => api('clear', { list: 'local' }));

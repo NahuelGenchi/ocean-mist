@@ -1,6 +1,6 @@
 // Radio Tuner: internet radio stations, kept as a name and an address.
 (() => {
-  const { $, state, api, on, esc, menu } = Mist;
+  const { $, state, api, on, onPlay, esc, menu } = Mist;
   let sel = null, editing = null;
 
   function draw() {
@@ -39,6 +39,7 @@
     const id = sel !== null ? sel : (state.stations[0] || {}).id;
     if (id !== undefined) Mist.playStation(id);
   });
+  onPlay('radio', () => { if (!Mist.station(sel)) return false; Mist.playStation(sel); return true; });
   $('radio-add').addEventListener('click', () => edit(null));
   $('radio-edit').addEventListener('click', () => { if (Mist.station(sel)) edit(Mist.station(sel)); });
   $('radio-remove').addEventListener('click', () => remove(sel));
