@@ -248,15 +248,15 @@ flowchart LR
         page["<b>ui/</b><br/>frame, controls,<br/>visualizations, equalizer"]
     end
     host["<b>player.py</b><br/>window, dialogs,<br/>local server"]
+    radio["<b>radio.py</b><br/>station relay"]
     library["<b>library.py</b><br/>lists, library, settings"]
     tags["<b>tags.py</b><br/>titles, covers, lengths"]
-    radio["<b>radio.py</b><br/>station relay"]
     ytmusic["<b>ytmusic.py</b><br/>YouTube Music"]
     firefox["<b>firefox.py</b><br/>your sign-in"]
     mpris["<b>mpris.py</b><br/>media keys"]
     page <-->|"HTTP on 127.0.0.1"| host
-    host --> library --> tags
     host --> radio
+    host --> library --> tags
     host --> ytmusic
     host --> firefox
     host --> mpris
