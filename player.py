@@ -389,7 +389,7 @@ class Handler(BaseHTTPRequestHandler):
                 if cmd == "yt-like":
                     music.rate(video, bool(msg.get("like")), session)
                 elif cmd == "yt-playlist-add":
-                    result["added"] = music.add_to_playlist(str(msg.get("playlist")), video, session)
+                    music.add_to_playlist(str(msg.get("playlist")), video, session)
                 else:
                     music.remove_from_playlist(str(msg.get("playlist")), video, str(msg.get("set")), session)
             except YTError as error:

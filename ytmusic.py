@@ -936,18 +936,17 @@ class YTMusic:
                    session=session)
 
     def add_to_playlist(self, playlist, video, session):
-        """Add a song to one of your playlists: True, or False when it is
-        in that playlist already (and so was not added again)."""
+        """Add a song to one of your playlists. YTError when YouTube Music
+        does not, in its own words when it gives them: it does not add a
+        song that is in the playlist already."""
         if not VIDEO_ID.match(str(video)):
             raise YTError("that is not a YouTube Music song")
         data = self._call("browse/edit_playlist", {
             "playlistId": _bare(playlist),
             "actions": [{"action": "ACTION_ADD_VIDEO", "addedVideoId": video}]}, session=session)
-        if "SUCCEEDED" in str(data.get("status")):
-            return True
-        if _find(data, "confirmDialogRenderer") is not None:   # YouTube Music asks before adding a song twice
-            return False
-        raise YTError("YouTube Music did not add the song to that playlist")
+        if "SUCCEEDED" not in str(data.get("status")):   # it says why in a notice
+            why = _text(_dig(_find(data, "notificationActionRenderer"), "responseText"))
+            raise YTError(why[:200] or "YouTube Music did not add the song to that playlist")
 
     def remove_from_playlist(self, playlist, video, place, session):
         """Take a song out of one of your playlists; `place` is where it is

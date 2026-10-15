@@ -413,9 +413,9 @@
   }
   function addTo(playlist, item) {
     api('yt-playlist-add', { playlist: playlist.id, video: item.video }).then((r) => {
-      if (!r.ok) { failed(r); return; }
-      Mist.flash(r.added ? `Added to “${playlist.title}”` : `“${item.title}” is in “${playlist.title}” already`, 5000);
-      if (r.added) stale(keyOf(playlist));
+      if (!r.ok) { failed(r); return; }   // a song that is there already, for one: YouTube Music says so
+      Mist.flash(`Added to “${playlist.title}”`, 5000);
+      stale(keyOf(playlist));
     });
   }
   function takeOut(page, item) {
