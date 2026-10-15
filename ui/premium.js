@@ -151,7 +151,7 @@
     let page = yt.pages[key];
     if (!page || page.error || page.loading) {
       page = await fetchPage(kind, id);
-      if (page.error) { failed(page); return null; }
+      if (page.error) { failed(page, kind.startsWith('apple-')); return null; }
       yt.pages[key] = page;
       if (kind === 'mine') learn(page.tracks); else remember(key, page.title);
     }
@@ -392,7 +392,10 @@
   function add(item) {
     if (playable(item)) api('yt-add', { items: [song(item)] });
     else if (item && (item.kind === 'album' || item.kind === 'playlist')) playItem(item, true);
-    else if (!item) { const songs = yt.rows.map((r) => r.item).filter(playable); if (songs.length) api('yt-add', { items: songs.map(song) }); }
+    else if (!item) {
+      const songs = yt.rows.map((r) => r.item).filter(playable);
+      if (songs.length) api('yt-add', { items: songs.map(song) }).then((r) => { if (r.limit) Mist.flash(`Only the first ${r.limit} songs were added`, 6000); });
+    }
   }
   function choose(item) {   // a double-click, or Play in the tool bar
     if (!item || playable(item)) playRows(item);
@@ -544,9 +547,9 @@
     });
   }
   function signedOut(r) { yt.library = { error: r.error, signed_out: true }; drawTree(); }
-  function failed(r) {
-    Mist.flash(sentence(r.error || 'YouTube Music did not answer'), 6000);
-    if (r.signed_out) signedOut(r);
+  function failed(r, apple) {
+    Mist.flash(sentence(r.error || (apple ? 'Apple Music did not answer' : 'YouTube Music did not answer')), 6000);
+    if (r.signed_out) (apple ? appleOut : signedOut)(r);
   }
   // a page of yours that changed: read again the next time it is shown
   function stale(key) {
@@ -614,7 +617,7 @@
   // follow the last one heard, which is another when this one could not play
   Mist.carryOn = (t) => {
     if (!Mist.isStream(t) || t.apple || state.settings.yt_radio === false) return false;   // Apple Music has no radio here
-    const seed = Mist.track(state.played) || t;
+    const heard = Mist.track(state.played), seed = heard && !heard.apple ? heard : t;   // an Apple Music song has no video to start from
     Mist.flash('Finding similar songs…', 15000);
     api('yt-similar', { id: seed.id }).then((r) => {
       if (state.cur !== t.id || state.station !== null || state.mode !== 'playing') return;   // something else was chosen meanwhile

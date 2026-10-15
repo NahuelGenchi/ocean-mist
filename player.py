@@ -30,7 +30,7 @@ import radio
 from apple import AppleError, AppleMusic
 from library import (APP_ID, AUDIO_EXTENSIONS, PAGE_SETTINGS, PLAYLIST_EXTENSIONS,
                      Library, is_playlist, music_dir, stream_key)
-from ytmusic import YTError, YTMusic
+from ytmusic import PLAYLIST_LIMIT, YTError, YTMusic
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI_DIR = os.path.join(HERE, "ui")
@@ -451,6 +451,10 @@ class Handler(BaseHTTPRequestHandler):
                     library.request_play(target)
         elif cmd in ("yt-play", "yt-add"):
             items = [i for i in msg.get("items", []) if isinstance(i, dict)]
+            if len(items) > PLAYLIST_LIMIT:   # a long list of songs: the ones from the start on, or all that fit
+                at = next((n for n, i in enumerate(items) if stream_key(i) == msg.get("start")), 0)
+                items = items[at:at + PLAYLIST_LIMIT]
+                result["limit"] = PLAYLIST_LIMIT
             if cmd == "yt-play" and msg.get("similar") and items:   # the song, then songs like it
                 try:
                     items += self._similar(str(items[0].get("video")), {items[0].get("video")})
@@ -478,6 +482,8 @@ class Handler(BaseHTTPRequestHandler):
             result = self._sign_in(msg, "yt_account", firefox.signed_in, firefox.SIGN_IN)
         elif cmd == "apple-sign-in":
             result = self._sign_in(msg, "apple_account", firefox.apple_signed_in, firefox.APPLE_SIGN_IN)
+            if result.get("signed_in") and self.apple is not None:
+                self.apple.close()   # a page opened with an earlier sign-in is not used for this one
         elif cmd in ("yt-sign-out", "apple-sign-out"):   # Ocean Mist stops using the sign-in; Firefox stays signed in
             library.settings["yt_account" if cmd == "yt-sign-out" else "apple_account"] = False
             library.save()
@@ -711,7 +717,8 @@ def run_app(argv):
                     library.keep_cover(track, cover_of(self.music, track["cover"]))
                 except YTError:
                     pass
-                GLib.idle_add(lambda: self._waiting.discard(track["id"]) or self._now_changed())
+                finally:   # whatever went wrong, the song is announced
+                    GLib.idle_add(lambda: self._waiting.discard(track["id"]) or self._now_changed())
 
             threading.Thread(target=run, daemon=True).start()
 

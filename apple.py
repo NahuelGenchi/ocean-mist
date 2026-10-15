@@ -24,6 +24,7 @@ keep it from signing you out (Page._rules).
                           Firefox and counts what your library holds (no titles)
 """
 import difflib
+import http.client
 import json
 import os
 import re
@@ -57,7 +58,7 @@ CHANGED = "Apple Music changed something Ocean Mist depends on, so the player ne
 UNSAFE = "Ocean Mist could not keep Apple's page from signing you out, so it did not open it"
 
 PICTURE_HOSTS = re.compile(r"^https://(?:[a-z0-9-]+\.)*(?:mzstatic\.com|blobstore\.apple\.com)/", re.I)
-ITEM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$")   # a song's, album's, playlist's or artist's id
+ITEM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,59}\Z")   # a song's, album's, playlist's or artist's id
 SONG_URL = "https://music.apple.com/song/"        # how a saved playlist names a song
 
 # what the library holds: where Apple keeps it, and how many items come at a time
@@ -69,6 +70,10 @@ LIBRARY = {
     "songs": ("/v1/me/library/songs", PAGE),
 }
 PAGES = {"playlist": "playlists", "album": "albums", "artist": "artists"}
+TOP = frozenset(path for path, _ in LIBRARY.values())   # the lists of the library itself
+# what a request's address says when it signs you out, in the spellings Apple might use
+SIGN_OUT = ("log.?out", "sign.?out", "log.?off", "sign.?off", "unauthori[sz]e")
+MISS = 900                       # seconds a song YouTube Music did not have is not looked for again
 
 
 class AppleError(YTError):
@@ -111,8 +116,10 @@ try {
 """
 
 
-def _answer(raw):
-    """What the page said to a call: Apple's answer, or an AppleError."""
+def _answer(raw, personal=True):
+    """What the page said to a call: Apple's answer, or an AppleError. A 403 means
+    you are signed out only for the library itself (`personal`); for one page of it, it
+    means that page is not for Ocean Mist."""
     try:
         said = json.loads(raw)
     except (TypeError, ValueError):
@@ -120,9 +127,11 @@ def _answer(raw):
     if not isinstance(said, dict):
         raise AppleError(CHANGED)
     status = said.get("status") if isinstance(said.get("status"), int) else 0
-    if said.get("signed_out") or status in (401, 403):
+    if said.get("signed_out") or status == 401 or (status == 403 and personal):
         raise AppleError(SIGNED_OUT, signed_out=True, status=status)
     if not said.get("ok"):
+        if status == 403:
+            raise AppleError("Apple Music did not let Ocean Mist open that", status=403)
         if status == 404:
             raise AppleError("Apple Music has no such page", status=404)
         if status == 429:
@@ -138,10 +147,9 @@ def _answer(raw):
 class Page:
     """Apple's web player in a view with no window, signed in with `token`
     (firefox.AppleToken). Only the GTK main thread touches it; `call` answers
-    through a function, once the page is up. `hosts` are the sites whose
-    sign-out requests are blocked (Apple's, and a stand-in's in a check)."""
+    through a function, once the page is up."""
 
-    def __init__(self, token, site=SITE, hosts=("apple.com",), folder=None):
+    def __init__(self, token, site=SITE, folder=None):
         import gi
         gi.require_version("Soup", "3.0")
         gi.require_version("WebKit2", "4.1")
@@ -150,12 +158,24 @@ class Page:
         self.site, self.state, self.error = site, "loading", None
         self.waiting, self.running = [], {}
         self.released = False
+        self.view = self.expiry = None
         self.born = time.monotonic()
         self.deadline = self.born + READY
         self.loaded = self.seen = None
         self.token = token
-        self.folder = tempfile.mkdtemp(prefix="ocean-mist-apple-",   # the rules' compiled form
-                                       dir=folder or os.environ.get("XDG_RUNTIME_DIR"))
+        base = folder or os.environ.get("XDG_RUNTIME_DIR")   # the rules' compiled form: in memory, or nowhere
+        if not base or not os.path.isdir(base):
+            raise AppleError(UNSAFE)
+        self.folder = tempfile.mkdtemp(prefix="ocean-mist-apple-", dir=base)
+        try:
+            self._open()
+        except BaseException:
+            self.token = None
+            self._release()
+            raise
+
+    def _open(self):
+        GLib, WebKit2 = self.GLib, self.WebKit2
         self.context = WebKit2.WebContext.new_ephemeral()   # in memory: no cache, no site data on disk
         manager = self.context.get_website_data_manager()
         for name in ("set_itp_enabled", "set_resource_load_statistics_enabled"):
@@ -185,16 +205,16 @@ class Page:
         self.view.connect("decide-policy", self._decide)
         self.view.connect("create", lambda *_: None)   # no windows of its own
         store = WebKit2.UserContentFilterStore.new(self.folder)
-        store.save("sign-out", GLib.Bytes.new(self._rules(hosts)), None, self._rules_saved, None)
+        store.save("sign-out", GLib.Bytes.new(self._rules()), None, self._rules_saved, None)
+        self.expiry = GLib.timeout_add_seconds(READY + 2, self._expire)   # whatever stalls, it ends
 
     @staticmethod
-    def _rules(hosts):
-        """Block every request whose address names a sign-out: if Apple's page
-        thinks the sign-in is bad it signs it out, and that would end the
-        one in Firefox too."""
-        return json.dumps([
-            {"trigger": {"url-filter": f".*{re.escape(host)}.*/.*{word}.*"}, "action": {"type": "block"}}
-            for host in hosts for word in ("logout", "signout")]).encode()
+    def _rules():
+        """Block every request whose address names a sign-out, on any site: if
+        Apple's page thinks the sign-in is bad it signs it out, and that would
+        end the one in Firefox too."""
+        return json.dumps([{"trigger": {"url-filter": f".*{word}.*"}, "action": {"type": "block"}}
+                           for word in SIGN_OUT]).encode()
 
     def _rules_saved(self, store, result, _):
         if self.state != "loading":
@@ -203,15 +223,19 @@ class Page:
             self.view.get_user_content_manager().add_filter(store.save_finish(result))
         except Exception:   # without the block the page is not opened with your sign-in
             return self._fail(AppleError(UNSAFE))
-        token, Soup = self.token, self.Soup
-        left = int(token.expires - time.time()) if token.expires else -1
-        cookie = Soup.Cookie.new(firefox.APPLE_KEY, token.value, token.host, "/", max(1, left) if left != -1 else -1)
-        cookie.set_secure(token.secure)
-        cookie.set_http_only(token.http_only)
-        cookie.set_same_site_policy({1: Soup.SameSitePolicy.LAX, 2: Soup.SameSitePolicy.STRICT}.get(
-            token.same_site, Soup.SameSitePolicy.NONE))
-        self.token = None   # the page holds it now
-        self.cookies.add_cookie(cookie, None, self._cookie_added, None)
+        try:
+            token, Soup = self.token, self.Soup
+            left = int(token.expires - time.time()) if token.expires else -1
+            cookie = Soup.Cookie.new(firefox.APPLE_KEY, token.value, token.host, "/",
+                                     min(max(1, left), 2 ** 31 - 1) if left != -1 else -1)
+            cookie.set_secure(token.secure or self.site.startswith("https://"))
+            cookie.set_http_only(token.http_only)
+            cookie.set_same_site_policy({1: Soup.SameSitePolicy.LAX, 2: Soup.SameSitePolicy.STRICT}.get(
+                token.same_site, Soup.SameSitePolicy.NONE))
+            self.token = None   # the page holds it now
+            self.cookies.add_cookie(cookie, None, self._cookie_added, None)
+        except Exception:
+            self._fail(AppleError("Ocean Mist could not give your sign-in to Apple's page"))
 
     def _cookie_added(self, manager, result, _):
         if self.state != "loading":
@@ -222,6 +246,12 @@ class Page:
             return self._fail(AppleError("Ocean Mist could not give your sign-in to Apple's page"))
         self.view.load_uri(self.site)
         self.GLib.timeout_add(400, self._poll)
+
+    def _expire(self):
+        self.expiry = None
+        if self.state == "loading":
+            self._fail(AppleError("Apple Music's page did not open in time; try again"))
+        return False
 
     def _load_changed(self, view, event):
         if event == self.WebKit2.LoadEvent.FINISHED and self.loaded is None:
@@ -281,9 +311,15 @@ class Page:
 
     def _ready(self):
         self.state = "ready"
+        self._stop_timer()
         waiting, self.waiting = self.waiting, []
         for job in waiting:
             self._send(*job)
+
+    def _stop_timer(self):
+        if self.expiry is not None:
+            self.GLib.source_remove(self.expiry)
+            self.expiry = None
 
     def call(self, path, query, finish):
         """Ask MusicKit for `path`; `finish(ok, answer or AppleError)` is called
@@ -308,8 +344,10 @@ class Page:
                 return
             try:
                 raw = view.call_async_javascript_function_finish(result).to_string()
-                answer = _answer(raw)
+                answer = _answer(raw, path in TOP)
             except AppleError as error:
+                if error.signed_out:   # Apple no longer takes this sign-in: the next request reads Firefox's again
+                    self._fail(error)
                 return wanted(False, error)
             except Exception:
                 return wanted(False, AppleError("Apple Music's page did not answer"))
@@ -321,6 +359,7 @@ class Page:
         if self.state == "dead":
             return
         self.state, self.error, self.token = "dead", error, None
+        self._stop_timer()
         waiting, running = self.waiting, list(self.running.values())
         self.waiting, self.running = [], {}
         for _, _, finish in waiting:
@@ -340,9 +379,9 @@ class Page:
         if self.released:
             return False
         self.released = True
-        for step in (self.view.terminate_web_process, self.view.destroy):
+        for step in ("terminate_web_process", "destroy"):
             try:
-                step()
+                getattr(self.view, step)()
             except Exception:
                 pass
         shutil.rmtree(self.folder, ignore_errors=True)
@@ -450,17 +489,25 @@ def song_id(link):
 
 # ---- playing a song of Apple Music from YouTube Music ----
 
-# what makes a recording another one than the song asked for
-VARIANTS = ("live", "remix", "acoustic", "instrumental", "karaoke", "cover", "demo", "sped up", "slowed",
-            "reverb", "nightcore", "8d", "tribute", "mashup", "unplugged", "a cappella", "acapella")
+# what makes a recording another one than the song asked for. Some are never the song: someone
+# else's version of it, or the music changed. A live take, a remix or an acoustic one is the song in
+# another version, and is played only when nothing closer is found.
+OTHERS = ("instrumental", "karaoke", "cover", "sped up", "slowed", "reverb", "nightcore", "8d", "tribute",
+          "mashup", "a cappella", "acapella")
+VARIANTS = OTHERS + ("live", "remix", "acoustic", "demo", "unplugged")
 _BRACKETS = re.compile(r"[\(\[][^\)\]]*[\)\]]")
 _NOTE = re.compile(r"\s-\s.*(?:remaster|version|mix|edit|live|single|mono|stereo|deluxe|bonus|demo|acoustic"
                    r"|from\b|soundtrack|original|anniversary|\d{4}).*$")
-_FEAT = re.compile(r"\s(?:feat|ft|featuring|with)\b\.?\s.*$")
+_FEAT = re.compile(r"\s(?:feat|ft|featuring)\b\.?\s.*$")
+_GUEST = re.compile(r"\s*(?:feat|ft|featuring|with|from)\b")
+# which part or take a song is, as against which edition: "(Part 2)", "(Reprise)", "(Taylor's Version)"
+# stay in the title, where the numbers are compared; the rest of a bracket is let go
+_PART = re.compile(r"\b(?:part|pt|vol|volume|chapter|act|movement|reprise|interlude|intro|outro|skit|prelude|medley)\b"
+                   r"|\w+'s version")
 
 
 def _plain(text):
-    text = unicodedata.normalize("NFKD", str(text or "")).casefold()
+    text = unicodedata.normalize("NFKD", str(text or "")).casefold().replace("\u2019", "'")
     return "".join(c for c in text if not unicodedata.combining(c))
 
 
@@ -468,10 +515,16 @@ def _words(text):
     return " ".join(re.sub(r"[^\w\s]", " ", text.replace("&", " and ")).split())
 
 
+def _bracket(found):
+    inner = found.group(0)[1:-1]
+    return f" {inner} " if _PART.search(inner) and not _GUEST.match(inner) else " "
+
+
 def _core(title):
-    """A title without what only says which edition it is: (feat. …), (Remastered), - Single Version."""
+    """A title without what only says which edition it is: (feat. …), (Remastered), - Single Version.
+    What says which part it is stays."""
     text = _plain(title)
-    text = _NOTE.sub("", _BRACKETS.sub(" ", text))
+    text = _NOTE.sub(lambda found: found.group(0) if _PART.search(found.group(0)) else "", _BRACKETS.sub(_bracket, text))
     return _words(_FEAT.sub("", text)) or _words(_plain(title))
 
 
@@ -490,16 +543,27 @@ def _alike(a, b):
     return difflib.SequenceMatcher(None, a, b).ratio() if a and b else 0.0
 
 
+def _compact(name):
+    name = re.sub(r"^the ", "", name)
+    return name.replace(" ", "")
+
+
 def _same_name(a, b):
-    return a == b or f" {a} " in f" {b} " or f" {b} " in f" {a} "
+    """The same artist: the same letters, or all but a stray one ("P!nk" and "Pink"). Not
+    "Queen" and "Queen Latifah", or "The Beatles" and "Karaoke Hits The Beatles"."""
+    a, b = _compact(a), _compact(b)
+    return a == b or (min(len(a), len(b)) >= 3 and _alike(a, b) >= 0.85)
 
 
 def _score(want, found, strict=False):
     """How well a YouTube Music result is the song asked for, or None when it is not."""
     ours, theirs = _core(want["title"]), _core(found.get("title"))
     title = _alike(ours, theirs)
-    if title < (0.85 if strict else 0.7) or re.findall(r"\d+", ours) != re.findall(r"\d+", theirs):
+    if title < (0.9 if strict else 0.82) or re.findall(r"\d+", ours) != re.findall(r"\d+", theirs):
         return None   # (the numbers must be the same: "Song 1" is not "Song 10")
+    extra = (_flags(found.get("title")) | _flags(found.get("artist"))) - (_flags(want["title"]) | _flags(want.get("artist")))
+    if extra & set(OTHERS):
+        return None   # a karaoke version, a cover, a sped-up one: not the song
     wanted, listed = _people(want.get("artist")), _people(found.get("artist"))
     shared = [name for name in wanted if any(_same_name(name, other) for other in listed)]
     if wanted and listed and not shared:
@@ -514,8 +578,8 @@ def _score(want, found, strict=False):
         return None
     if strict and sought and got and abs(sought - got) > 12:
         return None
-    score += 0.5 * -len(_flags(found.get("title")) - _flags(want["title"]))   # a live take of a studio song
-    score += 0.3 * -len(_flags(want["title"]) - _flags(found.get("title")))
+    score -= 0.5 * len(extra)   # a live take of a studio song
+    score -= 0.3 * len(_flags(want["title"]) - _flags(found.get("title")))   # a studio take of a live song
     if _alike(_core(want.get("album")), _core(found.get("album"))) >= 0.8:
         score += 0.1
     if found.get("kind") == "song":
@@ -565,13 +629,14 @@ class AppleMusic:
     raises AppleError; it is called when the page has to be opened.
     `schedule(fn)` runs `fn` on the GTK main thread."""
 
-    def __init__(self, token_source, schedule, site=SITE, hosts=("apple.com",), folder=None):
+    def __init__(self, token_source, schedule, site=SITE, folder=None):
         self.token_source, self.schedule = token_source, schedule
-        self.site, self.hosts, self.folder = site, hosts, folder
+        self.site, self.folder = site, folder
         self.page = None          # the Page; touched on the main thread only
         self.last = 0.0
+        self.generation = 0       # changes when you sign out: a request begun before is refused
         self.lock = threading.Lock()
-        self.matches = {}         # Apple song id -> its YouTube Music video id ("" when there is none)
+        self.matches = {}         # Apple song id -> (its YouTube Music video id, "" when there is none; when)
         self.looking = {}         # ...and a lock for each one being looked up
         self.ahead = set()        # songs being found ahead of their turn
         self.missed = {}          # song -> when YouTube Music could not be asked about it
@@ -579,6 +644,7 @@ class AppleMusic:
     # -- the page --
     def _ask(self, path, query=None):
         done, box = threading.Event(), {}
+        generation = self.generation
         token = None if self.page is not None and self.page.state != "dead" else self.token_source()
 
         def finish(ok, value):
@@ -587,10 +653,12 @@ class AppleMusic:
 
         def run():
             try:
+                if generation != self.generation:   # you signed out meanwhile: no page is opened with the sign-in read before
+                    raise AppleError(SIGNED_OUT, signed_out=True)
                 self.last = time.monotonic()
                 page = self.page
                 if page is None or page.state == "dead":
-                    page = self.page = Page(token or self.token_source(), self.site, self.hosts, self.folder)
+                    page = self.page = Page(token or self.token_source(), self.site, self.folder)
                     self.watch(page)
                 page.call(path, query, finish)
             except AppleError as error:
@@ -621,7 +689,8 @@ class AppleMusic:
             page.close(now)
 
     def close(self):
-        """Close the page (from any thread): you signed out, or the player closes."""
+        """Close the page (from any thread): you signed out, or in again. A request begun before is refused."""
+        self.generation += 1
         self.schedule(lambda: self.close_now())
 
     # -- the library --
@@ -684,21 +753,37 @@ class AppleMusic:
         YouTube Music cannot be asked."""
         key = str(want.get("apple"))
         with self.lock:
-            if key in self.matches:
-                return self.matches[key] or None
+            known = self._known(key)
+            if known is not None:
+                return known or None
             guard = self.looking.setdefault(key, threading.Lock())
         with guard:
             with self.lock:
-                if key in self.matches:
-                    return self.matches[key] or None
+                known = self._known(key)
+                if known is not None:
+                    return known or None
             try:
                 video = find_on_youtube(music, want)
                 with self.lock:
-                    self.matches[key] = video or ""
+                    self.matches[key] = (video or "", time.monotonic())
+                    while len(self.matches) > 5000:
+                        del self.matches[next(iter(self.matches))]
             finally:
                 with self.lock:
                     self.looking.pop(key, None)
             return video
+
+    def _known(self, key):
+        """What is remembered of a song (caller holds the lock): its video id, "" for a song
+        YouTube Music did not have a short while ago, None when it has to be looked up."""
+        got = self.matches.get(key)
+        if got is None:
+            return None
+        video, when = got
+        if video or time.monotonic() - when < MISS:
+            return video
+        del self.matches[key]
+        return None
 
     def prefetch(self, want, music):
         """Get the song that plays next ready, in a thread of its own: find it
@@ -727,28 +812,53 @@ class AppleMusic:
         threading.Thread(target=run, daemon=True).start()
 
 
-def picture(url, cache={}):
+class _Stay(urllib.request.HTTPRedirectHandler):
+    """A picture server that sends the request elsewhere is not followed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not PICTURE_HOSTS.match(newurl):
+            raise urllib.error.HTTPError(newurl, code, "that is not an Apple Music picture", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(_Stay)
+_pictures, _pictures_lock = {}, threading.Lock()
+
+
+def picture(url, cache=_pictures):
     """A cover's (type, bytes). Only Apple's own picture servers are asked."""
     if not PICTURE_HOSTS.match(str(url)):
         raise AppleError("that is not an Apple Music picture")
-    found = cache.pop(url, None)
-    if found:
-        cache[url] = found
-        return found
+    with _pictures_lock:
+        found = cache.pop(url, None)
+        if found:
+            cache[url] = found
+            return found
     request = urllib.request.Request(url, headers={"User-Agent": ytmusic.BROWSER})
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with _opener.open(request, timeout=15) as response:
             kind = response.headers.get_content_type()
-            data = response.read(8 << 20)
+            data, until = [], time.monotonic() + 30
+            size = 0
+            while size < 8 << 20:
+                chunk = response.read(64 << 10)
+                if not chunk:
+                    break
+                data.append(chunk)
+                size += len(chunk)
+                if time.monotonic() > until:
+                    raise TimeoutError
+            data = b"".join(data)
     except urllib.error.HTTPError as error:
         raise AppleError(f"Apple sent no picture (HTTP {error.code})") from None
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError):
         raise AppleError(OFFLINE) from None
     if not kind.startswith("image/") or not data:
         raise AppleError("Apple sent no picture")
-    cache[url] = (kind, data)
-    while len(cache) > PICTURES:
-        del cache[next(iter(cache))]
+    with _pictures_lock:
+        cache[url] = (kind, data)
+        while len(cache) > PICTURES:
+            del cache[next(iter(cache))]
     return kind, data
 
 
