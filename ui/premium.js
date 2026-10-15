@@ -5,7 +5,7 @@
 // memory only. Signed in through Firefox (firefox.py), the Library shows your
 // playlists and Liked music, and songs can be liked and put in your playlists.
 (() => {
-  const { $, state, api, on, esc, clock, menu, base, sentence } = Mist;
+  const { $, state, api, on, onPlay, esc, clock, menu, base, sentence } = Mist;
   const SEARCHES = [['all', 'Top results'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']];
   const NOUNS = { all: ['result', 'results'], songs: ['song', 'songs'], albums: ['album', 'albums'], artists: ['artist', 'artists'], playlists: ['playlist', 'playlists'] };
   const yt = {
@@ -461,6 +461,7 @@
   const chosen = () => (yt.rows[yt.sel] || {}).item || null;
   $('yt-back').addEventListener('click', () => { if (yt.back.length) { const node = yt.back[yt.back.length - 1]; yt.back = yt.back.slice(0, -1); show(node, true); } });
   $('yt-play').addEventListener('click', () => choose(chosen()));
+  onPlay('premium', () => { const item = chosen(); if (item) choose(item); return !!item; });
   $('yt-queue').addEventListener('click', () => add(chosen()));
   $('yt-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); search(e.target.value); } });
 

@@ -28,6 +28,10 @@
   const hooks = {};
   const on = (name, fn) => { (hooks[name] = hooks[name] || []).push(fn); };
   const fire = (name, ...args) => { for (const fn of hooks[name] || []) fn(...args); };
+  // what Play starts in a view with a selection of its own, while nothing plays:
+  // fn() plays the selection as the view's own Play does, or returns false with none
+  const selections = {};
+  const onPlay = (view, fn) => { selections[view] = fn; };
 
   // ---- host ----
   function api(cmd, extra) {
@@ -181,7 +185,9 @@
     }
     audio.play().catch((err) => { if (err && err.name === 'NotAllowedError') setMode('paused'); });
   }
+  const playSelection = () => state.mode === 'stopped' && !!selections[state.view] && selections[state.view]();
   function toggle() {
+    if (playSelection()) return;   // what is selected in the view on screen
     if (state.station !== null) { if (state.mode === 'playing') stop(); else playStation(state.station); return; }
     if (state.mode === 'playing') { audio.pause(); setMode('paused'); return; }
     if (state.cur === null || state.mode === 'stopped') {
@@ -374,8 +380,8 @@
   // what the host passes on from the keyboard's media keys and the desktop's controls
   function control(action, value) {
     const loaded = state.cur !== null || state.station !== null || state.lists.local.length > 0 || state.lists.youtube.length > 0;
-    if (action === 'playpause') { if (loaded) toggle(); }
-    else if (action === 'play') { if (loaded && state.mode !== 'playing') toggle(); }
+    if (action === 'playpause') { if (loaded) toggle(); else playSelection(); }   // never the file dialog
+    else if (action === 'play') { if (state.mode !== 'playing') { if (loaded) toggle(); else playSelection(); } }
     else if (action === 'pause') { if (state.mode === 'playing') toggle(); }
     else if (action === 'stop') stop();
     else if (action === 'next') step(1);
@@ -912,7 +918,7 @@
   }
 
   window.Mist = {
-    $, base, audio, state, api, on, fire, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream,
+    $, base, audio, state, api, on, fire, onPlay, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream,
     play, playStation, toggle, stop, step, setVis, applyVolume, cycleRepeat, repeatMode, control,
     menu, closeMenus, trackMenu, queueNext, queueLast, flash, render, show, layoutChanged, regions, setSleep, setZoom,
     probe() {  // handy for debugging
