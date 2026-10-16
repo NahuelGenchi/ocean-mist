@@ -63,6 +63,8 @@ PROFILE_PREFIX = "ocean-mist-engine"                    # what allow-sandbox.sh 
 PROFILE_PATH = re.compile(r"^/[A-Za-z0-9_./+-]+$")      # the characters that script can put in a profile
 PACKAGE_PROFILE = os.path.join(APPARMOR_DIR, PROFILE_PREFIX)   # what the Debian package installs: one profile for the engine's default place
 PACKAGE_NAMES = re.compile(r"^/(?:home/[^/]+|root)/\.local/share/ocean-mist/engine/electron/electron$")   # the file that profile names
+PACKAGE_DIR = "/usr/lib/ocean-mist"   # where the package puts the player: gone after a removal, while the profile's file stays until a purge
+PACKAGE_DISABLED = os.path.join(APPARMOR_DIR, "disable", PROFILE_PREFIX)   # the link aa-disable makes to switch that profile off
 PKEXEC = "/usr/bin/pkexec"  # polkit's way to run a program as the administrator after a password in the system's window
 BASH = "/usr/bin/bash"
 ASK_WITHIN = 600            # seconds the password window may stay open before Ocean Mist stops waiting for it
@@ -147,11 +149,14 @@ def profile_name(program):
 
 
 def package_covers(program):
-    """Does the Debian package's profile name the engine's file, so that no step is needed? It names the file in
-    the default place of a home folder under /home, and root's. A home folder that AppArmor was told about in its
-    own settings is covered too but is not seen here: the page then explains the step, and the check of the
+    """Does the Debian package's profile name the engine's file, so that no step is needed? The package is installed
+    (its profile's file alone says too little: it stays after a removal), the profile has not been switched off, and
+    the file sits in the default place of a home folder under /home, or root's, which is what the profile names. A
+    home folder that AppArmor was told about in its own settings is covered too but is not seen here: the page then
+    explains the step. Whether the profile is loaded cannot be read without administrator rights: the check of the
     sandbox decides in the end."""
-    return os.path.exists(PACKAGE_PROFILE) and bool(PACKAGE_NAMES.match(os.path.realpath(program)))
+    return (os.path.isdir(PACKAGE_DIR) and os.path.exists(PACKAGE_PROFILE) and not os.path.lexists(PACKAGE_DISABLED)
+            and bool(PACKAGE_NAMES.match(os.path.realpath(program))))
 
 
 def profile_present(program):
