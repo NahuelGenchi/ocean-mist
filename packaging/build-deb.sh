@@ -3,7 +3,7 @@
 #
 #   packaging/build-deb.sh [OUTPUT_FOLDER]     writes OUTPUT_FOLDER/ocean-mist_VERSION_all.deb (default: dist/)
 #
-#   OCEAN_MIST_VERSION=0.1.0 packaging/build-deb.sh     a release build with exactly that version
+#   OCEAN_MIST_VERSION=0.2.0 packaging/build-deb.sh     a release build with exactly that version
 #   OCEAN_MIST_KEEP_WORK=1   packaging/build-deb.sh     keep the folder the package is assembled in
 #
 # It needs git and dpkg-deb (dpkg-deb comes with every Debian-based system; git is one "apt install git" away). It

@@ -144,19 +144,22 @@ Ocean Mist has no build step and nothing to compile: it is a handful of Python f
 
 ### As a package (Ubuntu 24.04 or later, Debian 13 or later)
 
-There is no published release yet, so you build the package from a copy of the repository. That needs `git` (`sudo apt install git` if you do not have it) and `dpkg-deb` (every Debian-based system has it), and no administrator rights:
+Download `ocean-mist_0.1.0_all.deb` from the [latest release](https://github.com/NahuelGenchi/ocean-mist/releases/latest) (its SHA-256 is in the release notes). Open that file with your software installer, or install it from a terminal in the folder you saved it to (apt brings the libraries Ocean Mist needs):
+
+```sh
+sudo apt install ./ocean-mist_0.1.0_all.deb
+```
+
+To install a newer commit than the release, build the package from a copy of the repository instead. That needs `git` (`sudo apt install git` if you do not have it) and `dpkg-deb` (every Debian-based system has it), and no administrator rights:
 
 ```sh
 git clone https://github.com/NahuelGenchi/ocean-mist.git
 cd ocean-mist
 packaging/build-deb.sh
-```
-
-It writes `dist/ocean-mist_<version>_all.deb` from the last commit (what you have not committed does not go in). Open that file with your software installer, or install it from a terminal (apt brings the libraries Ocean Mist needs):
-
-```sh
 sudo apt install ./dist/ocean-mist_*.deb
 ```
+
+`packaging/build-deb.sh` writes `dist/ocean-mist_<version>_all.deb` from the last commit (what you have not committed does not go in). A build of a commit after a release is a snapshot, named after the next release with `~git` and the commit (for example `0.2.0~git20261017120000.abc1234`), so it installs over the release, and the next release installs over it.
 
 Ocean Mist then appears in the app menu and in the "Open with" list for music files, and `ocean-mist` starts it from a terminal. The program lives in `/usr/lib/ocean-mist`, which only the administrator can change; your settings and the playback engine stay in your own folders (see "Where it keeps things" below). The package also installs one AppArmor profile, `/etc/apparmor.d/ocean-mist-engine`, which is what lets Apple Music's playback engine start on Ubuntu 24.04 and later without asking for your password (see "Signing in to Apple Music" below). That profile needs AppArmor 4.0 or later, so the package depends on it, and apt (and `dpkg -i`) refuse to install it on a system with an older one (Debian 12 has 3.0): run Ocean Mist from a copy of the repository there. It has been built and checked on Ubuntu 26.04 only; on the other releases it relies on what its dependencies say.
 
@@ -363,7 +366,7 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 - **YouTube Music** signs in through Firefox only. Library albums, artists, songs and uploads are not there yet, playlists cannot be made or renamed, and live streams do not play.
 - **Apple Music** is read-only. Its songs play in the playback engine, which is a 117 MB download and, on Ubuntu 24.04 and later, needs a permission for its sandbox (the package installs it; without the package it asks once, with administrator rights); the equalizer and the visualizations cannot work on them, there is a gap of a few seconds between songs, and Apple limits how many devices stream at once. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
 - **Spotify** and other streaming services are not started.
-- **Releases**: the Debian package is built from a copy of the repository. There is no published release, apt repository, Flatpak or Snap yet.
+- **Releases**: the Debian package is published with each release on GitHub (0.1.0 is the first) and checked on Ubuntu 26.04 only. There is no apt repository, Flatpak or Snap yet, so a newer release is installed the same way, by downloading its package.
 
 | Milestone | Outcome |
 | :--- | :--- |
