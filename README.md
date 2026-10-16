@@ -99,7 +99,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Now Playing list</strong></td>
-    <td>Two lists, one player: My Music for your files and YouTube Music for what you play from Premium Services (Apple Music's songs too), kept apart and switched at the list's top right. Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
+    <td>Two lists, one player: My Music for your files and a second list for what you play from Premium Services, which takes its name from the service its songs come from (YouTube Music, Apple Music, or both), kept apart and switched at the list's top right. Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Playlists</strong></td>
@@ -115,7 +115,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Apple Music</strong></td>
-    <td>In Premium Services: sign in through Firefox and browse your Apple Music library the way the website shows it: Recently added, Playlists, Albums, Artists and Songs, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. Play puts the songs in the YouTube Music list. Apple's own audio is protected, so each song plays from YouTube Music instead: when its turn comes, Ocean Mist looks up the same title and artist there and plays the best match. Nothing is created or changed in either account, and nothing of Apple's is kept on disk (see <em>Signing in to Apple Music</em> below).</td>
+    <td>In Premium Services: sign in through Firefox and browse your Apple Music library the way the website shows it: Recently added, Playlists, Albums, Artists and Songs, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. Play puts the songs in the second Now Playing list; on a row of Recently added it puts the whole feed there, in the order shown, starting at the row you chose. Apple's own audio is protected, so the songs play in Apple's own web player, which Ocean Mist runs without a window in a <em>playback engine</em> that you download once, after a licence screen, and that runs only while an Apple song plays. It needs an active Apple Music subscription, which the engine checks, and the equalizer and the visualizations cannot work on Apple's songs. Nothing is changed in your account, and nothing of Apple's is kept on disk (see <em>Signing in to Apple Music</em> below).</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Formats</strong></td>
@@ -186,8 +186,9 @@ After that, Ocean Mist appears in the app menu and in the "Open with" list for m
 | :--- | :--- |
 | Settings, My Music, stations, where you left off | `~/.config/ocean-mist/state.json` |
 | Tag cache and your files' covers | `~/.cache/ocean-mist/` |
+| The playback engine, if you install it (Apple Music) | `~/.local/share/ocean-mist/engine/` |
 
-Nothing from YouTube Music or Apple Music is kept there, or anywhere else on disk unless you save a playlist: the list, searches and covers stay in memory, and so do your libraries when you sign in. The pages keep no web cache or site data. The covers they hand to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes, and so does a small folder of rules that keeps Apple's page from signing you out. Of a sign-in, `state.json` only notes which Firefox profile you chose for each service.
+Nothing from YouTube Music or Apple Music is kept in those folders, or anywhere else on disk unless you save a playlist: the list, searches and covers stay in memory, and so do your libraries when you sign in. The pages keep no web cache or site data. The covers they hand to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes, and so does a small folder of rules that keeps Apple's page from signing you out. Of a sign-in, `state.json` only notes which Firefox profile you chose for each service. The engine's folder holds the runtime you downloaded and what Chromium and Google's Widevine module keep for it, never your sign-in or your library; the engine's page in Premium Services removes all of it.
 
 Your music files are only ever read, never changed. Developed on Ubuntu 26.04 with GNOME on Wayland and Python 3.14; other setups have not been tried yet.
 
@@ -235,18 +236,24 @@ Apple lets only developers who pay Apple use its music API, and Ocean Mist asks 
 
 Recently added, Playlists, Albums, Artists and Songs then show under Apple Music in the order Apple gives them. Albums, playlists and artists open as pages, with their covers, and the long lists (Songs, mostly) load a page at a time as you scroll or press **Show more**.
 
-**How a song plays.** Apple's own audio is protected by DRM, which Ocean Mist does not unlock. So **Play** puts the songs in the YouTube Music list, as Apple songs. When one is about to play (and the one after it, so there is no gap), Ocean Mist looks up the same title and artist on YouTube Music, picks the result whose title, artist and length agree best, and plays that song with the equalizer and the visualizations like any other. If YouTube Music has nothing that matches, the status line says which song it did not find, and the list goes on to the next one. The match is kept in memory for the session only, so a saved playlist keeps the Apple address of its songs and finds them again each time. What plays is the YouTube Music version, which can differ from the one in your library (a remaster, say). Ocean Mist prefers the studio version; a live, acoustic or remixed take of your song plays only when it is the closest thing there is and its length is nearly the same, and a karaoke, instrumental, cover, sped-up or similar upload never does. A song that does not match well enough is skipped rather than played.
+**How a song plays.** Apple's own audio is protected by DRM, which Ocean Mist does not unlock or capture: Apple's own web player plays it, as it does in a browser tab, and Google's Widevine module decrypts it inside Chromium. The player has no such thing of its own, so Apple Music songs need a **playback engine**, which you download once from **Apple Music, Playback engine** in Premium Services. A licence screen comes first: it says what is downloaded (castlabs's build of Electron, 117 MB, from its GitHub releases, checked against the checksum Ocean Mist was made with; the first time it starts it also gets Google's Widevine module, about 45 MB, from Google), where it goes (`~/.local/share/ocean-mist/engine`, about 330 MB) and which licences come with it. Nothing is downloaded before you accept, and **Remove** deletes all of it.
+
+When you play an Apple song, Ocean Mist starts the engine, which opens Apple's web player with no window (so no window or taskbar entry of its own appears) and plays the song there; Ocean Mist's own controls drive it: pause, seek, volume, next and previous, repeat, the sleep timer and the desktop's media keys. The engine ends a minute after the music stops (ten minutes after a pause) and when Ocean Mist closes. It needs an Apple Music account with an active subscription, which it checks each time it starts. Apple limits how many devices stream at once (one, on an individual plan), so a song started here can stop one playing on another device, and the other way round. There is a gap of a few seconds between songs, because each one is loaded when its turn comes. Firefox does not have to stay open: Ocean Mist reads the sign-in from Firefox's cookie file, which is still there when Firefox is closed.
+
+Because the sound never passes through the player, **the equalizer and the visualizations cannot work on Apple songs**: the equalizer shows as off, and the visualization keeps moving on its own and says that it is not in time with the music. Songs from your files and from YouTube Music are not affected.
+
+On Ubuntu 24.04 and later the engine needs **one step with administrator rights, once**. Chromium keeps Apple's page in a security sandbox that needs a permission Ubuntu gives only to programs that AppArmor has a profile for, and the engine is not one of those. The engine's page has an **Allow it** button: your system asks for your password in its own window, the same one it shows for any change to the system (it is polkit's `pkexec`, so Ocean Mist never sees the password), and `engine/allow-sandbox.sh` then adds one AppArmor profile that names only the engine's file and gives it that one permission (read the script first if you like; the password window names it, and it runs from Ocean Mist's own folder). The sandbox is checked straight afterwards and nothing else is needed. The page has a button that takes the profile away again, which asks for your password again. That profile belongs to the administrator: removing the engine leaves it, and the page keeps offering to take it away for as long as it is on the system. Where the system has no password window, or it did not work, the page shows the same step as a command to run in a terminal, and the one that undoes it. The engine never runs without its sandbox.
 
 What Ocean Mist reads, and when:
 
 - It reads the sign-in only while you are signed in (or signing in): the one cookie Apple's web player signs in with, from the cookie file of the Firefox profile you chose, read-only and straight into memory. No copy goes to disk, and the file is never written to. While you sign in, it reads every profile's cookie file this way, to see which ones are signed in, and the profiles' names, to tell them apart. Only the cookies of the normal browsing window count, not those of containers or private windows.
-- It hands that cookie to a view of music.apple.com that has no window: Apple's web player, starting up as it does in any browser tab. The view keeps everything in memory (no cache, no site data) and closes after ten minutes without a request.
+- It hands that cookie to a view of music.apple.com that has no window: Apple's web player, starting up as it does in any browser tab. The view keeps everything in memory (no cache, no site data) and closes after ten minutes without a request. The playback engine gets the same cookie on its standard input, never on a command line or in its environment, keeps it in an in-memory session, and keeps to Apple's own addresses over https: it refuses to go to any other site, by a link, a redirect or a frame.
 - It asks the page for your library with read-only requests, and never itself for your name, email address or photo. **Nothing in your Apple Music account is changed**, and Ocean Mist has no way to change it: it does not add, remove, rate or reorder anything. Before the page loads, every request that would sign you out is blocked, because a sign-out there would end the one in Firefox too; if that block cannot be put in place, the page is not opened.
-- Searching for a song to play uses YouTube Music anonymously, with only its title and artist. Nothing is created in any account.
+- Playing an Apple song asks Apple's page to play it, as the website does, and nothing else: Ocean Mist adds nothing to your library or your play history on purpose (Apple's page may record that you played the song, as it does when you play it in a browser).
 
 **Sign out**, at the top of any Apple Music list, only stops Ocean Mist from using the sign-in: Firefox stays signed in. To sign out of Apple Music itself, do it in Firefox. If you sign out there, or clear Firefox's cookies, Ocean Mist is signed out too.
 
-Ocean Mist looks for your Firefox profiles in the same places as for YouTube Music, and Firefox is the only browser it can read. Whether a song of yours plays here depends only on YouTube Music having it.
+Ocean Mist looks for your Firefox profiles in the same places as for YouTube Music, and Firefox is the only browser it can read. Whether a song plays depends on your subscription and on Apple having it for your account.
 
 > [!CAUTION]
 > These are Apple's own web-player requests, not a published API, and signed in they are tied to your account. Apple could change the page, sign the session out, or restrict the account. Ocean Mist makes them only for what you ask, at a person's pace, and reads only.
@@ -277,7 +284,7 @@ The window has no title bar and no borders of its own: it is a transparent, fram
 
 YouTube Music has no public API for a player like this one, so `ytmusic.py` makes the same requests the YouTube Music apps make: searches, albums, artists, playlists and similar songs, then each song's audio. That audio arrives as AAC in pieces a few seconds long; `ytmusic.py` repacks each piece as MP4 and the page plays them through Media Source, so no YouTube code, player or app runs. When you have signed in, the requests for your library and its changes carry the sign-in that `firefox.py` reads from Firefox, signed the way the website signs its own; all the others stay anonymous.
 
-Apple Music has no public API for a program like this one either, and its audio is protected, so `apple.py` takes a different road: it opens music.apple.com, Apple's web player, in a view of its own that has no window, signed in with the one cookie `firefox.py` reads from Firefox, and asks the page's own MusicKit for your library. The view blocks every request that would sign you out, changes nothing in your account and closes when it is not used. When an Apple song is about to play, `apple.py` looks up the same title and artist on YouTube Music through `ytmusic.py`, and the page plays that song as it does any other.
+Apple Music has no public API for a program like this one either, and its audio is protected, so `apple.py` takes a different road: it opens music.apple.com, Apple's web player, in a view of its own that has no window, signed in with the one cookie `firefox.py` reads from Firefox, and asks the page's own MusicKit for your library. The view blocks every request that would sign you out, changes nothing in your account and closes when it is not used. The songs are another matter: Apple's audio is protected, so `engine.py` plays them in a playback engine, a copy of Chromium with Google's Widevine module (castlabs's build of Electron, downloaded once with your consent) that runs `engine/helper/main.js`. The helper opens Apple's web player in a window that is never shown, signed in with the same cookie, and the page drives it through `engine.py`: play, pause, seek, volume, and a report of where the song is.
 
 ```mermaid
 flowchart LR
@@ -290,6 +297,7 @@ flowchart LR
     tags["<b>tags.py</b><br/>titles, covers, lengths"]
     ytmusic["<b>ytmusic.py</b><br/>YouTube Music"]
     apple["<b>apple.py</b><br/>Apple Music"]
+    engine["<b>engine.py</b><br/>playback engine"]
     firefox["<b>firefox.py</b><br/>your sign-ins"]
     mpris["<b>mpris.py</b><br/>media keys"]
     page <-->|"HTTP on 127.0.0.1"| host
@@ -297,6 +305,7 @@ flowchart LR
     host --> library --> tags
     host --> ytmusic
     host --> apple
+    host --> engine
     host --> firefox
     host --> mpris
 ```
@@ -308,7 +317,8 @@ flowchart LR
 | `tags.py` | Tag, cover and length reader for six formats, standard library only |
 | `radio.py` | Relays a station to the page and reads its song titles |
 | `ytmusic.py` | YouTube Music: searches, albums, artists, playlists, similar songs and covers, and each song's audio repacked for the page; signed in, your library, likes and playlist changes. Standard library only |
-| `apple.py` | Apple Music: your library, read through Apple's own web page in a windowless view, and the YouTube Music match that gives each Apple song its audio |
+| `apple.py` | Apple Music: your library, read through Apple's own web page in a windowless view |
+| `engine.py`, `engine/` | The playback engine for Apple Music songs: the download, its checks and the one-time sandbox step (`allow-sandbox.sh`), and the helper (`helper/main.js`) that plays the songs in a window that is never shown |
 | `firefox.py` | Reads the YouTube and Apple Music sign-ins of the Firefox profile you chose into memory when a request needs them, read-only, standard library only |
 | `mpris.py` | The desktop's media controls |
 | `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations, `premium.js` is Premium Services (YouTube Music and Apple Music) |
@@ -321,7 +331,7 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 - **Media Guide, Copy from CD and Copy to CD or Device** are in the task bar because the original had them, and open a short note instead.
 - **Gapless playback** between songs is not built yet.
 - **YouTube Music** signs in through Firefox only. Library albums, artists, songs and uploads are not there yet, playlists cannot be made or renamed, and live streams do not play.
-- **Apple Music** is read-only, and plays through YouTube Music rather than with Apple's own audio: a song YouTube Music does not have is skipped, and the version that plays may differ from yours. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
+- **Apple Music** is read-only. Its songs play in the playback engine, which is a 117 MB download and, on Ubuntu 24.04 and later, a one-time step with administrator rights; the equalizer and the visualizations cannot work on them, there is a gap of a few seconds between songs, and Apple limits how many devices stream at once. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
 - **Spotify** and other streaming services are not started.
 
 | Milestone | Outcome |
@@ -347,9 +357,10 @@ Found a bug or have an idea? [Open a work item](https://github.com/NahuelGenchi/
 - The look pays tribute to **Windows Media Player 9 Series** by Microsoft. The frame, buttons and visualizations here are redrawn in SVG and canvas; no code or image files from the original are included.
 - The interface font is the **Tahoma replacement from the [Wine](https://www.winehq.org/) project**, under the LGPL 2.1 or later; its notices are in [`ui/fonts`](ui/fonts/README.md).
 - The four stations that come preset are from **[SomaFM](https://somafm.com/)**, listener-supported radio.
+- The Apple Music playback engine is **castlabs's [Electron for Content Security](https://github.com/castlabs/electron-releases)**, a build of [Electron](https://www.electronjs.org/) (MIT) and Chromium (BSD and other open-source licences, listed in `LICENSES.chromium.html` in the download) with support for Google's **Widevine** module, which Google licenses on its own terms. None of it is part of this repository: the player downloads it when you ask, from castlabs's releases and, for Widevine, from Google.
 
 ## License
 
 Ocean Mist is free software: you can use, study, share and change it under the terms of the [GNU General Public License](LICENSE), version 3 or (at your option) any later version. If you share a changed version, its source goes with it, under the same license. It comes with no warranty.
 
-The license covers Ocean Mist's own code and artwork. It does not cover the bundled fonts, which keep [their own license](ui/fonts/README.md) (LGPL 2.1 or later), or Microsoft's trademarks, including the Windows logo drawn in the frame.
+The license covers Ocean Mist's own code and artwork (the playback engine's helper, `engine/helper/main.js`, included). It does not cover the bundled fonts, which keep [their own license](ui/fonts/README.md) (LGPL 2.1 or later), the playback engine you download (Electron, Chromium and Google's Widevine module, each under its own terms), or Microsoft's trademarks, including the Windows logo drawn in the frame.

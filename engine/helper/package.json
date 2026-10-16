@@ -1,0 +1,8 @@
+{
+  "name": "ocean-mist-playback-helper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Plays Apple Music for Ocean Mist, in a window that is never shown",
+  "license": "GPL-3.0-or-later",
+  "main": "main.js"
+}

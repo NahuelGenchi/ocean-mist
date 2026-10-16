@@ -3,9 +3,10 @@ playlists, radio stations and the settings, kept in state.json; the files
 themselves are only ever read.
 
 My Music holds files. YouTube Music holds YouTube Music songs, whose "path" is
-their address on music.youtube.com, and the songs of Apple Music, which play
-from there (apple.py): their "path" is an Apple Music address, and "video" stays
-empty, as the YouTube Music song that plays one is found when its turn comes.
+their address on music.youtube.com, and the songs of Apple Music (apple.py):
+their "path" is an Apple Music address, and "video" stays empty, as the
+playback engine (engine.py) plays them from Apple, by their "apple" id (and
+"apple_lib", the id in the user's own library, when that differs).
 That list lives in memory only: nothing from streaming is written to disk. So
 it starts empty each time, a song in it is never the resume point, and its
 covers wait in the runtime folder, which is not on disk, until the player
@@ -385,7 +386,7 @@ class Library:
         (`item["apple"]`), made on first sight, with what a search or a page
         said about it (caller holds the lock)."""
         ident = str(item.get("apple") or "")
-        if ident:   # found on YouTube Music when its turn comes, so it has no video yet
+        if ident:   # played by the engine, from Apple: it has no video
             video, path = "", apple.SONG_URL + ident
             if not apple.ITEM_ID.match(ident):
                 return None
@@ -397,7 +398,7 @@ class Library:
         track = self.by_path.get(path)
         if track is None:
             if ident and not str(item.get("title") or "").strip():
-                return None   # it is looked up by its title
+                return None   # a song with no title is not one of the library's
             track = {"id": self._next_id, "path": path, "source": "youtube", "video": video,
                      "title": video, "artist": "", "album": "", "year": "", "genre": "",
                      "track": 0, "duration": 0, "art": False, "cover": "",
@@ -407,6 +408,9 @@ class Library:
             self._next_id += 1
             self.by_id[track["id"]] = self.by_path[path] = track
             self._tagged.add(track["id"])   # nothing to read from a file
+        lib = str(item.get("apple_lib") or "")
+        if ident and lib != ident and apple.ITEM_ID.match(lib):   # the id in the user's own library, which the engine tries first
+            track["apple_lib"] = lib
         for key in STREAM_FIELDS:
             value = item.get(key)
             if key == "duration":
@@ -427,10 +431,14 @@ class Library:
         track["art"] = bool(track["cover"])
         return track
 
-    def add_streams(self, items, replace=False, name=""):
+    def add_streams(self, items, replace=False, name="", named=None):
         """Put YouTube Music songs, and Apple Music ones, in their list: after
-        what is there, or as the whole list (named `name`). Returns their tracks."""
+        what is there, or as the whole list (named `name`). Returns their tracks.
+        `named`: only while the list is still the one with that name, so that a job that fills
+        a list in the background adds nothing once something else was chosen."""
         with self.lock:
+            if named is not None and self.names["youtube"] != str(named)[:200]:
+                return []
             chosen, listed = [], set()
             for item in items[:ytmusic.PLAYLIST_LIMIT]:
                 track = self._stream(item) if isinstance(item, dict) else None
@@ -451,17 +459,6 @@ class Library:
         """What YouTube said about a song while getting it ready, for its
         track if that knew less (it came from a bare address)."""
         self._learned(ytmusic.WATCH + str(video), details)
-
-    def apple_found(self, ident, details):
-        """The same for the YouTube Music song that plays an Apple Music one:
-        the Apple Music song keeps what Apple said about it."""
-        self._learned(apple.SONG_URL + str(ident), details)
-
-    def apple_track(self, ident):
-        """A copy of the track of an Apple Music song of the player's list, or None."""
-        with self.lock:
-            track = self.by_path.get(apple.SONG_URL + str(ident))
-            return dict(track) if track else None
 
     def _learned(self, path, details):
         changed = False

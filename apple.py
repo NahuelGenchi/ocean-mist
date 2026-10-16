@@ -1,5 +1,4 @@
-"""Apple Music, read through Apple's own web page: your library, and a way to
-play its songs.
+"""Apple Music, read through Apple's own web page: your library.
 
 Apple lets only developers who pay Apple use its music API. Ocean Mist asks
 for no such account. It does what a browser tab does: it opens
@@ -10,9 +9,10 @@ library. The view keeps everything in memory, blocks every request that would
 sign you out, and is closed after ten minutes without a request. Nothing is
 written anywhere, and nothing in your Apple Music account is changed.
 
-Apple's audio is protected by DRM, which Ocean Mist does not unlock. A song of
-yours plays from YouTube Music instead: when its turn comes, the same title
-and artist are looked up there (find_on_youtube) and that song is played.
+This view only reads. Apple's audio is protected by DRM, which this view
+cannot play and Ocean Mist does not unlock: a song is played by the playback
+engine (engine.py), a Chromium-based helper with Widevine that opens the same
+page and plays it as Apple's own audio.
 
 These are the requests Apple's own page makes, not a published way in for a
 program like this one, so Apple can change them at any time. What may need
@@ -23,7 +23,6 @@ keep it from signing you out (Page._rules).
     python3 apple.py      opens Apple's page with the Apple Music sign-in of
                           Firefox and counts what your library holds (no titles)
 """
-import difflib
 import http.client
 import json
 import os
@@ -33,7 +32,6 @@ import sys
 import tempfile
 import threading
 import time
-import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -73,7 +71,6 @@ PAGES = {"playlist": "playlists", "album": "albums", "artist": "artists"}
 TOP = frozenset(path for path, _ in LIBRARY.values())   # the lists of the library itself
 # what a request's address says when it signs you out, in the spellings Apple might use
 SIGN_OUT = ("log.?out", "sign.?out", "log.?off", "sign.?off", "unauthori[sz]e")
-MISS = 900                       # seconds a song YouTube Music did not have is not looked for again
 
 
 class AppleError(YTError):
@@ -435,8 +432,10 @@ def song(res):
         return None
     play = res["attributes"].get("playParams") if isinstance(res.get("attributes"), dict) else None
     play = play if isinstance(play, dict) else {}
-    ident = _id(play.get("catalogId")) or _id(res.get("id"))
-    item, a = _item("song", res, apple=ident)
+    library = _id(res.get("id"))
+    ident = _id(play.get("catalogId")) or library   # the song's name everywhere: the catalogue's id, else the library's
+    # ...and the library's too when it differs: the engine asks Apple for that one first, as it always resolves
+    item, a = _item("song", res, apple=ident, apple_lib=library if library != ident else "")
     if not (ident and item["title"]):
         return None
     item.update(artist=_text(a.get("artistName")), album=_text(a.get("albumName")),
@@ -487,139 +486,7 @@ def song_id(link):
     return ident if ITEM_ID.match(ident) else None
 
 
-# ---- playing a song of Apple Music from YouTube Music ----
-
-# what makes a recording another one than the song asked for. Some are never the song: someone
-# else's version of it, or the music changed. A live take, a remix or an acoustic one is the song in
-# another version, and is played only when nothing closer is found.
-OTHERS = ("instrumental", "karaoke", "cover", "sped up", "slowed", "reverb", "nightcore", "8d", "tribute",
-          "mashup", "a cappella", "acapella")
-VARIANTS = OTHERS + ("live", "remix", "acoustic", "demo", "unplugged")
-_BRACKETS = re.compile(r"[\(\[][^\)\]]*[\)\]]")
-_NOTE = re.compile(r"\s-\s.*(?:remaster|version|mix|edit|live|single|mono|stereo|deluxe|bonus|demo|acoustic"
-                   r"|from\b|soundtrack|original|anniversary|\d{4}).*$")
-_FEAT = re.compile(r"\s(?:feat|ft|featuring)\b\.?\s.*$")
-_GUEST = re.compile(r"\s*(?:feat|ft|featuring|with|from)\b")
-# which part or take a song is, as against which edition: "(Part 2)", "(Reprise)", "(Taylor's Version)"
-# stay in the title, where the numbers are compared; the rest of a bracket is let go
-_PART = re.compile(r"\b(?:part|pt|vol|volume|chapter|act|movement|reprise|interlude|intro|outro|skit|prelude|medley)\b"
-                   r"|\w+'s version")
-
-
-def _plain(text):
-    text = unicodedata.normalize("NFKD", str(text or "")).casefold().replace("\u2019", "'")
-    return "".join(c for c in text if not unicodedata.combining(c))
-
-
-def _words(text):
-    return " ".join(re.sub(r"[^\w\s]", " ", text.replace("&", " and ")).split())
-
-
-def _bracket(found):
-    inner = found.group(0)[1:-1]
-    return f" {inner} " if _PART.search(inner) and not _GUEST.match(inner) else " "
-
-
-def _core(title):
-    """A title without what only says which edition it is: (feat. …), (Remastered), - Single Version.
-    What says which part it is stays."""
-    text = _plain(title)
-    text = _NOTE.sub(lambda found: found.group(0) if _PART.search(found.group(0)) else "", _BRACKETS.sub(_bracket, text))
-    return _words(_FEAT.sub("", text)) or _words(_plain(title))
-
-
-def _flags(title):
-    text = " " + _words(_plain(title)) + " "
-    return {word for word in VARIANTS if f" {word} " in text}
-
-
-def _people(text):
-    """The names in "A, B & C feat. D"."""
-    parts = re.split(r",|;|/|&|\sand\s|\sx\s|\s(?:feat|ft|featuring|with)\b\.?\s", _plain(text))
-    return [name for name in (_words(part) for part in parts) if name]
-
-
-def _alike(a, b):
-    return difflib.SequenceMatcher(None, a, b).ratio() if a and b else 0.0
-
-
-def _compact(name):
-    name = re.sub(r"^the ", "", name)
-    return name.replace(" ", "")
-
-
-def _same_name(a, b):
-    """The same artist: the same letters, or all but a stray one ("P!nk" and "Pink"). Not
-    "Queen" and "Queen Latifah", or "The Beatles" and "Karaoke Hits The Beatles"."""
-    a, b = _compact(a), _compact(b)
-    return a == b or (min(len(a), len(b)) >= 3 and _alike(a, b) >= 0.85)
-
-
-def _score(want, found, strict=False):
-    """How well a YouTube Music result is the song asked for, or None when it is not."""
-    ours, theirs = _core(want["title"]), _core(found.get("title"))
-    title = _alike(ours, theirs)
-    if title < (0.9 if strict else 0.82) or re.findall(r"\d+", ours) != re.findall(r"\d+", theirs):
-        return None   # (the numbers must be the same: "Song 1" is not "Song 10")
-    extra = (_flags(found.get("title")) | _flags(found.get("artist"))) - (_flags(want["title"]) | _flags(want.get("artist")))
-    if extra & set(OTHERS):
-        return None   # a karaoke version, a cover, a sped-up one: not the song
-    wanted, listed = _people(want.get("artist")), _people(found.get("artist"))
-    shared = [name for name in wanted if any(_same_name(name, other) for other in listed)]
-    if wanted and listed and not shared:
-        return None
-    artist = 1.0 if wanted and wanted[0] in shared else 0.6 if shared else 0.5
-    score = title + 0.8 * artist
-    sought, got = want.get("duration") or 0, found.get("duration") or 0
-    if sought and got:
-        gap = abs(sought - got)
-        score += 0.3 if gap <= 2 else 0.2 if gap <= 5 else 0.1 if gap <= 12 else -0.2 if gap <= 30 else -0.5
-    elif strict:
-        return None
-    if strict and sought and got and abs(sought - got) > 12:
-        return None
-    score -= 0.5 * len(extra)   # a live take of a studio song
-    score -= 0.3 * len(_flags(want["title"]) - _flags(found.get("title")))   # a studio take of a live song
-    if _alike(_core(want.get("album")), _core(found.get("album"))) >= 0.8:
-        score += 0.1
-    if found.get("kind") == "song":
-        score += 0.1
-    return score
-
-
-def best_match(want, results, strict=False):
-    """The video id of the result that is the song asked for, or None."""
-    chosen, top = None, 1.5
-    for found in results:
-        if not isinstance(found, dict) or not ytmusic.VIDEO_ID.match(str(found.get("video"))):
-            continue
-        score = _score(want, found, strict)
-        if score is not None and score > top:
-            chosen, top = found["video"], score
-    return chosen
-
-
-def find_on_youtube(music, want):
-    """The video id of the YouTube Music song that is the Apple Music song
-    `want` (title, artist, album, duration), or None. YTError when YouTube
-    Music cannot be asked."""
-    words = " ".join(str(part) for part in (want.get("title"), want.get("artist")) if part)
-    if not words:
-        return None
-    for kind, strict in (("songs", False), ("all", True)):
-        video = best_match(want, music.search(words, kind).get("items") or [], strict)
-        if video:
-            return video
-    return None
-
-
-def want_of(track):
-    """What to look for on YouTube Music for an Apple Music song of the player's list."""
-    return {"apple": track["apple"], "title": track.get("title") or "", "artist": track.get("artist") or "",
-            "album": track.get("album") or "", "duration": track.get("duration") or 0}
-
-
-# ---- the engine ----
+# ---- the library ----
 
 class AppleMusic:
     """What the player asks of Apple Music. Methods are called from any
@@ -635,11 +502,6 @@ class AppleMusic:
         self.page = None          # the Page; touched on the main thread only
         self.last = 0.0
         self.generation = 0       # changes when you sign out: a request begun before is refused
-        self.lock = threading.Lock()
-        self.matches = {}         # Apple song id -> (its YouTube Music video id, "" when there is none; when)
-        self.looking = {}         # ...and a lock for each one being looked up
-        self.ahead = set()        # songs being found ahead of their turn
-        self.missed = {}          # song -> when YouTube Music could not be asked about it
 
     # -- the page --
     def _ask(self, path, query=None):
@@ -745,72 +607,6 @@ class AppleMusic:
         return {"service": "apple", "kind": kind, "id": ident, "title": item["title"] or kind.capitalize(),
                 "artist": item.get("artist", ""), "year": item.get("year", ""), "label": item.get("label", ""),
                 "cover": cover, "info": "", "tracks": tracks, "groups": []}
-
-    # -- playing --
-    def match(self, want, music):
-        """The YouTube Music video that plays the Apple Music song `want`, or
-        None if there is none; looked up once, then remembered. YTError when
-        YouTube Music cannot be asked."""
-        key = str(want.get("apple"))
-        with self.lock:
-            known = self._known(key)
-            if known is not None:
-                return known or None
-            guard = self.looking.setdefault(key, threading.Lock())
-        with guard:
-            with self.lock:
-                known = self._known(key)
-                if known is not None:
-                    return known or None
-            try:
-                video = find_on_youtube(music, want)
-                with self.lock:
-                    self.matches[key] = (video or "", time.monotonic())
-                    while len(self.matches) > 5000:
-                        del self.matches[next(iter(self.matches))]
-            finally:
-                with self.lock:
-                    self.looking.pop(key, None)
-            return video
-
-    def _known(self, key):
-        """What is remembered of a song (caller holds the lock): its video id, "" for a song
-        YouTube Music did not have a short while ago, None when it has to be looked up."""
-        got = self.matches.get(key)
-        if got is None:
-            return None
-        video, when = got
-        if video or time.monotonic() - when < MISS:
-            return video
-        del self.matches[key]
-        return None
-
-    def prefetch(self, want, music):
-        """Get the song that plays next ready, in a thread of its own: find it
-        on YouTube Music, then fetch its audio's first piece. One that could
-        not be asked about is not tried again ahead of time for ten minutes."""
-        key = str(want.get("apple"))
-        with self.lock:
-            if key in self.ahead or key in self.looking or time.time() - self.missed.get(key, 0) < 600:
-                return
-            self.ahead.add(key)
-
-        def run():
-            try:
-                video = self.match(want, music)
-                if video:
-                    music.prefetch(video)
-            except YTError:
-                with self.lock:
-                    self.missed[key] = time.time()
-                    for old in list(self.missed)[:-100]:
-                        del self.missed[old]
-            finally:
-                with self.lock:
-                    self.ahead.discard(key)
-
-        threading.Thread(target=run, daemon=True).start()
-
 
 class _Stay(urllib.request.HTTPRedirectHandler):
     """A picture server that sends the request elsewhere is not followed."""
