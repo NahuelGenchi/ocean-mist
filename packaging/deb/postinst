@@ -3,12 +3,14 @@
 # upgrade of the package is given up). It does two things and does not make the installation fail, because Ocean
 # Mist works without either one (the playback engine's page then asks for its permission by itself, and Python
 # compiles the files in memory):
-#   - loads the AppArmor profile of the playback engine now, so the permission holds before the next boot;
+#   - loads the AppArmor profile of the playback engine now, so the permission holds before the next boot (not when
+#     the administrator switched it off with aa-disable, which leaves a link in the disable folder: that stays off);
 #   - byte-compiles the player's Python files, which the user cannot do in a folder only the administrator may write to.
 # It touches nothing in anybody's home folder. With DPKG_ROOT set, dpkg is working on another root, not this system.
 set -e
 
 PROFILE=/etc/apparmor.d/ocean-mist-engine
+DISABLED="${PROFILE%/*}/disable/${PROFILE##*/}"
 
 case "$1" in
     configure | abort-upgrade | abort-remove | abort-deconfigure) ;;
@@ -19,7 +21,7 @@ if [ -z "${DPKG_ROOT:-}" ]; then
     if command -v py3compile >/dev/null 2>&1; then
         py3compile -p ocean-mist /usr/lib/ocean-mist || true
     fi
-    if [ -f "$PROFILE" ] && command -v apparmor_parser >/dev/null 2>&1 && aa-status --enabled >/dev/null 2>&1; then
+    if [ -f "$PROFILE" ] && [ ! -L "$DISABLED" ] && [ ! -e "$DISABLED" ] && command -v apparmor_parser >/dev/null 2>&1 && aa-status --enabled >/dev/null 2>&1; then
         apparmor_parser -r -T -W "$PROFILE" ||
             echo "ocean-mist: AppArmor did not load $PROFILE; the playback engine's page will ask for the permission itself." >&2 ||
             true
