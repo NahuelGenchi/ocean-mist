@@ -3,10 +3,13 @@ playlists, radio stations and the settings, kept in state.json; the files
 themselves are only ever read.
 
 My Music holds files. YouTube Music holds YouTube Music songs, whose "path" is
-their address on music.youtube.com, and lives in memory only: nothing from
-streaming is written to disk. So that list starts empty each time, a song in it
-is never the resume point, and its covers wait in the runtime folder, which is
-not on disk, until the player closes."""
+their address on music.youtube.com, and the songs of Apple Music, which play
+from there (apple.py): their "path" is an Apple Music address, and "video" stays
+empty, as the YouTube Music song that plays one is found when its turn comes.
+That list lives in memory only: nothing from streaming is written to disk. So
+it starts empty each time, a song in it is never the resume point, and its
+covers wait in the runtime folder, which is not on disk, until the player
+closes."""
 import hashlib
 import json
 import os
@@ -17,6 +20,7 @@ import threading
 import time
 import urllib.parse
 
+import apple
 import tags
 import ytmusic
 
@@ -79,6 +83,12 @@ def is_playlist(name):
 def list_for(track):
     """The Now Playing list a track belongs in."""
     return "youtube" if track.get("source") else "local"
+
+
+def stream_key(track):
+    """What names a streamed song in a request of the page: "apple:" and its
+    Apple Music id, or its video id."""
+    return "apple:" + track["apple"] if track.get("apple") else track.get("video")
 
 
 def folder_songs(folder):
@@ -199,6 +209,7 @@ class Library:
             "eq_preset": "Flat", "eq_open": False, "notify": False,
             "yt_radio": True, "zoom": 1, "mini": False,
             "yt_account": False,   # the Firefox profile you signed in to YouTube Music with (only which one)
+            "apple_account": False,   # ...and to Apple Music
         }
         self.listeners = set()
         self.pending_play = None  # what to start once the page is listening
@@ -370,18 +381,29 @@ class Library:
         return track
 
     def _stream(self, item):
-        """The track for a YouTube Music song, made on first sight, with what
-        a search or a page said about it (caller holds the lock)."""
-        video = str(item.get("video") or "")
-        if not ytmusic.VIDEO_ID.match(video):
-            return None
-        path = ytmusic.WATCH + video
+        """The track for a YouTube Music song, or for an Apple Music one
+        (`item["apple"]`), made on first sight, with what a search or a page
+        said about it (caller holds the lock)."""
+        ident = str(item.get("apple") or "")
+        if ident:   # found on YouTube Music when its turn comes, so it has no video yet
+            video, path = "", apple.SONG_URL + ident
+            if not apple.ITEM_ID.match(ident):
+                return None
+        else:
+            video = str(item.get("video") or "")
+            if not ytmusic.VIDEO_ID.match(video):
+                return None
+            path = ytmusic.WATCH + video
         track = self.by_path.get(path)
         if track is None:
+            if ident and not str(item.get("title") or "").strip():
+                return None   # it is looked up by its title
             track = {"id": self._next_id, "path": path, "source": "youtube", "video": video,
                      "title": video, "artist": "", "album": "", "year": "", "genre": "",
                      "track": 0, "duration": 0, "art": False, "cover": "",
                      "artist_id": "", "album_id": "", "bare": True}
+            if ident:
+                track["apple"] = ident
             self._next_id += 1
             self.by_id[track["id"]] = self.by_path[path] = track
             self._tagged.add(track["id"])   # nothing to read from a file
@@ -394,7 +416,7 @@ class Library:
                     value = 0
             else:
                 value = str(value or "").strip()[:300]
-                if key == "cover" and not ytmusic.PICTURE_HOSTS.match(value):
+                if key == "cover" and not (apple.PICTURE_HOSTS if ident else ytmusic.PICTURE_HOSTS).match(value):
                     value = ""
                 elif key in ("artist_id", "album_id") and not ytmusic.BROWSE_ID.match(value):
                     value = ""
@@ -406,8 +428,8 @@ class Library:
         return track
 
     def add_streams(self, items, replace=False, name=""):
-        """Put YouTube Music songs in their list: after what is there, or as
-        the whole list (named `name`). Returns their tracks."""
+        """Put YouTube Music songs, and Apple Music ones, in their list: after
+        what is there, or as the whole list (named `name`). Returns their tracks."""
         with self.lock:
             chosen, listed = [], set()
             for item in items[:ytmusic.PLAYLIST_LIMIT]:
@@ -428,9 +450,23 @@ class Library:
     def stream_found(self, video, details):
         """What YouTube said about a song while getting it ready, for its
         track if that knew less (it came from a bare address)."""
+        self._learned(ytmusic.WATCH + str(video), details)
+
+    def apple_found(self, ident, details):
+        """The same for the YouTube Music song that plays an Apple Music one:
+        the Apple Music song keeps what Apple said about it."""
+        self._learned(apple.SONG_URL + str(ident), details)
+
+    def apple_track(self, ident):
+        """A copy of the track of an Apple Music song of the player's list, or None."""
+        with self.lock:
+            track = self.by_path.get(apple.SONG_URL + str(ident))
+            return dict(track) if track else None
+
+    def _learned(self, path, details):
         changed = False
         with self.lock:
-            track = self.by_path.get(ytmusic.WATCH + str(video))
+            track = self.by_path.get(path)
             if track is None:
                 return
             for key in ("title", "artist", "duration", "cover"):
@@ -818,7 +854,7 @@ class Library:
             return known[1]
         entries = read_playlist(path)
         which = "youtube" if entries and all(
-            "://" in entry and ytmusic.video_id(entry) for entry in entries) else "local"
+            "://" in entry and (ytmusic.video_id(entry) or apple.song_id(entry)) for entry in entries) else "local"
         with self.lock:
             self._playlist_lists[path] = (stamp, which)
         return which
@@ -830,19 +866,22 @@ class Library:
 
     def playlist_tracks(self, path):
         """The songs of a saved playlist that still exist, as tracks; YouTube
-        Music addresses become YouTube Music songs."""
+        Music addresses become YouTube Music songs, Apple Music ones Apple
+        Music songs (those with a title in the file)."""
         labels, chosen = {}, []
         with self.lock:
             for entry in dict.fromkeys(read_playlist(path, labels)):
                 video = ytmusic.video_id(entry) if "://" in entry else None
-                if video:
+                ident = apple.song_id(entry) if "://" in entry else None
+                if video or ident:
                     seconds, name = labels.get(entry, (0, ""))
                     artist, _, title = name.partition(" - ")
                     if not title:
                         artist, title = "", name
-                    known = self.by_path.get(ytmusic.WATCH + video)
+                    known = self.by_path.get(ytmusic.WATCH + video if video else apple.SONG_URL + ident)
                     chosen.append(known if known and not known.get("bare") else self._stream(
-                        {"video": video, "title": title, "artist": artist, "duration": seconds}))
+                        {"apple": ident, "title": title, "artist": artist, "duration": seconds} if ident
+                        else {"video": video, "title": title, "artist": artist, "duration": seconds}))
                 elif "://" not in entry and _is_audio(entry) and os.path.isfile(entry):
                     chosen.append(self._entry(entry))
         unique, listed = [], set()

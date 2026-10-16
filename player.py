@@ -5,8 +5,9 @@ The interface is a local web page (ui/) shown in a frameless WebKit window.
 This file is the host: it owns the window and a small HTTP server bound to
 127.0.0.1 that feeds the page its files. library.py keeps the lists, tags.py
 reads titles and covers, radio.py relays stations, ytmusic.py talks to
-YouTube Music, firefox.py reads your YouTube Music sign-in from Firefox,
-mpris.py talks to the desktop's media controls.
+YouTube Music, apple.py reads your Apple Music library and finds its songs on
+YouTube Music, firefox.py reads your sign-ins from Firefox, mpris.py talks to
+the desktop's media controls.
 
     player.py [FILES OR FOLDERS...]     open the player and play them; a single
                                         song brings its folder along as the queue,
@@ -23,11 +24,13 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import apple
 import firefox
 import radio
+from apple import AppleError, AppleMusic
 from library import (APP_ID, AUDIO_EXTENSIONS, PAGE_SETTINGS, PLAYLIST_EXTENSIONS,
-                     Library, is_playlist, music_dir)
-from ytmusic import YTError, YTMusic
+                     Library, is_playlist, music_dir, stream_key)
+from ytmusic import PLAYLIST_LIMIT, YTError, YTMusic
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI_DIR = os.path.join(HERE, "ui")
@@ -42,6 +45,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     library = None
     music = None  # YTMusic
+    apple = None  # AppleMusic, or None without a window (--serve)
     token = ""
     host = None  # object with window/dialog methods, or None in --serve mode
 
@@ -144,9 +148,9 @@ class Handler(BaseHTTPRequestHandler):
         if route.startswith("art/"):
             track = self._track(route[4:])
             art = self.library.cover(track["id"]) if track else None
-            if art is None and track and track.get("cover"):   # a YouTube Music song's, fetched once
+            if art is None and track and track.get("cover"):   # a streamed song's, fetched once
                 try:
-                    art = self.library.keep_cover(track, self.music.picture(track["cover"]))
+                    art = self.library.keep_cover(track, cover_of(self.music, track["cover"]))
                 except YTError:
                     art = None
             if isinstance(art, tuple):
@@ -156,6 +160,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._radio(route[6:])
         if route.startswith("yt/"):
             return self._youtube(route[3:])
+        if route.startswith("apple/"):
+            return self._apple(route[6:])
         if route == "api/state":
             return self._json(self.library.snapshot())
         if route == "api/library":
@@ -233,6 +239,73 @@ class Handler(BaseHTTPRequestHandler):
                                "signed_out": error.signed_out}, 502)
         self._send(404, b"not found")
 
+    def _apple(self, what):
+        """Apple Music for the page: your library as rows and pages, covers,
+        and the audio of a song, which comes from YouTube Music."""
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        ask = lambda key: (query.get(key) or [""])[0]
+        try:
+            if what == "picture":
+                kind, data = apple.picture(ask("u"))
+                return self._send(200, data, kind, {"Cache-Control": "max-age=86400"})
+            if what.startswith("song/"):
+                ident, _, part = what[5:].partition("/")
+                video = self._video_of(ident)
+                if not part:
+                    song = self.music.song(video)
+                    self.library.apple_found(ident, song.details)
+                    return self._json(song.info())
+                if part == "init":
+                    return self._send(200, self.music.init(video), "audio/mp4")
+                if part.isascii() and part.isdigit():
+                    return self._send(200, self.music.piece(video, int(part)), "audio/mp4")
+                return self._send(404, b"not found")
+            engine = self._engine()
+            if what == "library":
+                offset = ask("offset")
+                found = engine.library(ask("kind"), int(offset) if offset.isascii() and offset.isdigit() else 0)
+                folder = self.library.settings.get("apple_account")
+                found["profile"] = firefox.name_of(folder) if isinstance(folder, str) and folder else ""
+                return self._json(found)
+            if what == "page":
+                return self._json(engine.page_of(ask("kind"), ask("id")))
+        except YTError as error:
+            return self._json({"error": str(error), "general": error.general,
+                               "signed_out": error.signed_out}, 502)
+        self._send(404, b"not found")
+
+    def _engine(self):
+        """The Apple Music engine, once you have signed in to it."""
+        if self.apple is None:
+            raise AppleError("Apple Music needs the player's window, which this mode has none of", general=True)
+        folder = self.library.settings.get("apple_account")
+        if not isinstance(folder, str) or not folder:
+            raise AppleError("sign in to Apple Music first, under Library", signed_out=True)
+        return self.apple
+
+    def _video_of(self, ident):
+        """The YouTube Music video that plays an Apple Music song of the list
+        (found once, then remembered); YTError when there is none."""
+        track = self.library.apple_track(ident)
+        if track is None:
+            raise YTError("that is not an Apple Music song of the list")
+        if self.apple is None:
+            raise AppleError("Apple Music songs need the player's window", general=True)
+        video = self.apple.match(apple.want_of(track), self.music)
+        if not video:
+            by = f" by {track['artist']}" if track.get("artist") else ""
+            raise YTError(f"YouTube Music does not have “{track['title']}”{by}")
+        return video
+
+    def _ahead(self, track):
+        """Get the song that plays next ready: for an Apple Music song, find it on
+        YouTube Music first."""
+        if track.get("apple"):
+            if self.apple is not None:
+                self.apple.prefetch(apple.want_of(track), self.music)
+        elif track.get("video"):
+            self.music.prefetch(track["video"])
+
     @staticmethod
     def _firefox(read, *args):
         """read(*args) of firefox.py, with what goes wrong worded as YTError."""
@@ -256,6 +329,30 @@ class Handler(BaseHTTPRequestHandler):
             raise YTError("Firefox is not signed in to YouTube any more; sign in there again",
                           signed_out=True)
         return found
+
+    def _sign_in(self, msg, setting, listing, address):
+        """You chose to sign in: with which Firefox profile, or Firefox opened
+        on `address` for one. `listing` gives the profiles that are signed in;
+        the one chosen is kept in the `setting`."""
+        result = {"ok": True}
+        try:
+            found = self._firefox(listing)
+        except YTError as error:
+            found, result = [], {"ok": False, "error": str(error)}
+        folders = [folder for folder, _ in found]
+        chosen = str(msg.get("profile") or "")
+        if chosen not in folders:   # not chosen yet, or no longer signed in
+            chosen = folders[0] if len(folders) == 1 else ""
+        if chosen:
+            self.library.settings[setting] = chosen
+            self.library.save()
+        elif found:   # more than one profile is signed in: you choose
+            result["choices"] = [{"profile": folder, "name": name} for folder, name in found]
+        elif result["ok"] and msg.get("open") and not self._open_in_firefox(address):
+            result = {"ok": False, "error": "Ocean Mist reads the sign-in from Firefox, "
+                                            "and Firefox was not found"}
+        result["signed_in"] = bool(chosen)
+        return result
 
     def _similar(self, video, skip):
         """Songs like this one that are not in `skip` (video ids), for the
@@ -320,8 +417,8 @@ class Handler(BaseHTTPRequestHandler):
         elif cmd == "now":
             library.set_now(msg)
             upcoming = library.track(msg.get("next"))
-            if upcoming and upcoming.get("video"):   # a YouTube Music song plays next: get it ready
-                self.music.prefetch(upcoming["video"])
+            if upcoming:   # a YouTube Music or Apple Music song plays next: get it ready
+                self._ahead(upcoming)
         elif cmd == "duration":
             library.set_duration(msg.get("id"), float(msg.get("seconds") or 0))
         elif cmd == "remove":
@@ -354,6 +451,10 @@ class Handler(BaseHTTPRequestHandler):
                     library.request_play(target)
         elif cmd in ("yt-play", "yt-add"):
             items = [i for i in msg.get("items", []) if isinstance(i, dict)]
+            if len(items) > PLAYLIST_LIMIT:   # a long list of songs: the ones from the start on, or all that fit
+                at = next((n for n, i in enumerate(items) if stream_key(i) == msg.get("start")), 0)
+                items = items[at:at + PLAYLIST_LIMIT]
+                result["limit"] = PLAYLIST_LIMIT
             if cmd == "yt-play" and msg.get("similar") and items:   # the song, then songs like it
                 try:
                     items += self._similar(str(items[0].get("video")), {items[0].get("video")})
@@ -362,7 +463,7 @@ class Handler(BaseHTTPRequestHandler):
             chosen = library.add_streams(items, replace=cmd == "yt-play", name=msg.get("name"))
             result["ids"] = [t["id"] for t in chosen]
             if cmd == "yt-play" and chosen:   # asked for from Premium Services: the page stays there
-                start = next((t["id"] for t in chosen if t["video"] == msg.get("start")),
+                start = next((t["id"] for t in chosen if stream_key(t) == msg.get("start")),
                              chosen[0]["id"])
                 library.request_play({"id": start, "stay": True})
         elif cmd == "yt-similar":   # the list ran out on a YouTube Music song: carry on
@@ -377,27 +478,17 @@ class Handler(BaseHTTPRequestHandler):
                     result["first"] = chosen[0]["id"] if chosen else None
                 except YTError as error:
                     result = {"ok": False, "error": str(error), "general": error.general}
-        elif cmd == "yt-sign-in":   # you chose to sign in: with which Firefox profile, or Firefox opened for one
-            try:
-                found = self._firefox(firefox.signed_in)
-            except YTError as error:
-                found, result = [], {"ok": False, "error": str(error)}
-            folders = [folder for folder, _ in found]
-            chosen = str(msg.get("profile") or "")
-            if chosen not in folders:   # not chosen yet, or no longer signed in
-                chosen = folders[0] if len(folders) == 1 else ""
-            if chosen:
-                library.settings["yt_account"] = chosen
-                library.save()
-            elif found:   # more than one profile is signed in: you choose
-                result["choices"] = [{"profile": folder, "name": name} for folder, name in found]
-            elif result["ok"] and msg.get("open") and not self._open_in_firefox(firefox.SIGN_IN):
-                result = {"ok": False, "error": "Ocean Mist reads the sign-in from Firefox, "
-                                                "and Firefox was not found"}
-            result["signed_in"] = bool(chosen)
-        elif cmd == "yt-sign-out":   # Ocean Mist stops using the sign-in; Firefox stays signed in
-            library.settings["yt_account"] = False
+        elif cmd == "yt-sign-in":
+            result = self._sign_in(msg, "yt_account", firefox.signed_in, firefox.SIGN_IN)
+        elif cmd == "apple-sign-in":
+            result = self._sign_in(msg, "apple_account", firefox.apple_signed_in, firefox.APPLE_SIGN_IN)
+            if result.get("signed_in") and self.apple is not None:
+                self.apple.close()   # a page opened with an earlier sign-in is not used for this one
+        elif cmd in ("yt-sign-out", "apple-sign-out"):   # Ocean Mist stops using the sign-in; Firefox stays signed in
+            library.settings["yt_account" if cmd == "yt-sign-out" else "apple_account"] = False
             library.save()
+            if cmd == "apple-sign-out" and self.apple is not None:
+                self.apple.close()
         elif cmd in ("yt-like", "yt-playlist-add", "yt-playlist-remove"):
             music, video = self.music, str(msg.get("video"))
             try:
@@ -425,9 +516,33 @@ class Handler(BaseHTTPRequestHandler):
         self._json(result)
 
 
-def start_server(library, token, port=0, host=None, music=None):
+def cover_of(music, url):
+    """A cover's (type, bytes), from Apple's picture servers or YouTube's."""
+    return apple.picture(url) if apple.PICTURE_HOSTS.match(str(url)) else music.picture(url)
+
+
+def apple_sign_in(library):
+    """The Apple Music sign-in of the Firefox profile you chose, as Firefox has
+    it now, for opening Apple's page. AppleError when you have not chosen one,
+    or when that profile has no sign-in any more."""
+    folder = library.settings.get("apple_account")
+    if not isinstance(folder, str) or not folder:
+        raise AppleError("sign in to Apple Music first, under Library", signed_out=True)
+    try:
+        found = firefox.apple_token(folder)
+    except RuntimeError as error:   # an older Python
+        raise AppleError(str(error), signed_out=True) from None
+    except OSError:
+        raise AppleError("Ocean Mist could not read the sign-in from Firefox", signed_out=True) from None
+    if found is None:
+        raise AppleError("Firefox is not signed in to Apple Music any more; sign in there again",
+                         signed_out=True)
+    return found
+
+
+def start_server(library, token, port=0, host=None, music=None, apple_music=None):
     Handler.library, Handler.token, Handler.host = library, token, host
-    Handler.music = music or YTMusic()
+    Handler.music, Handler.apple = music or YTMusic(), apple_music
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -532,8 +647,9 @@ def run_app(argv):
             self.mini = False
             self.full_size = None     # the window's size outside compact mode
             self.music = YTMusic()
+            self.apple = None         # AppleMusic, made at startup
             self._announced = None
-            self._covers = set()      # YouTube Music songs whose cover was asked for
+            self._covers = set()      # streamed songs whose cover was asked for
             self._waiting = set()     # ...and is still on its way
 
         def do_startup(self):
@@ -545,7 +661,9 @@ def run_app(argv):
             if library.settings.get("mini") and size:   # closed in compact mode: open in it
                 self.mini, self.mini_size = True, tuple(size)
                 self.full_size = list(library.settings.get("size", (760, 538)))
-            self.server = start_server(library, self.token, host=Host(self), music=self.music)
+            self.apple = AppleMusic(lambda: apple_sign_in(library), lambda fn: GLib.idle_add(lambda: fn() or False))
+            self.server = start_server(library, self.token, host=Host(self), music=self.music,
+                                       apple_music=self.apple)
             library.on_now = lambda: GLib.idle_add(self._now_changed)
             try:
                 self.mpris = Mpris(
@@ -581,7 +699,7 @@ def run_app(argv):
             return False
 
         def _fetch_cover(self):
-            """A YouTube Music song's cover for the desktop's media controls
+            """A streamed song's cover for the desktop's media controls
             and the notification, fetched once in a thread; they are told
             again when it is in."""
             library = self.library
@@ -596,10 +714,11 @@ def run_app(argv):
 
             def run():
                 try:
-                    library.keep_cover(track, self.music.picture(track["cover"]))
+                    library.keep_cover(track, cover_of(self.music, track["cover"]))
                 except YTError:
                     pass
-                GLib.idle_add(lambda: self._waiting.discard(track["id"]) or self._now_changed())
+                finally:   # whatever went wrong, the song is announced
+                    GLib.idle_add(lambda: self._waiting.discard(track["id"]) or self._now_changed())
 
             threading.Thread(target=run, daemon=True).start()
 
@@ -772,6 +891,7 @@ def run_app(argv):
                     library.resume["position"] = round(library.position(), 1)
             library.save()
             library.forget_stream_covers()
+            self.apple.close_now(now=True)   # Apple's page: its view, and the folder of its rules
             self.withdraw_notification("song")
             self.window = None
 
