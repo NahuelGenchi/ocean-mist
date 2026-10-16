@@ -156,7 +156,7 @@ def package_covers(program):
     explains the step. Whether the profile is loaded cannot be read without administrator rights: the check of the
     sandbox decides in the end."""
     return (os.path.isdir(PACKAGE_DIR) and os.path.exists(PACKAGE_PROFILE) and not os.path.lexists(PACKAGE_DISABLED)
-            and bool(PACKAGE_NAMES.match(os.path.realpath(program))))
+            and bool(PACKAGE_NAMES.fullmatch(os.path.realpath(program))))
 
 
 def profile_present(program):

@@ -10,7 +10,7 @@
 #
 # Unlike Chrome's, that file is in a folder its user can write: a program that anything running as that user puts
 # there gets the permission too. Discord's own package carries a profile of the same kind for its copy in the
-# home folder. To switch this profile off, run "sudo aa-disable ocean-mist-engine" (or remove the package);
+# home folder. To switch this profile off, run "sudo aa-disable ocean-mist-engine" (or purge the package);
 # to add rules to it, use /etc/apparmor.d/local/ocean-mist-engine. It needs AppArmor 4.0 or later.
 
 abi <abi/4.0>,
