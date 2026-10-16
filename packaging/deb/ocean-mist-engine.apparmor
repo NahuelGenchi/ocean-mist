@@ -4,12 +4,14 @@
 # on the user's own action into ~/.local/share/ocean-mist/engine. Chromium keeps its pages in a sandbox made of
 # user namespaces, and Ubuntu 24.04 and later (kernel.apparmor_restrict_unprivileged_userns=1) give those only to
 # programs that an AppArmor profile names. This is that profile, in the shape Ubuntu ships for Chrome: it names
-# one file, the engine's runtime in the default place of a user's data folder, and gives it that single
-# permission ("userns"). flags=(unconfined) adds no other restriction and removes none. The file does not need to
-# exist yet: the profile is here before the engine is downloaded.
+# one file, the engine's runtime in the default place of a user's data folder (in every home folder under /home,
+# and root's), and gives it that single permission ("userns"). flags=(unconfined) adds no other restriction and
+# removes none. The file does not need to exist yet: the profile is here before the engine is downloaded.
 #
-# Anything that puts a program at that path in a user's folder would get the permission too, as it would
-# with a profile for any program a user can write. To change the profile, use /etc/apparmor.d/local/ocean-mist-engine.
+# Unlike Chrome's, that file is in a folder its user can write: a program that anything running as that user puts
+# there gets the permission too. Discord's own package carries a profile of the same kind for its copy in the
+# home folder. To switch this profile off, run "sudo aa-disable ocean-mist-engine" (or remove the package);
+# to add rules to it, use /etc/apparmor.d/local/ocean-mist-engine. It needs AppArmor 4.0 or later.
 
 abi <abi/4.0>,
 include <tunables/global>
