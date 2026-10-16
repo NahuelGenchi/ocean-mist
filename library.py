@@ -431,10 +431,14 @@ class Library:
         track["art"] = bool(track["cover"])
         return track
 
-    def add_streams(self, items, replace=False, name=""):
+    def add_streams(self, items, replace=False, name="", named=None):
         """Put YouTube Music songs, and Apple Music ones, in their list: after
-        what is there, or as the whole list (named `name`). Returns their tracks."""
+        what is there, or as the whole list (named `name`). Returns their tracks.
+        `named`: only while the list is still the one with that name, so that a job that fills
+        a list in the background adds nothing once something else was chosen."""
         with self.lock:
+            if named is not None and self.names["youtube"] != str(named)[:200]:
+                return []
             chosen, listed = [], set()
             for item in items[:ytmusic.PLAYLIST_LIMIT]:
                 track = self._stream(item) if isinstance(item, dict) else None

@@ -490,7 +490,8 @@ class Handler(BaseHTTPRequestHandler):
                     items += self._similar(str(items[0].get("video")), {items[0].get("video")})
                 except YTError as error:
                     result["notice"] = str(error)
-            chosen = library.add_streams(items, replace=cmd == "yt-play", name=msg.get("name"))
+            named = msg.get("named") if cmd == "yt-add" and isinstance(msg.get("named"), str) else None
+            chosen = library.add_streams(items, replace=cmd == "yt-play", name=msg.get("name"), named=named)
             result["ids"] = [t["id"] for t in chosen]
             if cmd == "yt-play" and chosen:   # asked for from Premium Services: the page stays there
                 start = next((t["id"] for t in chosen if stream_key(t) == msg.get("start")),

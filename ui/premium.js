@@ -150,15 +150,16 @@
     yt.recent = [{ key, title: title || 'Untitled' }, ...yt.recent.filter((p) => p.key !== key)].slice(0, 12);
     drawTree();
   }
-  // an album's or a playlist's songs, for a row that was not opened
-  async function pageOf(item) {
+  // an album's or a playlist's songs, for a row that was not opened (`quiet`: not one of the pages you opened, so it is
+  // not remembered, and a failure is not announced)
+  async function pageOf(item, quiet) {
     const key = keyOf(item), [kind, id] = split(key);
     let page = yt.pages[key];
     if (!page || page.error || page.loading) {
       page = await fetchPage(kind, id);
-      if (page.error) { failed(page, kind.startsWith('apple-')); return null; }
+      if (page.error) { if (!quiet) failed(page, kind.startsWith('apple-')); return null; }
       yt.pages[key] = page;
-      if (kind === 'mine') learn(page.tracks); else remember(key, page.title);
+      if (kind === 'mine') learn(page.tracks); else if (!quiet) remember(key, page.title);
     }
     return page;
   }
@@ -367,7 +368,7 @@
   $('yt-tree').addEventListener('dblclick', (e) => {
     const row = treeRow(e);
     if (!row || !row.node || row.node.kind === 'now') return;
-    if (row.node.kind !== 'list') { playRows(null); return; }
+    if (row.node.kind !== 'list') { choose(null); return; }
     api('play-playlist', { path: row.node.value, stay: true })
       .then((r) => { if (!r.ok) Mist.flash('That playlist has no songs that can be found'); });
   });
@@ -377,6 +378,7 @@
   function playRows(item) {
     const songs = yt.rows.map((r) => r.item).filter(playable);
     if (!songs.length) return;
+    queueTurn++;
     const start = playable(item) ? item : songs[0];
     if (yt.node.kind === 'now') { Mist.play(start.track); return; }   // the list itself: play on from there
     const page = shownPage();
@@ -384,7 +386,55 @@
       : yt.node.kind === 'apple' ? 'Apple Music: ' + APPLE.find((a) => a[0] === yt.node.value)[1] : '';
     api('yt-play', { items: songs.map(song), start: songKey(start), name });
   }
+  // Recently added is a feed of albums and playlists, and Play on a row of it makes the whole feed the list, as Play
+  // on a row of songs does: the chosen one plays now, and the songs of the others follow, in the table's order
+  const CARRIES = new Set(['recent']);
+  const QUEUE_LIMIT = 1000;   // the most songs the host keeps in the list
+  const READ_AT_ONCE = 4;     // rows of the feed read at the same time
+  let queueTurn = 0;          // each play of a list has its number; the one that fills the list behind it stops when it is not the latest
+  const holder = (item) => !!item && !playable(item) && (item.kind === 'album' || item.kind === 'playlist');
+  const entry = (item) => holder(item) || playable(item);
+  const carries = () => yt.node.kind === 'apple' && CARRIES.has(yt.node.value);
+  // the songs of one row of the feed: the song itself, or those of the album or playlist (null: they could not be read)
+  async function songsAt(item, quiet) {
+    if (playable(item)) return [item];
+    const page = await pageOf(item, quiet);
+    return page ? (page.tracks || []) : null;
+  }
+  async function playFrom(item) {
+    const mine = ++queueTurn;
+    const rows = yt.rows.map((r) => r.item).filter(entry);
+    const at = Math.max(0, rows.includes(item) ? rows.indexOf(item) : rows.findIndex((r) => keyOf(r) === keyOf(item)));
+    const name = 'Apple Music: ' + APPLE.find((a) => a[0] === yt.node.value)[1];
+    const first = await songsAt(rows[at]);
+    if (queueTurn !== mine || !first || !first.length) return;
+    // the rows above it come first in the list: read a few at a time, so that the song starts soon
+    const before = [];
+    for (let i = 0; i < at && queueTurn === mine; i += READ_AT_ONCE) {
+      const got = await Promise.all(rows.slice(i, Math.min(at, i + READ_AT_ONCE)).map((r) => songsAt(r, true)));
+      for (const songs of got) before.push(...(songs || []));
+    }
+    if (queueTurn !== mine) return;
+    const head = [...before, ...first];
+    const played = await api('yt-play', { items: head.map(song), start: songKey(first[0]), name });
+    if (!played.ok) return;
+    let count = Math.min(head.length, QUEUE_LIMIT), failures = 0;
+    for (let i = at + 1; i < rows.length; i += READ_AT_ONCE) {   // the rest follow behind it, as they are read
+      if (queueTurn !== mine || count >= QUEUE_LIMIT || failures >= 3) return;
+      const got = await Promise.all(rows.slice(i, i + READ_AT_ONCE).map((r) => songsAt(r, true)));
+      if (queueTurn !== mine || state.names.youtube !== name) return;   // something else was chosen meanwhile
+      const songs = [];
+      for (const some of got) {
+        if (some) { failures = 0; songs.push(...some); } else failures++;   // (three in a row that fail: the rest is left)
+      }
+      if (!songs.length) continue;
+      const added = await api('yt-add', { items: songs.slice(0, QUEUE_LIMIT - count).map(song), named: name });   // (the host adds only while the list is still this one)
+      if (!added.ok || !(added.ids || []).length) return;
+      count += Math.min(songs.length, QUEUE_LIMIT - count);
+    }
+  }
   async function playItem(item, add) {   // an album or a playlist, from its row
+    if (!add) queueTurn++;
     const page = await pageOf(item);
     if (!page || !(page.tracks || []).length) return;
     if (add) api('yt-add', { items: page.tracks.map(song) });
@@ -392,6 +442,7 @@
   }
   function playNext(item) { api('yt-add', { items: [song(item)] }).then((r) => { if (r.ids && r.ids.length) Mist.queueNext(r.ids[0]); }); }
   function similar(item) {
+    queueTurn++;
     Mist.flash('Finding similar songs…', 10000);
     api('yt-play', { items: [song(item)], start: item.video, similar: true, name: 'Similar to ' + item.title })
       .then((r) => { if (r.notice) Mist.flash(sentence(r.notice), 6000); });
@@ -404,7 +455,12 @@
       if (songs.length) api('yt-add', { items: songs.map(song) }).then((r) => { if (r.limit) Mist.flash(`Only the first ${r.limit} songs were added`, 6000); });
     }
   }
-  function choose(item) {   // a double-click, or Play in the tool bar
+  function choose(item) {   // Play in the tool bar, or in a row's menu
+    if (carries() && (!item || entry(item))) {
+      const first = item || yt.rows.map((r) => r.item).find(entry);
+      if (first) playFrom(first);
+      return;
+    }
     if (!item || playable(item)) playRows(item);
     else if (item.kind === 'artist') openItem(item);
     else playItem(item);
@@ -469,7 +525,7 @@
     } else {
       menu(e.clientX, e.clientY, [
         { label: 'Open', run: () => openItem(item) },
-        { label: 'Play', run: () => playItem(item) },
+        { label: 'Play', run: () => choose(item) },
         { label: 'Add to Now Playing', run: () => playItem(item, true) },
       ]);
     }
