@@ -11,6 +11,9 @@
 # restriction). Anything that replaces that file could use the permission too, which is why the profile
 # names only the engine's file, in your own folder.
 #
+# The Debian package ships the same profile for the engine's default place, so with the package installed
+# the player never needs this script; it is for a copy run from a checkout, and for a data folder elsewhere.
+#
 #   sudo bash allow-sandbox.sh PATH_TO_THE_ENGINE_FILE     add the profile for that file
 #   sudo bash allow-sandbox.sh --remove [PATH]             take it away again (without PATH: every one of Ocean Mist's)
 #   bash allow-sandbox.sh --print PATH                     show the profile, change nothing (no sudo)

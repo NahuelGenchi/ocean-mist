@@ -140,7 +140,31 @@ When the music matters more than the window, the player shrinks to a small bar t
 
 ## Get started
 
-Ocean Mist has no build step and nothing to compile: it is a handful of Python files and a web page.
+Ocean Mist has no build step and nothing to compile: it is a handful of Python files and a web page. On Ubuntu and Debian you can install it as a package; on any distribution you can run it from a copy of the repository.
+
+### As a package (Ubuntu and Debian)
+
+There is no published release yet, so you build the package from a copy of the repository. That needs `git` and `dpkg-deb`, which Ubuntu and Debian come with, and no administrator rights:
+
+```sh
+git clone https://github.com/NahuelGenchi/ocean-mist.git
+cd ocean-mist
+packaging/build-deb.sh
+```
+
+It writes `dist/ocean-mist_<version>_all.deb` from the last commit (what you have not committed does not go in). Open that file with your software installer, or install it from a terminal (apt brings the libraries Ocean Mist needs):
+
+```sh
+sudo apt install ./dist/ocean-mist_*.deb
+```
+
+Ocean Mist then appears in the app menu and in the "Open with" list for music files, and `ocean-mist` starts it from a terminal. The program lives in `/usr/lib/ocean-mist`, which only the administrator can change; your settings and the playback engine stay in your own folders (see "Where it keeps things" below). The package also installs one AppArmor profile, `/etc/apparmor.d/ocean-mist-engine`, which is what lets Apple Music's playback engine start on Ubuntu 24.04 and later without asking for your password (see "Signing in to Apple Music" below).
+
+If you added a menu entry by hand earlier (step 3 of the other route), delete `~/.local/share/applications/io.github.nahuelgenchi.OceanMist.desktop`: an entry in your own folder wins over the package's and keeps starting the copy it points to.
+
+`sudo apt remove ocean-mist` removes the program and keeps your settings and the engine you downloaded. The profile's file stays in `/etc/apparmor.d` until you purge the package, as apt does with every configuration file: `sudo apt purge ocean-mist` removes it too.
+
+### From a copy of the repository (any distribution)
 
 **1. Install what it needs.** On Ubuntu or Debian:
 
@@ -187,6 +211,7 @@ After that, Ocean Mist appears in the app menu and in the "Open with" list for m
 | Settings, My Music, stations, where you left off | `~/.config/ocean-mist/state.json` |
 | Tag cache and your files' covers | `~/.cache/ocean-mist/` |
 | The playback engine, if you install it (Apple Music) | `~/.local/share/ocean-mist/engine/` |
+| The program, if you installed the package | `/usr/lib/ocean-mist/`, and the engine's permission in `/etc/apparmor.d/ocean-mist-engine` |
 
 Nothing from YouTube Music or Apple Music is kept in those folders, or anywhere else on disk unless you save a playlist: the list, searches and covers stay in memory, and so do your libraries when you sign in. The pages keep no web cache or site data. The covers they hand to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes, and so does a small folder of rules that keeps Apple's page from signing you out. Of a sign-in, `state.json` only notes which Firefox profile you chose for each service. The engine's folder holds the runtime you downloaded and what Chromium and Google's Widevine module keep for it, never your sign-in or your library; the engine's page in Premium Services removes all of it.
 
@@ -242,7 +267,11 @@ When you play an Apple song, Ocean Mist starts the engine, which opens Apple's w
 
 Because the sound never passes through the player, **the equalizer and the visualizations cannot work on Apple songs**: the equalizer shows as off, and the visualization keeps moving on its own and says that it is not in time with the music. Songs from your files and from YouTube Music are not affected.
 
-On Ubuntu 24.04 and later the engine needs **one step with administrator rights, once**. Chromium keeps Apple's page in a security sandbox that needs a permission Ubuntu gives only to programs that AppArmor has a profile for, and the engine is not one of those. The engine's page has an **Allow it** button: your system asks for your password in its own window, the same one it shows for any change to the system (it is polkit's `pkexec`, so Ocean Mist never sees the password), and `engine/allow-sandbox.sh` then adds one AppArmor profile that names only the engine's file and gives it that one permission (read the script first if you like; the password window names it, and it runs from Ocean Mist's own folder). The sandbox is checked straight afterwards and nothing else is needed. The page has a button that takes the profile away again, which asks for your password again. That profile belongs to the administrator: removing the engine leaves it, and the page keeps offering to take it away for as long as it is on the system. Where the system has no password window, or it did not work, the page shows the same step as a command to run in a terminal, and the one that undoes it. The engine never runs without its sandbox.
+On Ubuntu 24.04 and later the engine needs a permission for its security sandbox: Chromium keeps Apple's page in a sandbox that needs user namespaces, and Ubuntu gives those only to programs that AppArmor has a profile for.
+
+**With the package, that is already done.** It installs a profile, `/etc/apparmor.d/ocean-mist-engine` (short, so read it if you like), that names only the engine's file, `electron/electron` in `~/.local/share/ocean-mist/engine` of anyone whose home folder is under `/home`, and root, and gives it that one permission. The engine then starts without asking for anything. The file is in your own folder, so anything that runs as you could put a program there and use the same permission; it gets that one permission and nothing else, and the profile can be changed with lines of your own in `/etc/apparmor.d/local/ocean-mist-engine`.
+
+**From a copy of the repository**, or with the data folder moved elsewhere by `XDG_DATA_HOME`, the profile does not cover the engine's file, and it is **one step with administrator rights, once**. The engine's page has an **Allow it** button: your system asks for your password in its own window, the same one it shows for any change to the system (it is polkit's `pkexec`, so Ocean Mist never sees the password), and `engine/allow-sandbox.sh` then adds one AppArmor profile that names only the engine's file and gives it that one permission (read the script first if you like; the password window names it, and it runs from Ocean Mist's own folder). The sandbox is checked straight afterwards and nothing else is needed. The page has a button that takes the profile away again, which asks for your password again. That profile belongs to the administrator: removing the engine leaves it, and the page keeps offering to take it away for as long as it is on the system. Where the system has no password window, or it did not work, the page shows the same step as a command to run in a terminal, and the one that undoes it. The engine never runs without its sandbox.
 
 What Ocean Mist reads, and when:
 
@@ -323,6 +352,7 @@ flowchart LR
 | `mpris.py` | The desktop's media controls |
 | `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations, `premium.js` is Premium Services (YouTube Music and Apple Music) |
 | `data/` | Application icon and menu entry |
+| `packaging/` | `build-deb.sh`, which builds the Debian package from the last commit, and the files that go into it: the control file, the maintainer scripts, the engine's AppArmor profile and the copyright notice |
 
 ## Roadmap
 
@@ -331,8 +361,9 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 - **Media Guide, Copy from CD and Copy to CD or Device** are in the task bar because the original had them, and open a short note instead.
 - **Gapless playback** between songs is not built yet.
 - **YouTube Music** signs in through Firefox only. Library albums, artists, songs and uploads are not there yet, playlists cannot be made or renamed, and live streams do not play.
-- **Apple Music** is read-only. Its songs play in the playback engine, which is a 117 MB download and, on Ubuntu 24.04 and later, a one-time step with administrator rights; the equalizer and the visualizations cannot work on them, there is a gap of a few seconds between songs, and Apple limits how many devices stream at once. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
+- **Apple Music** is read-only. Its songs play in the playback engine, which is a 117 MB download and, on Ubuntu 24.04 and later, needs a permission for its sandbox (the package installs it; a copy of the repository asks once, with administrator rights); the equalizer and the visualizations cannot work on them, there is a gap of a few seconds between songs, and Apple limits how many devices stream at once. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
 - **Spotify** and other streaming services are not started.
+- **Releases**: the Debian package is built from a copy of the repository. There is no published release, apt repository, Flatpak or Snap yet.
 
 | Milestone | Outcome |
 | :--- | :--- |
