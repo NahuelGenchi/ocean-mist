@@ -1,0 +1,705 @@
+"""The playback engine: what plays the songs of Apple Music.
+
+Apple's audio is protected with Widevine, which only a browser engine that carries it can play, and the
+view Ocean Mist is made of (WebKitGTK) does not. So a song of Apple Music is played by a small helper
+(engine/helper/): Apple's own web player in a window that is never shown, signed in with the same
+Firefox cookie apple.py reads, run by a Chromium-based runtime that has Widevine support (castlabs's
+Electron build for content security). Ocean Mist keeps the lists, the queue and the controls; the helper
+only makes the sound, one song at a time.
+
+The runtime is not part of Ocean Mist. It is downloaded once, when the user asks for it behind a licence
+screen, from the address and with the checksum written below, and kept under
+$XDG_DATA_HOME/ocean-mist/engine/. Google's Widevine module is not in that download either: the runtime
+fetches it from Google the first time it starts. The helper is started only when an Apple Music song is
+played, stops after a minute without one (ten while paused) and when the player closes.
+
+The helper gets the sign-in once, as its first line on standard input, and keeps it in memory only: it
+is never in an argument, an environment variable, a file or a log. It runs with a short list of
+environment variables and keeps Chromium's sandbox on; where the system forbids that (Ubuntu does, for a
+program it has no AppArmor profile for) it does not start, and engine/allow-sandbox.sh is the one
+administrator step that allows it.
+
+    python3 engine.py           says whether the engine is installed and whether its sandbox works
+    python3 engine.py check     starts the installed engine for a moment and checks its sandbox
+"""
+import collections
+import hashlib
+import http.client
+import json
+import math
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+import zipfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+HELPER = os.path.join(HERE, "engine", "helper")
+SANDBOX_SCRIPT = os.path.join(HERE, "engine", "allow-sandbox.sh")
+ROOT = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "ocean-mist", "engine")
+
+# what is downloaded: castlabs's build of Electron (MIT) for content security, with Widevine support
+VERSION = "44.5.1+wvcus"
+URL = ("https://github.com/castlabs/electron-releases/releases/download/v44.5.1%2Bwvcus/"
+       "electron-v44.5.1%2Bwvcus-linux-x64.zip")
+SOURCE = "github.com/castlabs/electron-releases"
+SHA256 = "afa7d4ea49abf1e91c5be0f88cfe1abdb977ff3454d57658e90b004aacbde9cc"   # from castlabs's SHASUMS256.txt for that release
+SIZE = 123104849            # bytes of the archive
+UNPACKED = 296027496        # ...and of what it holds
+WIDEVINE = 45 << 20         # what Google's module and Chromium's own files add the first time it runs
+DOWNLOAD_HOSTS = re.compile(r"^https://(?:[a-z0-9-]+\.)*(?:github\.com|githubusercontent\.com)/", re.I)
+ENTRIES = 400               # most files the archive may hold (it holds 72)
+
+IDLE_STOPPED = 60           # seconds without Apple music after which the helper ends
+IDLE_PAUSED = 600           # ...and while a song is paused
+IDLE_LOOK = 5               # seconds between looks at whether it is time
+READY_WITHIN = 330          # seconds the helper gets to be ready (Google's module can need the first time)
+CHECK_WITHIN = 60           # ...and to start for the check of its sandbox
+PROGRESS_EVERY = 0.25       # seconds between the download's progress reports
+
+# the only environment variables the helper gets: Chromium reads others (CHROME_DESKTOP, for one, made it
+# crash on newer GLib), and the player's own can hold session secrets
+ENV_KEEP = ("HOME", "PATH", "USER", "LOGNAME", "LANG", "LANGUAGE", "XDG_RUNTIME_DIR", "XDG_DATA_DIRS",
+            "XDG_CONFIG_DIRS", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "DBUS_SESSION_BUS_ADDRESS",
+            "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "PULSE_SERVER", "PULSE_COOKIE", "PULSE_RUNTIME_PATH")
+SAME_SITE = {0: "no_restriction", 1: "lax", 2: "strict"}   # Firefox's number, as Electron names it
+
+# what the page is told, per kind of failure
+WORDS = {
+    "not-installed": "Apple Music songs need the playback engine; install it under Apple Music, Playback engine",
+    "signed-out": "Apple Music says you are signed out; sign in again in Firefox",
+    "no-subscription": "Your Apple Music account has no active subscription, so its songs cannot be played",
+    "unavailable": "Apple Music cannot play this song for your account",
+    "limit": "Apple Music is playing on another device; it allows one at a time",
+    "offline": "Ocean Mist cannot reach Apple Music; check the internet connection",
+    "play": "Apple Music could not play this song",
+    "widevine": "The playback engine could not get Google's Widevine module; check the internet connection and try again",
+    "sandbox": "Your system does not let the playback engine start its security sandbox; it needs a one-time step, under Apple Music, Playback engine",
+    "crash": "The playback engine stopped unexpectedly",
+    "page": "Apple Music changed something Ocean Mist depends on, so the engine needs an update",
+    "start": "The playback engine could not start",
+}
+
+
+class EngineError(Exception):
+    """What went wrong, worded for the page. `code` is a key of WORDS where there is one."""
+
+    def __init__(self, message, code="start"):
+        super().__init__(message)
+        self.code = code
+
+
+class _Stay(urllib.request.HTTPRedirectHandler):
+    """A download that is sent elsewhere is followed only to GitHub's own servers."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not DOWNLOAD_HOSTS.match(newurl):
+            raise urllib.error.HTTPError(newurl, code, "the download was sent somewhere else", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def helper_env(environ=None):
+    """The environment the helper runs with."""
+    environ = os.environ if environ is None else environ
+    env = {key: environ[key] for key in ENV_KEEP if key in environ}
+    env.update({key: value for key, value in environ.items() if key.startswith("LC_")})
+    return env
+
+
+def cookie_of(token):
+    """The sign-in (firefox.AppleToken) as the helper's first line has it."""
+    return {"value": token.value, "host": token.host, "expires": token.expires or 0, "secure": bool(token.secure),
+            "http_only": bool(token.http_only), "same_site": SAME_SITE.get(token.same_site, "unspecified")}
+
+
+def restricted():
+    """Does this system keep programs from creating the user namespaces Chromium's sandbox uses
+    unless AppArmor has a profile for them (Ubuntu 24.04 and later)?"""
+    try:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") as fh:
+            return fh.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def sandbox_failure(lines):
+    """Did Chromium say it could not start its sandbox? (`lines`: what it printed.)"""
+    return any(re.search(r"(FATAL|ERROR).*(sandbox|namespace)", line, re.I) or "No usable sandbox" in line for line in lines)
+
+
+# ---- the download ----
+
+def download(url, path, size, sha256, progress=None, opener=None, cancelled=None):
+    """Fetch `url` into the file `path`, checking its size and its SHA-256 as it comes. EngineError when
+    it cannot be had or is not what was expected; nothing is left behind then."""
+    opener = opener or urllib.request.build_opener(_Stay)
+    request = urllib.request.Request(url, headers={"User-Agent": "Ocean Mist"})
+    digest, done, last = hashlib.sha256(), 0, 0.0
+    try:
+        with opener.open(request, timeout=30) as response, open(path, "wb") as out:
+            while True:
+                if cancelled and cancelled():
+                    raise EngineError("the download was cancelled", "cancelled")
+                chunk = response.read(1 << 16)
+                if not chunk:
+                    break
+                done += len(chunk)
+                if done > size:
+                    raise EngineError("the download is bigger than it should be, so it was not used", "download")
+                digest.update(chunk)
+                out.write(chunk)
+                if progress and time.monotonic() - last >= PROGRESS_EVERY:
+                    last = time.monotonic()
+                    progress(done, size)
+    except urllib.error.HTTPError as error:
+        _forget(path)
+        raise EngineError(f"the download failed (HTTP {error.code})", "download") from None
+    except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException):
+        _forget(path)
+        raise EngineError("Ocean Mist could not download the engine; check the internet connection", "download") from None
+    except EngineError:
+        _forget(path)
+        raise
+    if done != size or digest.hexdigest() != sha256:
+        _forget(path)
+        raise EngineError("the download is not the one that was expected (its checksum differs), so it was not used", "download")
+    if progress:
+        progress(done, size)
+
+
+def _forget(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def unpack(archive, folder):
+    """Unpack the runtime's archive into the new folder `folder`, as plain files: nothing may land outside
+    it, links are refused, and a file keeps its executable bit but never a set-user-id one."""
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            infos = zf.infolist()
+            if not infos or len(infos) > ENTRIES or sum(i.file_size for i in infos) > 2 * UNPACKED:
+                raise EngineError("the archive is not the one that was expected", "download")
+            top = os.path.realpath(folder)
+            for info in infos:
+                name = info.filename
+                mode = info.external_attr >> 16
+                target = os.path.realpath(os.path.join(top, name))
+                if (name.startswith("/") or ".." in name.split("/") or "\\" in name or (target != top and not target.startswith(top + os.sep))
+                        or (mode & 0o170000) == 0o120000):
+                    raise EngineError("the archive holds a path that is not allowed, so it was not used", "download")
+                if info.is_dir():
+                    os.makedirs(target, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with zf.open(info) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst, 1 << 20)
+                os.chmod(target, 0o755 if mode & 0o111 else 0o644)
+    except zipfile.BadZipFile:
+        raise EngineError("the download is not a readable archive, so it was not used", "download") from None
+    except OSError:
+        raise EngineError("Ocean Mist could not unpack the engine; check the free space", "download") from None
+
+
+def install_runtime(root, fetch=download, progress=None, steps=None, cancelled=None):
+    """Download and unpack the runtime into `root`/electron. It lands whole or not at all: it is made beside
+    the old one and moved into place. `steps(name)` says which part is on. EngineError otherwise."""
+    say = steps or (lambda name: None)
+    os.makedirs(root, exist_ok=True)
+    need = SIZE + UNPACKED + (100 << 20)
+    if shutil.disk_usage(root).free < need:
+        raise EngineError(f"there is not enough free space for the engine (it needs about {need >> 20} MB)", "download")
+    for name in os.listdir(root):   # what an install that was cut short left
+        if name.startswith(".installing-"):
+            shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+    work = tempfile.mkdtemp(prefix=".installing-", dir=root)
+    try:
+        archive = os.path.join(work, "archive.zip")
+        say("downloading")
+        fetch(URL, archive, SIZE, SHA256, progress, cancelled=cancelled)
+        say("unpacking")
+        fresh = os.path.join(work, "electron")
+        os.makedirs(fresh)
+        unpack(archive, fresh)
+        _forget(archive)
+        try:
+            with open(os.path.join(fresh, "version")) as fh:
+                same = fh.read().strip() == VERSION
+        except OSError:
+            same = False
+        program = os.path.join(fresh, "electron")
+        if not (same and os.access(program, os.X_OK) and os.path.isfile(os.path.join(fresh, "libffmpeg.so"))):
+            raise EngineError("the download is not the engine that was expected, so it was not used", "download")
+        old = os.path.join(root, "electron")
+        if os.path.lexists(old):
+            shutil.rmtree(old)
+        os.replace(fresh, old)
+        with open(os.path.join(root, "engine.json"), "w") as fh:
+            json.dump({"version": VERSION, "sha256": SHA256, "installed": time.strftime("%Y-%m-%d")}, fh)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# ---- the engine ----
+
+class Engine:
+    """The playback engine of the player. Methods are called from any thread.
+
+    `token_source()` gives the Apple Music sign-in as firefox.AppleToken, or raises EngineError;
+    `emit(event, **data)` tells the page: "engine" for what the song is doing (`phase`: starting, loading,
+    playing, paused, ended, error) and "engine-setup" for the install and the check."""
+
+    def __init__(self, token_source, emit, root=ROOT, helper=HELPER, popen=subprocess.Popen, fetch=download):
+        self.token_source, self.emit = token_source, emit
+        self.root, self.helper, self.popen, self.fetch = root, helper, popen, fetch
+        self.program = os.path.join(root, "electron", "electron")
+        self.lock = threading.RLock()
+        self.proc = None           # the running helper
+        self.ready = False         # ...and whether it said so
+        self.started = False       # ...and whether it got as far as saying it started
+        self.leaving = None        # the helper that was asked to end
+        self.fail = None           # what the helper said when it gave up
+        self.tail = collections.deque(maxlen=40)   # the last lines it printed on its error output
+        self.song = None           # what the page asked for last: {serial, ids, position, duration, phase}
+        self.volume, self.muted = 0.5, False
+        self.quiet = time.monotonic()     # since when nothing of Apple's plays
+        self.installing = None     # {"step", "done", "total"} while the runtime comes
+        self.stop_install = False
+        self.sandbox = "unknown"   # ok | blocked, as the last start or check found
+        self.error = ""            # why the last install or check failed
+        self.watcher = None
+        self.checking = threading.Lock()   # one check of the sandbox at a time: they share a folder
+
+    # -- what is there --
+    def installed(self):
+        try:
+            with open(os.path.join(self.root, "engine.json")) as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            return False
+        return isinstance(meta, dict) and meta.get("version") == VERSION and os.access(self.program, os.X_OK)
+
+    def status(self):
+        with self.lock:
+            running = self.proc is not None and self.proc.poll() is None
+            return {
+                "installed": self.installed(), "version": VERSION, "source": SOURCE, "size": SIZE, "unpacked": UNPACKED,
+                "extra": WIDEVINE, "sha256": SHA256, "folder": self.root, "running": running, "ready": running and self.ready,
+                "installing": dict(self.installing) if self.installing else None, "error": self.error,
+                "sandbox": self.sandbox, "restricted": restricted(),
+                "command": f"sudo bash {shlex.quote(SANDBOX_SCRIPT)} {shlex.quote(self.program)}",
+                "undo": f"sudo bash {shlex.quote(SANDBOX_SCRIPT)} --remove {shlex.quote(self.program)}",
+            }
+
+    def setup(self):
+        """Tell the page how the engine stands (the install's progress, a check's result)."""
+        self.emit("engine-setup", **self.status())
+
+    # -- installing --
+    def install(self, accept, version):
+        """Download and unpack the runtime, in a thread, when the user accepted the licence screen
+        (for `version` of the engine, the one it showed). The page hears how it goes."""
+        if accept is not True or version != VERSION:
+            raise EngineError("the licence screen was not accepted for this version of the engine", "start")
+        with self.lock:
+            if self.installing:
+                return
+            self.installing = {"step": "downloading", "done": 0, "total": SIZE}
+            self.stop_install = False
+            self.error = ""
+        threading.Thread(target=self._install, daemon=True).start()
+
+    def cancel(self):
+        self.stop_install = True
+
+    def _install(self):
+        def progress(done, total):
+            with self.lock:
+                if self.installing:
+                    self.installing.update(done=done, total=total)
+            self.setup()
+
+        def step(name):
+            with self.lock:
+                if self.installing:
+                    self.installing.update(step=name)
+            self.setup()
+        try:
+            self.stop(final=True)
+            install_runtime(self.root, self.fetch, progress, step, cancelled=lambda: self.stop_install)
+            step("checking")
+            self.check(inside=True)
+        except EngineError as error:
+            self.error = "" if error.code == "cancelled" else str(error)
+        except Exception as error:   # whatever else the disk or the archive did
+            self.error = f"the engine could not be installed ({type(error).__name__})"
+        finally:
+            with self.lock:
+                self.installing = None
+            self.setup()
+
+    def remove(self):
+        """Stop the helper and delete the engine and everything it kept."""
+        if self.installing:
+            raise EngineError("the engine is being installed", "start")
+        self.stop(final=True)
+        if os.path.basename(self.root) == "engine" and os.path.isdir(self.root) and not os.path.islink(self.root):
+            shutil.rmtree(self.root, ignore_errors=True)
+        with self.lock:
+            self.sandbox, self.error = "unknown", ""
+        self.setup()
+
+    # -- checking the sandbox --
+    def check(self, inside=False):
+        """Start the installed engine for a moment and see whether Chromium's sandbox is on. The result is
+        `sandbox` in the status; the page hears it. True when it works (False too when a check is already on
+        its way: that one tells the page)."""
+        if not self.checking.acquire(blocking=False):
+            return False
+        try:
+            return self._check(inside)
+        finally:
+            self.checking.release()
+
+    def _check(self, inside):
+        if not self.installed():
+            return False
+        folder = os.path.join(self.root, "check")
+        shutil.rmtree(folder, ignore_errors=True)
+        lines, tail = [], collections.deque(maxlen=40)
+        ok = False
+        try:
+            proc = self.popen([self.program, self.helper, "--selftest", f"--data={folder}"], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=helper_env(), cwd=self.root,
+                              text=True, encoding="utf-8", errors="replace")
+        except OSError:
+            self.error = WORDS["start"]
+            self.sandbox = "unknown"
+            if not inside:
+                self.setup()
+            return False
+        threading.Thread(target=_drain, args=(proc.stderr, tail), daemon=True).start()
+        timer = threading.Timer(CHECK_WITHIN, proc.kill)
+        timer.daemon = True
+        timer.start()
+        try:
+            for line in proc.stdout:
+                if line.startswith("OMP "):
+                    try:
+                        lines.append(json.loads(line[4:]))
+                    except ValueError:
+                        pass
+            proc.wait()
+        finally:
+            timer.cancel()
+            shutil.rmtree(folder, ignore_errors=True)
+        said = next((e for e in lines if e.get("event") == "selftest"), None)
+        if said and said.get("ok"):
+            self.sandbox, self.error, ok = "ok", "", True
+        elif said or sandbox_failure(tail):
+            self.sandbox, self.error = "blocked", WORDS["sandbox"]
+        else:
+            self.sandbox, self.error = "unknown", WORDS["start"]
+        if not inside:
+            self.setup()
+        return ok
+
+    # -- playing --
+    def play(self, serial, ids, start=0.0, volume=None, muted=None):
+        """Play the first of `ids` (Apple Music song ids) that Apple takes, from `start` seconds. The page
+        hears how it goes. EngineError when the engine cannot be started at all."""
+        if not self.installed():
+            raise EngineError(WORDS["not-installed"], "not-installed")
+        with self.lock:
+            if volume is not None:
+                self.volume = max(0.0, min(1.0, _finite(volume, self.volume)))
+            if muted is not None:
+                self.muted = bool(muted)
+            self.song = {"serial": serial, "ids": list(ids), "position": max(0.0, _finite(start)), "duration": 0.0, "phase": "starting", "sent": False}
+            self.quiet = time.monotonic()
+            if self.proc is not None and self.proc.poll() is None and self.leaving is not self.proc:
+                if self.ready:
+                    self._send_play()
+                    self.emit("engine", phase="loading", serial=serial)
+                else:   # it is starting: the song goes to it when it is ready
+                    self.emit("engine", phase="starting", serial=serial)
+                return
+            self.emit("engine", phase="starting", serial=serial)
+        threading.Thread(target=self._launch, args=(serial,), daemon=True).start()
+
+    def pause(self):
+        with self.lock:
+            if self.song and self.song["phase"] in ("playing", "loading"):
+                self.song["phase"] = "paused"
+            self.quiet = time.monotonic()
+            self._send({"cmd": "pause"})
+
+    def resume(self):
+        """Go on with the paused song: the helper may have ended meanwhile, so it starts again at the place."""
+        with self.lock:
+            song = self.song
+            if not song:
+                return False
+            if self.proc is not None and self.proc.poll() is None and self.leaving is not self.proc and self.ready:
+                if song["sent"]:
+                    song["phase"] = "playing"
+                    self._send({"cmd": "resume"})
+                else:   # it was paused before the helper was ready for it
+                    self._send_play()
+                    self.emit("engine", phase="loading", serial=song["serial"])
+                return True
+            ids, position, serial = list(song["ids"]), song["position"], song["serial"]
+        self.play(serial, ids, position)
+        return True
+
+    def _send_play(self):
+        """Hand the song asked for to the helper (the caller holds the lock)."""
+        song = self.song
+        self._send({"cmd": "volume", "value": self.volume, "muted": self.muted})
+        song.update(phase="loading", sent=True)
+        return self._send({"cmd": "play", "serial": song["serial"], "ids": song["ids"], "from": song["position"]})
+
+    def seek(self, to):
+        with self.lock:
+            if self.song:
+                self.song["position"] = max(0.0, _finite(to))
+            self._send({"cmd": "seek", "to": max(0.0, _finite(to))})
+
+    def set_volume(self, value, muted):
+        with self.lock:
+            self.volume, self.muted = max(0.0, min(1.0, _finite(value, self.volume))), bool(muted)
+            self._send({"cmd": "volume", "value": self.volume, "muted": self.muted})
+
+    def stop(self, final=False):
+        """Stop the song. The helper goes on a while, in case another comes (`final`: it ends now)."""
+        with self.lock:
+            self.song = None
+            self.quiet = time.monotonic()
+            if final:
+                self._end()
+            else:
+                self._send({"cmd": "stop"})
+
+    def close(self):
+        """The player is closing: end the helper and wait for it."""
+        proc = self._end()
+        if proc is not None:
+            self._reap(proc, 2)
+
+    # -- the helper --
+    def _send(self, message):
+        proc = self.proc
+        if proc is None or proc.poll() is not None or not self.ready and message.get("cmd") != "start":
+            return False
+        try:
+            proc.stdin.write(json.dumps(message) + "\n")
+            proc.stdin.flush()
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _end(self):
+        """Ask the helper to end; the process, or None."""
+        with self.lock:
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                return None
+            self.leaving = proc
+            try:
+                proc.stdin.write('{"cmd":"quit"}\n')
+                proc.stdin.flush()
+            except (OSError, ValueError):
+                pass
+        threading.Thread(target=self._reap, args=(proc, 5), daemon=True).start()
+        return proc
+
+    @staticmethod
+    def _reap(proc, patience):
+        try:
+            proc.wait(patience)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    def _launch(self, serial):
+        """Start the helper and hand it the sign-in; its events carry on from there."""
+        try:
+            token = self.token_source()
+            cookie = cookie_of(token)
+        except EngineError as error:
+            self._broken(serial, error.code, str(error))
+            return
+        folder = os.path.join(self.root, "profile")
+        old = self.leaving
+        if old is not None:   # two Chromiums cannot share a folder: let the one that is ending end
+            self._reap(old, 10)
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with self.lock:
+                if self.song is None or self.song["serial"] != serial:
+                    return   # something else was chosen meanwhile
+                if self.proc is not None and self.proc.poll() is None and self.leaving is not self.proc:
+                    return   # another try has started it; the song goes to it when it is ready
+                self.leaving = None
+                tail = collections.deque(maxlen=40)
+                proc = self.popen([self.program, self.helper, f"--data={folder}"], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=helper_env(), cwd=self.root,
+                                  text=True, encoding="utf-8", errors="replace", bufsize=1)
+                self.proc, self.ready, self.started, self.fail, self.tail = proc, False, False, None, tail
+                proc.stdin.write(json.dumps({"cmd": "start", "cookie": cookie, "volume": self.volume, "muted": self.muted}) + "\n")
+                proc.stdin.flush()
+        except OSError:
+            self._broken(serial, "start", WORDS["start"])
+            return
+        finally:
+            cookie = token = None
+        threading.Thread(target=self._read, args=(proc,), daemon=True).start()
+        threading.Thread(target=_drain, args=(proc.stderr, tail), daemon=True).start()
+        threading.Thread(target=self._wait, args=(proc,), daemon=True).start()
+        timer = threading.Timer(READY_WITHIN, self._late, args=(proc,))
+        timer.daemon = True
+        timer.start()
+        if self.watcher is None:
+            self.watcher = threading.Thread(target=self._idle, daemon=True)
+            self.watcher.start()
+
+    def _late(self, proc):
+        with self.lock:
+            if proc is self.proc and not self.ready and proc.poll() is None:
+                self.fail = "offline"
+                proc.kill()
+
+    def _read(self, proc):
+        for line in proc.stdout:
+            if not line.startswith("OMP "):
+                continue
+            try:
+                event = json.loads(line[4:])
+            except ValueError:
+                continue
+            if isinstance(event, dict):
+                self._event(proc, event)
+
+    def _event(self, proc, event):
+        name = event.get("event")
+        with self.lock:
+            if proc is not self.proc:
+                return
+            song = self.song
+            if name == "start":
+                self.started = True
+            elif name == "ready":
+                self.ready, self.sandbox = True, "ok"
+                if song and song["phase"] != "paused":   # what was asked for while it started
+                    self._send_play()
+                    self.emit("engine", phase="loading", serial=song["serial"])
+                else:
+                    self._send({"cmd": "volume", "value": self.volume, "muted": self.muted})
+            elif name == "state" and song and event.get("serial") == song["serial"]:
+                phase = event.get("state")
+                if phase not in ("loading", "playing", "paused", "ended"):
+                    return
+                position, duration = _number(event.get("position")), _number(event.get("duration"))
+                song.update(phase=phase, position=position, duration=duration or song["duration"])
+                if phase in ("ended", "paused"):
+                    self.quiet = time.monotonic()
+                self.emit("engine", phase=phase, serial=song["serial"], position=position, duration=song["duration"])
+            elif name == "problem" and song and event.get("serial") == song["serial"]:
+                code = event.get("code") if event.get("code") in WORDS else "play"
+                self.song = None
+                self.quiet = time.monotonic()
+                self.emit("engine", phase="error", serial=song["serial"], code=code, message=WORDS[code])
+            elif name == "fail":
+                self.fail = event.get("code") if event.get("code") in WORDS else "crash"
+
+    def _wait(self, proc):
+        code = proc.wait()
+        with self.lock:
+            if proc is not self.proc:
+                return
+            self.proc, self.ready = None, False
+            song, fail, started = self.song, self.fail, self.started
+            if self.leaving is proc:
+                self.leaving = None
+                return
+            if not started and sandbox_failure(self.tail):
+                fail = "sandbox"
+            fail = fail or "crash"
+            if fail == "sandbox":
+                self.sandbox = "blocked"
+            self.song = None
+        if song:
+            self.emit("engine", phase="error", serial=song["serial"], code=fail, message=WORDS.get(fail, WORDS["crash"]))
+        if fail == "sandbox":
+            self.setup()
+
+    def _broken(self, serial, code, message):
+        with self.lock:
+            if self.song and self.song["serial"] == serial:
+                self.song = None
+        self.emit("engine", phase="error", serial=serial, code=code if code in WORDS else "start", message=message)
+
+    def _idle(self):
+        while True:
+            time.sleep(IDLE_LOOK)
+            with self.lock:
+                proc = self.proc
+                if proc is None or proc.poll() is not None or self.leaving is proc:
+                    continue
+                phase = self.song["phase"] if self.song else ""
+                if phase in ("playing", "loading", "starting"):
+                    continue
+                if time.monotonic() - self.quiet >= (IDLE_PAUSED if phase == "paused" else IDLE_STOPPED):
+                    self._end()
+
+
+def _finite(value, default=0.0):
+    """`value` as a finite number (a place or a volume that is not one becomes `default`)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _number(value):
+    return round(float(value), 1) if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value < 1e6 else 0.0
+
+
+def _drain(stream, tail):
+    """Keep the last lines a helper printed on its error output (Chromium is talkative)."""
+    for line in stream:
+        tail.append(line.rstrip()[:300])
+
+
+def _no_sign_in():
+    raise EngineError(WORDS["signed-out"], "signed-out")
+
+
+def main(argv):
+    """Say how the engine stands, or check it."""
+    engine = Engine(_no_sign_in, lambda *args, **data: None)
+    if argv[1:2] == ["check"]:
+        ok = engine.check()
+        print("the sandbox works" if ok else "the sandbox is not on: " + (engine.error or "the engine is not installed"))
+        return 0 if ok else 1
+    status = engine.status()
+    print(f"engine {'installed' if status['installed'] else 'not installed'} (version {VERSION}) in {engine.root}")
+    print(f"this system restricts user namespaces: {status['restricted']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
