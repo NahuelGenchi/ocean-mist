@@ -8,7 +8,7 @@
   const audio = $('audio');
   const probe = new Audio(); probe.preload = 'metadata';
 
-  const LISTS = { local: 'My Music', youtube: 'YouTube Music' };   // the Now Playing lists
+  const LISTS = { local: 'My Music', youtube: 'YouTube Music' };   // the Now Playing lists (the second holds Apple Music's songs too)
   const state = {
     lists: { local: [], youtube: [] },   // the songs of each, in order
     names: { local: '', youtube: '' },   // the saved playlist (or page) each came from
@@ -78,7 +78,14 @@
   const listOf = (t) => (isStream(t) ? 'youtube' : 'local');   // the list a song belongs in
   const shown = () => state.lists[state.show];
   const inView = (id) => shown().find((t) => t.id === id);
-  const listLabel = () => state.names[state.show] || LISTS[state.show];
+  // what a list is called: the streaming one after the service its songs come from
+  function listName(which) {
+    if (which !== 'youtube') return LISTS[which];
+    const songs = state.lists.youtube, apple = songs.filter((t) => t.apple).length;
+    if (!apple) return LISTS.youtube;
+    return apple === songs.length ? 'Apple Music' : 'YouTube Music and Apple Music';
+  }
+  const listLabel = () => state.names[state.show] || listName(state.show);
   // the list playback goes through: the current song's, or else the one in view
   const playing = () => { const t = track(state.cur); return t ? state.lists[listOf(t)] : shown(); };
   function clock(seconds, pad) {
@@ -625,6 +632,7 @@
     const total = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     $('total-time').textContent = 'Total Time: ' + clock(total);
     $('np-label').textContent = listLabel();
+    $('np-select').title = `Switch between My Music and ${listName('youtube')}, open music or a saved playlist`;
     emptyHint();
     const current = list.querySelector('.cur');
     if (current && render.lastCur !== state.cur) { current.scrollIntoView({ block: 'nearest' }); render.lastCur = state.cur; }
@@ -879,7 +887,7 @@
   function showList(which) { state.show = which; render(); }
   function listMenu(anchor) {
     const rect = anchor.getBoundingClientRect();
-    const lists = Object.keys(LISTS).map((which) => ({ label: LISTS[which], checked: state.show === which, run: () => showList(which) }));
+    const lists = Object.keys(LISTS).map((which) => ({ label: listName(which), checked: state.show === which, run: () => showList(which) }));
     const saved = state.playlists.filter((p) => p.list === state.show)
       .map((p) => ({ label: p.name, checked: p.name === state.names[state.show], run: () => playPlaylist(p.path) }));
     menu(rect.left, rect.bottom + 1, [...lists, null, ...fileItems(), null,
