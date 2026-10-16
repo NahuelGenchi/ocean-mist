@@ -11,6 +11,11 @@
 # restriction). Anything that replaces that file could use the permission too, which is why the profile
 # names only the engine's file, in your own folder.
 #
+# The Debian package ships a profile for the engine's file in the default place of a home folder under /home
+# (and root's), so with the package installed and the engine there the player does not need this script. It is
+# for an engine file that profile does not name: no package, a data folder elsewhere, a home folder behind a
+# symbolic link or deeper than /home/NAME, or the package's profile switched off.
+#
 #   sudo bash allow-sandbox.sh PATH_TO_THE_ENGINE_FILE     add the profile for that file
 #   sudo bash allow-sandbox.sh --remove [PATH]             take it away again (without PATH: every one of Ocean Mist's)
 #   bash allow-sandbox.sh --print PATH                     show the profile, change nothing (no sudo)

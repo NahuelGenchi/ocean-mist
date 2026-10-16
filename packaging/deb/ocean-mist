@@ -1,0 +1,4 @@
+#!/bin/sh
+# Starts Ocean Mist from the folder the package put it in: ../lib/ocean-mist, next to this file's folder.
+here=$(dirname "$(readlink -f "$0")")
+exec /usr/bin/python3 "$here/../lib/ocean-mist/player.py" "$@"
