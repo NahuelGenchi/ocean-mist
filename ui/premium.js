@@ -524,12 +524,22 @@
     const s = eng.s;
     if (!s) { loadEngine(); return 'Looking at the playback engine…'; }
     const warn = s.error ? `<p class="warn">${esc(sentence(s.error))}</p>` : '';
-    // the profile the one-time step adds is the administrator's to take away, so Remove leaves it: its undo stays on the page while it is there
+    // the profile the one-time step adds is the administrator's to take away, so Remove leaves it: how to take it away stays on the page while it is there
+    const ask = !!s.ask;   // the system's password window can be used (else the step is a command for a terminal)
+    const undoCommand = `<code>${esc(s.undo)}</code><button id="en-copy-undo">${eng.copied === 'undo' ? 'Copied' : 'Copy the command'}</button>`;
     const profile = s.profile
       ? '<p>This system has the profile that lets the engine’s file start its sandbox. It names only that file and stays when the engine is removed ' +
-        '(so installing it again needs no step). To take it away:</p>' +
-        `<code>${esc(s.undo)}</code><button id="en-copy-undo">${eng.copied === 'undo' ? 'Copied' : 'Copy the command'}</button>`
+        '(so installing it again needs no step). ' + (ask
+          ? 'To take it away, your system asks for your password again:</p><button id="en-disallow">Take the permission away</button>' +
+            (s.ask_failed ? '<p>Or run this in a terminal:</p>' + undoCommand : '')
+          : 'To take it away:</p>' + undoCommand)
       : '';
+    if (s.asking) {   // the system's password window is open
+      return '<div class="yt-sign en"><b>Waiting for your password</b>' +
+        '<p>Your system is asking for your password in its own window; Ocean Mist never sees it. ' +
+        'If you do not see the window, it may be behind this one.</p>' +
+        '<button id="en-ask-cancel">Cancel</button></div>';
+    }
     if (s.installing) {
       const now = s.installing, pct = now.step === 'downloading' && now.total ? Math.min(100, Math.round(100 * now.done / now.total)) : 100;
       return '<div class="yt-sign en"><b>Installing the playback engine</b>' +
@@ -546,7 +556,8 @@
         `starts, it also gets Google’s Widevine module (about ${megabytes(s.extra)} MB) from Google, the way Chrome does.</p>` +
         `<p><u>Where it goes:</u> ${esc(s.folder)}, about ${megabytes(s.unpacked + s.extra)} MB. The download touches nothing else on your computer, and Remove deletes the engine and everything it kept.</p>` +
         (s.restricted ? '<p><u>One more step on this system:</u> it only lets programs that AppArmor has a profile for use the security sandbox the engine runs in (Ubuntu 24.04 and later do this), ' +
-          'so once the engine is downloaded an administrator has to add one profile for its file. The next page shows the command, and the one that takes the profile away again; Ocean Mist never runs either.</p>' : '') +
+          (ask ? 'so once the engine is downloaded, your system asks for your password, once, in its own window, to add one profile for its file. Ocean Mist never sees the password.</p>'
+            : 'so once the engine is downloaded an administrator has to add one profile for its file. The next page shows the command, and the one that takes the profile away again; Ocean Mist never runs either.</p>') : '') +
         '<p><u>Licences:</u> Electron is MIT licensed and Chromium has its own open-source licences (both come in the download); ' +
         'Widevine is Google’s module and comes under Google’s own terms.</p>' +
         `<label><input type="checkbox" id="en-ok"${eng.ticked ? ' checked' : ''}> I accept these licences and want the engine downloaded.</label>` +
@@ -561,6 +572,20 @@
     }
     const checking = eng.checking ? ' disabled' : '', first = s.sandbox === 'unknown';
     const again = `<button id="en-check"${checking}>${eng.checking ? 'Checking…' : first ? 'Check it now' : 'Check again'}</button>`;
+    if (s.sandbox === 'blocked' && s.restricted && ask) {
+      const byHand = s.ask_failed
+        ? '<p>If that does not work, run this in a terminal, then press Check again:</p>' +
+          `<code>${esc(s.command)}</code><button id="en-copy">${eng.copied === 'command' ? 'Copied' : 'Copy the command'}</button>${again}`
+        : '';
+      return '<div class="yt-sign en"><b>One step is needed, once</b>' + (s.ask_failed ? warn : '') +
+        '<p>Your system does not let a program start the security sandbox the engine runs in unless the system itself allows it ' +
+        '(Ubuntu 24.04 and later do this for Chrome and Firefox too). Press Allow it: your system asks for your password, once, ' +
+        'in its own window. Ocean Mist never sees the password.</p>' +
+        '<button id="en-allow">Allow it</button>' +
+        '<p>The engine keeps Apple’s page in Chromium’s security sandbox, and it never runs without it. The step adds one AppArmor profile ' +
+        'that names only the engine’s file and gives it one permission (“userns”). It is the script engine/allow-sandbox.sh in Ocean Mist’s ' +
+        'folder; read it first if you like. This page can take the profile away again.</p>' + byHand + '</div>';
+    }
     if (s.sandbox === 'blocked' && s.restricted) {
       return '<div class="yt-sign en"><b>One step is needed, once</b>' +
         '<p>The engine keeps Apple’s page in Chromium’s security sandbox, and it never runs without it. Your system only lets programs ' +
@@ -594,6 +619,13 @@
       eng.sure = Date.now() + 4000;   // the first click only asks
       drawRows(true);
       setTimeout(() => { if (eng.sure && eng.sure <= Date.now()) { eng.sure = 0; if (same(yt.node, { kind: 'apple', value: 'engine' })) drawRows(true); } }, 4100);
+    } else if (id === 'en-allow' || id === 'en-disallow') {   // the system asks for the password in its own window
+      api(id === 'en-allow' ? 'engine-allow' : 'engine-disallow').then((r) => {
+        if (!r.ok) Mist.flash(sentence(r.error || 'the system could not be asked'), 8000);
+        loadEngine();
+      });
+    } else if (id === 'en-ask-cancel') {
+      api('engine-ask-cancel').then(() => loadEngine());
     } else if (id === 'en-copy' || id === 'en-copy-undo') {
       const which = id === 'en-copy' ? 'command' : 'undo';
       api('engine-copy', { which }).then((r) => {   // the host puts it on the clipboard

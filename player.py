@@ -282,8 +282,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _engine_cmd(self, cmd, msg):
         """What the page asks of the playback engine: the install and what it needs (`engine-status`,
-        `-install`, `-cancel`, `-check`, `-remove`) and the song (`-play`, `-pause`, `-resume`, `-seek`,
-        `-volume`, `-stop`). What the engine answers comes as events."""
+        `-install`, `-cancel`, `-check`, `-remove`, and the administrator step: `-allow`, `-disallow`,
+        `-ask-cancel`) and the song (`-play`, `-pause`, `-resume`, `-seek`, `-volume`, `-stop`). What the
+        engine answers comes as events."""
         engine = self.engine
         if engine is None:
             return {"ok": False, "error": "the playback engine needs the player's window"}
@@ -298,6 +299,12 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=engine.check, daemon=True).start()
             elif cmd == "engine-remove":
                 engine.remove()
+            elif cmd == "engine-allow":   # the administrator step, asked for in the system's own password window
+                engine.allow()
+            elif cmd == "engine-disallow":
+                engine.disallow()
+            elif cmd == "engine-ask-cancel":
+                engine.cancel_ask()
             elif cmd == "engine-play":
                 track = self.library.track(msg.get("id"))
                 if not track or not track.get("apple"):

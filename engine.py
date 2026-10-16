@@ -17,7 +17,9 @@ The helper gets the sign-in once, as its first line on standard input, and keeps
 is never in an argument, an environment variable, a file or a log. It runs with a short list of
 environment variables and keeps Chromium's sandbox on; where the system forbids that (Ubuntu does, for a
 program it has no AppArmor profile for) it does not start, and engine/allow-sandbox.sh is the one
-administrator step that allows it.
+administrator step that allows it. The player asks for it in the system's own password window (pkexec,
+polkit): the password goes to the system, never to Ocean Mist. Where there is no such window the page
+shows the same step as a command to run in a terminal.
 
     python3 engine.py           says whether the engine is installed and whether its sandbox works
     python3 engine.py check     starts the installed engine for a moment and checks its sandbox
@@ -59,6 +61,9 @@ ENTRIES = 400               # most files the archive may hold (it holds 72)
 APPARMOR_DIR = "/etc/apparmor.d"
 PROFILE_PREFIX = "ocean-mist-engine"                    # what allow-sandbox.sh calls its profiles
 PROFILE_PATH = re.compile(r"^/[A-Za-z0-9_./+-]+$")      # the characters that script can put in a profile
+PKEXEC = "/usr/bin/pkexec"  # polkit's way to run a program as the administrator after a password in the system's window
+BASH = "/usr/bin/bash"
+ASK_WITHIN = 600            # seconds the password window may stay open before Ocean Mist stops waiting for it
 
 IDLE_STOPPED = 60           # seconds without Apple music after which the helper ends
 IDLE_PAUSED = 600           # ...and while a song is paused
@@ -143,6 +148,29 @@ def profile_present(program):
     """Does the system hold that script's profile for the engine's file? It outlives Remove: only
     an administrator can take it away."""
     return os.path.exists(os.path.join(APPARMOR_DIR, profile_name(os.path.realpath(program))))
+
+
+def can_ask():
+    """Is there a way to ask for the administrator's password in the system's own window here (pkexec)?"""
+    return os.access(PKEXEC, os.X_OK) and os.path.isfile(SANDBOX_SCRIPT)
+
+
+def ask_command(args):
+    """The command that runs engine/allow-sandbox.sh with `args` as the administrator, after the system's
+    password window. The script itself when it can be run, so the window names it, else through bash."""
+    if os.access(SANDBOX_SCRIPT, os.X_OK):
+        return [PKEXEC, SANDBOX_SCRIPT, *args]
+    return [PKEXEC, BASH, SANDBOX_SCRIPT, *args]
+
+
+def _sentence(lines):
+    """The last thing the step said, as one plain line for the page (nothing but printable characters)."""
+    for line in reversed(list(lines)):
+        text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", str(line))   # colour codes and the like
+        text = "".join(c for c in text if c.isprintable()).strip()
+        if text:
+            return text[:240]
+    return ""
 
 
 def sandbox_failure(lines):
@@ -294,6 +322,10 @@ class Engine:
         self.error = ""            # why the last install or check failed
         self.watcher = None
         self.checking = threading.Lock()   # one check of the sandbox at a time: they share a folder
+        self.asking = False        # whether the administrator step is out for a password (or running)
+        self.asker = None          # ...and the process that waits for it
+        self.ask_cancelled = False
+        self.ask_failed = False    # whether the last time it was asked for, it did not work
 
     # -- what is there --
     def installed(self):
@@ -314,6 +346,7 @@ class Engine:
                 "installing": dict(self.installing) if self.installing else None, "error": self.error,
                 "sandbox": self.sandbox, "restricted": restricted(),
                 "profile": profile_present(self.program), "path_ok": bool(PROFILE_PATH.match(real)),
+                "ask": can_ask() and bool(PROFILE_PATH.match(real)), "asking": self.asking, "ask_failed": self.ask_failed,
                 "command": f"sudo bash {shlex.quote(SANDBOX_SCRIPT)} {shlex.quote(real)}",
                 "undo": f"sudo bash {shlex.quote(SANDBOX_SCRIPT)} --remove {shlex.quote(real)}",
             }
@@ -384,6 +417,119 @@ class Engine:
         with self.lock:
             self.sandbox = "unknown"
             self.error = "the engine's folder could not be deleted completely" if os.path.exists(self.root) else ""
+        self.setup()
+
+    # -- the administrator step --
+    def allow(self):
+        """Add the profile that lets the engine's file start its sandbox: the system asks for the
+        administrator's password in its own window, and engine/allow-sandbox.sh runs after it. In a thread;
+        the page hears how it goes, and the sandbox is checked once the profile is in. EngineError when
+        it cannot be asked."""
+        self._start_ask("allow")
+
+    def disallow(self):
+        """Take that profile away again, the same way."""
+        self._start_ask("remove")
+
+    def cancel_ask(self):
+        """Stop waiting for the password window; it closes with the process that opened it."""
+        with self.lock:
+            if not self.asking:
+                return
+            self.ask_cancelled = True
+            proc = self.asker
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:   # (past the password it is the administrator's process, which cannot be signalled)
+                pass
+
+    def _start_ask(self, kind):
+        real = os.path.realpath(self.program)
+        if kind == "allow" and not self.installed():
+            raise EngineError("the engine is not installed yet", "start")
+        if kind == "allow" and (not restricted() or self.sandbox == "ok"):   # (no reason to ask for a password)
+            raise EngineError("the engine's sandbox does not need the step", "start")
+        if kind == "remove" and not profile_present(self.program):
+            raise EngineError("this system has no profile of Ocean Mist's for the engine's file", "start")
+        if not PROFILE_PATH.match(real):
+            raise EngineError("the step cannot name a folder with spaces or unusual characters in its path "
+                              f"({self.root}); start Ocean Mist with XDG_DATA_HOME set to a folder whose path has only "
+                              "letters, digits and _ . / + - in it", "start")
+        if not can_ask():
+            raise EngineError("this system has no window to ask for a password in; run the command shown instead", "start")
+        with self.lock:
+            if self.installing:
+                raise EngineError("the engine is being installed", "start")
+            if self.asking:
+                return
+            self.asking, self.ask_cancelled, self.ask_failed, self.error = True, False, False, ""
+        threading.Thread(target=self._ask, args=(kind, real), daemon=True).start()
+        self.setup()
+
+    def _ask(self, kind, real):
+        lines, code, note, expired = collections.deque(maxlen=12), None, "", []
+        try:
+            try:
+                proc = self.popen(ask_command([real] if kind == "allow" else ["--remove", real]), stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=helper_env(), cwd="/",
+                                  text=True, encoding="utf-8", errors="replace")
+            except OSError:
+                proc = None
+                note = "Ocean Mist could not ask the system for the step"
+            if proc is not None:
+                with self.lock:
+                    self.asker = proc
+                    early = self.ask_cancelled   # (Cancel came before the window was there)
+                if early:
+                    try:
+                        proc.terminate()
+                    except OSError:
+                        pass
+
+                def give_up():   # once the password was accepted the step is the administrator's process: it cannot be signalled
+                    expired.append(True)
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                timer = threading.Timer(ASK_WITHIN, give_up)
+                timer.daemon = True
+                timer.start()
+                try:
+                    for line in proc.stdout:
+                        lines.append(line)
+                    code = proc.wait()
+                finally:
+                    timer.cancel()
+        except Exception as error:   # whatever else went wrong while it waited
+            note = f"the step could not be run ({type(error).__name__})"
+        finally:
+            with self.lock:
+                self.asker, self.asking = None, False
+        said = _sentence(lines)
+        with self.lock:
+            cancelled = self.ask_cancelled
+        if code == 0 or cancelled:   # (a step that was already running when Cancel came has done its work)
+            note = ""
+        elif expired:
+            note = "The password window was left open too long, so nothing was changed"
+        elif code == 126:
+            note = "The password window was closed, so nothing was changed"
+        elif code == 127:
+            note = "Your system did not give the permission: the password was not accepted, or no password window could be shown"
+        elif code is not None:
+            note = said or "the step did not work"
+        if code == 0:
+            self.error, self.ask_failed = "", False
+            if kind == "allow":
+                self.check(inside=True)
+                if self.sandbox == "blocked":   # the step went through and the sandbox still does not start
+                    self.error, self.ask_failed = "The permission was added, but the engine's sandbox still does not start", True
+            else:
+                self.sandbox = "unknown"
+        else:
+            self.error, self.ask_failed = note, bool(note)
         self.setup()
 
     # -- checking the sandbox --
@@ -522,6 +668,7 @@ class Engine:
 
     def close(self):
         """The player is closing: end the helper and wait for it."""
+        self.cancel_ask()
         proc = self._end()
         if proc is not None:
             self._reap(proc, 2)

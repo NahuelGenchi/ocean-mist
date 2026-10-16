@@ -14,6 +14,9 @@
 #   sudo bash allow-sandbox.sh PATH_TO_THE_ENGINE_FILE     add the profile for that file
 #   sudo bash allow-sandbox.sh --remove [PATH]             take it away again (without PATH: every one of Ocean Mist's)
 #   bash allow-sandbox.sh --print PATH                     show the profile, change nothing (no sudo)
+#
+# Ocean Mist runs this itself through pkexec, after the system's own password window (the password goes
+# to the system, never to Ocean Mist), so nobody has to open a terminal. The commands above do the same by hand.
 set -euo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin   # nothing from the caller's PATH runs as root here
 
@@ -149,7 +152,8 @@ main() {
         exit 1
       fi
       check_program "$program"
-      if [ "$(stat -c %u "$program")" != "${SUDO_UID:-0}" ]; then
+      # who asked: sudo says it in SUDO_UID, pkexec (the player's password window) in PKEXEC_UID
+      if [ "$(stat -c %u "$program")" != "${SUDO_UID:-${PKEXEC_UID:-0}}" ]; then
         echo "The engine's file belongs to someone else than you; no profile is added for it."
         exit 1
       fi
