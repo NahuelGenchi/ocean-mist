@@ -611,7 +611,7 @@
         `checked against the checksum Ocean Mist was made with (SHA-256 ${esc(s.sha256.slice(0, 12))}…) before it is used. The first time the engine ` +
         `starts, it also gets Google’s Widevine module (about ${megabytes(s.extra)} MB) from Google, the way Chrome does.</p>` +
         `<p><u>Where it goes:</u> ${esc(s.folder)}, about ${megabytes(s.unpacked + s.extra)} MB. The download touches nothing else on your computer, and Remove deletes the engine and everything it kept.</p>` +
-        (s.restricted ? '<p><u>One more step on this system:</u> it only lets programs that AppArmor has a profile for use the security sandbox the engine runs in (Ubuntu 24.04 and later do this), ' +
+        (s.restricted && !s.covered ? '<p><u>One more step on this system:</u> it only lets programs that AppArmor has a profile for use the security sandbox the engine runs in (Ubuntu 24.04 and later do this), ' +
           (ask ? 'so once the engine is downloaded, your system asks for your password, once, in its own window, to add one profile for its file. Ocean Mist never sees the password.</p>'
             : 'so once the engine is downloaded an administrator has to add one profile for its file. The next page shows the command, and the one that takes the profile away again; Ocean Mist never runs either.</p>') : '') +
         '<p><u>Licences:</u> Electron is MIT licensed and Chromium has its own open-source licences (both come in the download); ' +

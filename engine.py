@@ -61,6 +61,8 @@ ENTRIES = 400               # most files the archive may hold (it holds 72)
 APPARMOR_DIR = "/etc/apparmor.d"
 PROFILE_PREFIX = "ocean-mist-engine"                    # what allow-sandbox.sh calls its profiles
 PROFILE_PATH = re.compile(r"^/[A-Za-z0-9_./+-]+$")      # the characters that script can put in a profile
+PACKAGE_PROFILE = os.path.join(APPARMOR_DIR, PROFILE_PREFIX)   # what the Debian package installs: one profile for the engine's default place
+PACKAGE_NAMES = re.compile(r"^/(?:home/[^/]+|root)/\.local/share/ocean-mist/engine/electron/electron$")   # the file that profile names
 PKEXEC = "/usr/bin/pkexec"  # polkit's way to run a program as the administrator after a password in the system's window
 BASH = "/usr/bin/bash"
 ASK_WITHIN = 600            # seconds the password window may stay open before Ocean Mist stops waiting for it
@@ -142,6 +144,14 @@ def restricted():
 def profile_name(program):
     """What allow-sandbox.sh calls the profile for the file `program`."""
     return f"{PROFILE_PREFIX}-{hashlib.sha1(program.encode()).hexdigest()[:10]}"
+
+
+def package_covers(program):
+    """Does the Debian package's profile name the engine's file, so that no step is needed? It names the file in
+    the default place of a home folder under /home, and root's. A home folder that AppArmor was told about in its
+    own settings is covered too but is not seen here: the page then explains the step, and the check of the
+    sandbox decides in the end."""
+    return os.path.exists(PACKAGE_PROFILE) and bool(PACKAGE_NAMES.match(os.path.realpath(program)))
 
 
 def profile_present(program):
@@ -344,7 +354,7 @@ class Engine:
                 "installed": self.installed(), "version": VERSION, "source": SOURCE, "size": SIZE, "unpacked": UNPACKED,
                 "extra": WIDEVINE, "sha256": SHA256, "folder": self.root, "running": running, "ready": running and self.ready,
                 "installing": dict(self.installing) if self.installing else None, "error": self.error,
-                "sandbox": self.sandbox, "restricted": restricted(),
+                "sandbox": self.sandbox, "restricted": restricted(), "covered": package_covers(self.program),
                 "profile": profile_present(self.program), "path_ok": bool(PROFILE_PATH.match(real)),
                 "ask": can_ask() and bool(PROFILE_PATH.match(real)), "asking": self.asking, "ask_failed": self.ask_failed,
                 "command": f"sudo bash {shlex.quote(SANDBOX_SCRIPT)} {shlex.quote(real)}",
@@ -361,7 +371,7 @@ class Engine:
         (for `version` of the engine, the one it showed). The page hears how it goes."""
         if accept is not True or version != VERSION:
             raise EngineError("the licence screen was not accepted for this version of the engine", "start")
-        if restricted() and not PROFILE_PATH.match(os.path.realpath(self.program)):
+        if restricted() and not PROFILE_PATH.match(os.path.realpath(self.program)) and not package_covers(self.program):
             raise EngineError(
                 "This system needs a one-time administrator step for the engine, and the step cannot name a folder with spaces "
                 f"or unusual characters in its path ({self.root}). Start Ocean Mist with XDG_DATA_HOME set to a folder whose "
