@@ -4,9 +4,10 @@
  * song of Apple Music plays as Apple's audio. engine.py starts it with the Chromium-based runtime that has
  * Widevine (the content-protection module Apple's audio needs), signed in with the one cookie Ocean Mist
  * read from Firefox, and tells it what to do on its standard input, a JSON object a line. It answers on its
- * standard output, in lines that start with "OMP ". It says codes and numbers only: no title, name, address
- * or sign-in. Everything it writes to disk goes to the folder given as --data (Chromium's own files and
- * Google's Widevine module); nothing of Apple's does, as the page's session lives in memory.
+ * standard output, in lines that start with "OMP ": codes and numbers, and short error texts in which the
+ * sign-in and every address are masked (engine.py reads the codes and keeps nothing else). Everything it
+ * writes to disk goes to the folder given as --data (Chromium's own files and Google's Widevine module);
+ * nothing of Apple's does, as the page's session lives in memory.
  *
  *   electron <this folder> --data=<folder>              the helper
  *   electron <this folder> --data=<folder> --selftest   starts, checks that Chromium's sandbox is on, ends
@@ -35,12 +36,24 @@ const APPLE_SITE = 'https://music.apple.com/';
 const SITE = /^http:\/\/[a-z0-9.-]+\.localhost:\d{2,5}\/$/.test(arg('site')) ? arg('site') : APPLE_SITE;
 const SITE_HOST = new URL(SITE).hostname;
 const APPLE = /(^|\.)apple\.com$/i;
+// may the page, or a frame of it, go to this address? Apple's own over https (and, for checks, the stand-in's
+// name); a blank frame or an object the page made itself is not another site
+const mayGo = (raw) => {
+  try {
+    const url = new URL(raw);
+    if (url.protocol === 'https:') return APPLE.test(url.hostname);
+    if (url.protocol === 'http:') return SITE !== APPLE_SITE && url.hostname === SITE_HOST;
+    return url.protocol === 'about:' || url.protocol === 'blob:';
+  } catch (_) { return false; }
+};
 const SIGN_OUT = /log.?out|sign.?out|log.?off|sign.?off|unauthori[sz]e/i;   // the same as apple.py blocks: a sign-out here would end Firefox's sign-in too
 const PERMITTED = new Set(['protected-media-identifier']);   // the only permission Apple's player may be given
 const READY_WITHIN = 45000;       // Apple's page gets this long to open and to say it is signed in
 const SIGNED_WITHIN = 10000;      // ...and this long, once its player is up, to say it is signed in
 const WIDEVINE_WITHIN = 240000;   // Google's module can have to come over the network on the first run
 const LOADING_WITHIN = 40000;     // a song that has not started by then did not
+const PAGE_WITHIN = 10000;        // the page gets this long to answer a look or a command (a song being queued gets LOADING_WITHIN)
+const PAGE_DEAD_AFTER = 3;        // looks in a row that were not answered in time: the page is hung, and the helper ends
 const TICK = 500;                 // how often the page is asked how the song is doing
 const BEAT = 1000;                // how often the position is said while a song plays
 
@@ -74,6 +87,12 @@ function finish(code) {
   process.stdout.write('', () => app.exit(code));
   setTimeout(() => app.exit(code), 1500).unref();
 }
+// the player went away and took the pipe with it: there is nobody to tell, and no box to show
+process.stdout.on('error', () => app.exit(0));
+process.on('uncaughtException', (e) => {
+  try { say('fail', { code: 'page', why: mask(e && e.message) }); } catch (_) { /* the pipe is gone */ }
+  app.exit(1);
+});
 
 // ---- what arrives on stdin ----
 let started = null;                 // the "start" line, once it came
@@ -125,7 +144,7 @@ async function pageAccount() {
 // once per page: count the media element's ends, and keep Apple's own playback errors
 function pageHook() {
   if (window.__om) return 'hooked';
-  const om = window.__om = { ended: 0, error: '', serial: 0 };
+  const om = window.__om = { ended: 0, error: '', serial: 0, pauseFor: null };
   document.addEventListener('ended', () => { om.ended += 1; }, true);   // media events do not bubble, but they are captured
   try {
     MusicKit.getInstance().addEventListener('mediaPlaybackError', (e) => {
@@ -136,20 +155,27 @@ function pageHook() {
   return 'hooked';
 }
 
-// plays one song: the first of `ids` that Apple takes (the library's id, then the catalogue's); a newer
-// song asked for meanwhile (`serial`) ends this try
+// plays one song: the first of `ids` that Apple takes (the library's id, then the catalogue's). A newer song
+// asked for meanwhile (`serial`) ends this try; so does a stop (it sets the serial to -1), and then nothing
+// may be left playing; a pause that came while the song was being queued lets it start paused
 async function pagePlay(ids, volume, serial) {
   const om = window.__om, mk = MusicKit.getInstance();
-  om.serial = serial; om.error = '';
+  om.serial = serial; om.error = ''; om.pauseFor = null;
   const code = (e) => String((e && (e.errorCode || e.name || e.message)) || e).replace(/\s+/g, ' ').slice(0, 40);
+  const superseded = () => JSON.stringify({ ok: false, code: 'SUPERSEDED' });
   let last = 'NO_SONG';
   for (const id of ids) {
     try {
       await mk.setQueue({ song: String(id) });
-      if (om.serial !== serial) return JSON.stringify({ ok: false, code: 'SUPERSEDED' });
+      if (om.serial !== serial) return superseded();
       mk.volume = volume;
       await mk.play();
-      return JSON.stringify({ ok: om.serial === serial, code: om.serial === serial ? '' : 'SUPERSEDED' });
+      if (om.serial !== serial) {
+        if (om.serial === -1) { try { await mk.pause(); await mk.stop(); } catch (_) { /* nothing to stop */ } }
+        return superseded();
+      }
+      if (om.pauseFor === serial) { try { await mk.pause(); } catch (_) { /* it plays then, and the next look says so */ } }
+      return JSON.stringify({ ok: true, code: '' });
     } catch (e) {
       if (om.serial !== serial) return JSON.stringify({ ok: false, code: 'SUPERSEDED' });
       last = code(e);
@@ -174,18 +200,26 @@ function pageWatch() {
   });
 }
 
-async function pagePause() { await MusicKit.getInstance().pause(); return 'ok'; }
-async function pageResume() { await MusicKit.getInstance().play(); return 'ok'; }
+async function pagePause() { const om = window.__om; if (om) om.pauseFor = om.serial; await MusicKit.getInstance().pause(); return 'ok'; }
+async function pageResume() { const om = window.__om; if (om) om.pauseFor = null; await MusicKit.getInstance().play(); return 'ok'; }
 async function pageSeek(to) { await MusicKit.getInstance().seekToTime(to); return 'ok'; }
 function pageVolume(value) { MusicKit.getInstance().volume = value; return 'ok'; }
-async function pageStop() { try { const mk = MusicKit.getInstance(); await mk.pause(); await mk.stop(); } catch (e) { /* not playing */ } return 'ok'; }
+async function pageStop() {
+  try { const om = window.__om; if (om) om.serial = -1; const mk = MusicKit.getInstance(); await mk.pause(); await mk.stop(); } catch (e) { /* not playing */ }
+  return 'ok';
+}
 
 // ---- the page ----
 let page = null;                    // the window's contents
-const inPage = async (fn, ...args) => {
-  const said = await page.executeJavaScript(`(${fn})(...${JSON.stringify(args)})`, true);   // as a user's click: no autoplay block
+class Late extends Error {}         // the page did not answer in time
+const inPageFor = async (ms, fn, ...args) => {
+  const said = await Promise.race([
+    page.executeJavaScript(`(${fn})(...${JSON.stringify(args)})`, true),   // as a user's click: no autoplay block
+    delay(ms).then(() => { throw new Late('the page did not answer in time'); }),
+  ]);
   return typeof said === 'string' && said[0] === '{' ? JSON.parse(said) : said;
 };
+const inPage = (fn, ...args) => inPageFor(PAGE_WITHIN, fn, ...args);
 
 // wait for Apple's player to be up and to say that it is signed in
 async function waitReady() {
@@ -212,6 +246,7 @@ let cur = null;                     // { serial, phase, armed, seekTo, endedBase
 let last = { time: 0, duration: 0 };
 let volume = 0.5, muted = false;
 let unsigned = 0;                   // polls in a row that said the sign-in is gone
+let unanswered = 0;                 // looks in a row that the page did not answer in time
 let watching = false;
 
 const reportState = (state, extra) => {
@@ -246,7 +281,12 @@ async function play(cmd) {
   const before = await inPage(pageWatch).catch(() => null);
   if (before) song.endedBase = before.ended;   // the ends of earlier songs do not count
   let result;
-  try { result = await inPage(pagePlay, ids, volume, serial); } catch (e) { result = { ok: false, code: 'PAGE_ERROR' }; }
+  try {
+    result = await inPageFor(LOADING_WITHIN, pagePlay, ids, volume, serial);
+  } catch (e) {
+    result = { ok: false, code: e instanceof Late ? 'TIMEOUT' : 'PAGE_ERROR' };
+    if (e instanceof Late) inPage(pageStop).catch(() => null);   // it may still start by itself later, and must not
+  }
   if (cur !== song || result.code === 'SUPERSEDED') return;   // another song was asked for meanwhile
   if (!result.ok) { problem(serial, result.code); return; }
   song.armed = true;
@@ -255,10 +295,11 @@ async function play(cmd) {
 async function tick() {
   if (watching || !cur || !cur.armed) return;
   watching = true;
+  const song = cur;
   try {
     const w = await inPage(pageWatch);
-    const song = cur;
-    if (!song || !song.armed) return;
+    if (cur !== song) return;   // another song was asked for, or this one is over, while the page was looked at
+    unanswered = 0;
     unsigned = w.signed ? 0 : unsigned + 1;
     if (unsigned >= 3) throw new Fail('signed-out', 'Apple says the sign-in is gone');
     if (w.state === 'playing' || w.state === 'paused') last = { time: w.time, duration: w.duration || last.duration };
@@ -276,6 +317,7 @@ async function tick() {
       if (song.seekTo) {   // where a song restored from earlier goes on from
         const to = song.seekTo; song.seekTo = 0;
         await inPage(pageSeek, to).catch(() => null);
+        if (cur !== song) return;   // another song was asked for meanwhile: its place is not this one's
         last.time = to;
       }
       if (song.phase !== 'playing' || Date.now() - song.said >= BEAT) reportState('playing');
@@ -289,6 +331,7 @@ async function tick() {
     }
   } catch (e) {
     if (e instanceof Fail) fatal(e);
+    else if (e instanceof Late && (unanswered += 1) >= PAGE_DEAD_AFTER) fatal(new Fail('crash', 'the page stopped answering'));
   } finally { watching = false; }
 }
 
@@ -300,8 +343,9 @@ async function command(msg) {
     else if (msg.cmd === 'resume') await inPage(pageResume);
     else if (msg.cmd === 'seek') {
       const to = Math.max(0, Number(msg.to) || 0);
-      if (cur && cur.phase === 'loading') cur.seekTo = to;   // when it has started
-      else { await inPage(pageSeek, to); last.time = to; if (cur) cur.said = 0; }
+      const song = cur;
+      if (song && song.phase === 'loading') song.seekTo = to;   // when it has started
+      else { await inPage(pageSeek, to); if (cur === song) { last.time = to; if (cur) cur.said = 0; } }
     } else if (msg.cmd === 'volume') {
       volume = Math.max(0, Math.min(1, Number(msg.value) || 0)); muted = !!msg.muted;
       page.setAudioMuted(muted);
@@ -362,14 +406,15 @@ async function run() {
     callback(SIGN_OUT.test(details.url) ? { cancel: true } : {});
   });
   const denied = new Set();
-  ses.setPermissionRequestHandler((_contents, permission, callback) => {
+  ses.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const asked = (details && details.requestingUrl) || contents.getURL();
     if (!PERMITTED.has(permission) && !denied.has(permission)) { denied.add(permission); say('denied', { permission: mask(permission) }); }
-    callback(PERMITTED.has(permission));
+    callback(PERMITTED.has(permission) && mayGo(asked));
   });
-  ses.setPermissionCheckHandler((_contents, permission) => PERMITTED.has(permission));
+  ses.setPermissionCheckHandler((_contents, permission, origin) => PERMITTED.has(permission) && mayGo(origin));
   await ses.cookies.set({
     url: SITE, name: 'media-user-token', value: secret, domain: cookie.host, path: '/',
-    secure: !!cookie.secure, httpOnly: !!cookie.http_only, sameSite: cookie.same_site || 'no_restriction',
+    secure: SITE.startsWith('https://') || !!cookie.secure, httpOnly: !!cookie.http_only, sameSite: cookie.same_site || 'no_restriction',
     ...(cookie.expires ? { expirationDate: Number(cookie.expires) } : {}),
   });
   cookie.value = null;
@@ -384,11 +429,9 @@ async function run() {
   page = win.webContents;
   page.setAudioMuted(muted);
   page.setWindowOpenHandler(() => ({ action: 'deny' }));
-  page.on('will-navigate', (event, url) => {
-    let host = '';
-    try { host = new URL(url).hostname; } catch (_) { /* not an address */ }
-    if (!APPLE.test(host) && host !== SITE_HOST) event.preventDefault();
-  });
+  for (const kind of ['will-navigate', 'will-redirect', 'will-frame-navigate']) {   // a page's own, a server's redirect, a frame's
+    page.on(kind, (event, url) => { if (!mayGo((event && event.url) || url)) event.preventDefault(); });
+  }
   page.on('render-process-gone', () => fatal(new Fail('crash', 'the page\'s process ended')));
 
   await open(SITE);

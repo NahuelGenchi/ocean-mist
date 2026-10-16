@@ -524,6 +524,12 @@
     const s = eng.s;
     if (!s) { loadEngine(); return 'Looking at the playback engine…'; }
     const warn = s.error ? `<p class="warn">${esc(sentence(s.error))}</p>` : '';
+    // the profile the one-time step adds is the administrator's to take away, so Remove leaves it: its undo stays on the page while it is there
+    const profile = s.profile
+      ? '<p>This system has the profile that lets the engine’s file start its sandbox. It names only that file and stays when the engine is removed ' +
+        '(so installing it again needs no step). To take it away:</p>' +
+        `<code>${esc(s.undo)}</code><button id="en-copy-undo">${eng.copied === 'undo' ? 'Copied' : 'Copy the command'}</button>`
+      : '';
     if (s.installing) {
       const now = s.installing, pct = now.step === 'downloading' && now.total ? Math.min(100, Math.round(100 * now.done / now.total)) : 100;
       return '<div class="yt-sign en"><b>Installing the playback engine</b>' +
@@ -538,18 +544,20 @@
         `<p><u>What is downloaded:</u> ${megabytes(s.size)} MB from ${esc(s.source)} (castlabs’s build of Electron ${esc(s.version.split('+')[0])}), ` +
         `checked against the checksum Ocean Mist was made with (SHA-256 ${esc(s.sha256.slice(0, 12))}…) before it is used. The first time the engine ` +
         `starts, it also gets Google’s Widevine module (about ${megabytes(s.extra)} MB) from Google, the way Chrome does.</p>` +
-        `<p><u>Where it goes:</u> ${esc(s.folder)}, about ${megabytes(s.unpacked + s.extra)} MB. Nothing else on your computer is touched, and Remove deletes it all.</p>` +
+        `<p><u>Where it goes:</u> ${esc(s.folder)}, about ${megabytes(s.unpacked + s.extra)} MB. The download touches nothing else on your computer, and Remove deletes the engine and everything it kept.</p>` +
+        (s.restricted ? '<p><u>One more step on this system:</u> it only lets programs that AppArmor has a profile for use the security sandbox the engine runs in (Ubuntu 24.04 and later do this), ' +
+          'so once the engine is downloaded an administrator has to add one profile for its file. The next page shows the command, and the one that takes the profile away again; Ocean Mist never runs either.</p>' : '') +
         '<p><u>Licences:</u> Electron is MIT licensed and Chromium has its own open-source licences (both come in the download); ' +
         'Widevine is Google’s module and comes under Google’s own terms.</p>' +
         `<label><input type="checkbox" id="en-ok"${eng.ticked ? ' checked' : ''}> I accept these licences and want the engine downloaded.</label>` +
-        `<button id="en-install"${eng.ticked ? '' : ' disabled'}>Download and install</button></div>`;
+        `<button id="en-install"${eng.ticked ? '' : ' disabled'}>Download and install</button>${profile}</div>`;
     }
     if (s.sandbox === 'ok') {
       return '<div class="yt-sign en"><b>Playback engine</b>' + warn +
         `<p>Installed (Electron ${esc(s.version.split('+')[0])}) and ready: its security sandbox is on. Apple Music songs play through it. ` +
         'It starts when you play one, ends a minute after the music stops (ten if you paused), and never shows a window.</p>' +
         `<button id="en-check"${eng.checking ? ' disabled' : ''}>${eng.checking ? 'Checking…' : 'Check again'}</button>` +
-        `<button id="en-remove">${eng.sure > Date.now() ? 'Click again to remove it' : 'Remove the engine'}</button></div>`;
+        `<button id="en-remove">${eng.sure > Date.now() ? 'Click again to remove it' : 'Remove the engine'}</button>${profile}</div>`;
     }
     const checking = eng.checking ? ' disabled' : '', first = s.sandbox === 'unknown';
     const again = `<button id="en-check"${checking}>${eng.checking ? 'Checking…' : first ? 'Check it now' : 'Check again'}</button>`;

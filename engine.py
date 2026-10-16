@@ -56,6 +56,9 @@ UNPACKED = 296027496        # ...and of what it holds
 WIDEVINE = 45 << 20         # what Google's module and Chromium's own files add the first time it runs
 DOWNLOAD_HOSTS = re.compile(r"^https://(?:[a-z0-9-]+\.)*(?:github\.com|githubusercontent\.com)/", re.I)
 ENTRIES = 400               # most files the archive may hold (it holds 72)
+APPARMOR_DIR = "/etc/apparmor.d"
+PROFILE_PREFIX = "ocean-mist-engine"                    # what allow-sandbox.sh calls its profiles
+PROFILE_PATH = re.compile(r"^/[A-Za-z0-9_./+-]+$")      # the characters that script can put in a profile
 
 IDLE_STOPPED = 60           # seconds without Apple music after which the helper ends
 IDLE_PAUSED = 600           # ...and while a song is paused
@@ -65,10 +68,12 @@ CHECK_WITHIN = 60           # ...and to start for the check of its sandbox
 PROGRESS_EVERY = 0.25       # seconds between the download's progress reports
 
 # the only environment variables the helper gets: Chromium reads others (CHROME_DESKTOP, for one, made it
-# crash on newer GLib), and the player's own can hold session secrets
+# crash on newer GLib), and the player's own can hold session secrets. The proxies are there because the
+# download goes through them, and a network that needs one needs it for Apple too
 ENV_KEEP = ("HOME", "PATH", "USER", "LOGNAME", "LANG", "LANGUAGE", "XDG_RUNTIME_DIR", "XDG_DATA_DIRS",
             "XDG_CONFIG_DIRS", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "DBUS_SESSION_BUS_ADDRESS",
-            "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "PULSE_SERVER", "PULSE_COOKIE", "PULSE_RUNTIME_PATH")
+            "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "PULSE_SERVER", "PULSE_COOKIE", "PULSE_RUNTIME_PATH",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 SAME_SITE = {0: "no_restriction", 1: "lax", 2: "strict"}   # Firefox's number, as Electron names it
 
 # what the page is told, per kind of failure
@@ -127,6 +132,17 @@ def restricted():
             return fh.read().strip() == "1"
     except OSError:
         return False
+
+
+def profile_name(program):
+    """What allow-sandbox.sh calls the profile for the file `program`."""
+    return f"{PROFILE_PREFIX}-{hashlib.sha1(program.encode()).hexdigest()[:10]}"
+
+
+def profile_present(program):
+    """Does the system hold that script's profile for the engine's file? It outlives Remove: only
+    an administrator can take it away."""
+    return os.path.exists(os.path.join(APPARMOR_DIR, profile_name(os.path.realpath(program))))
 
 
 def sandbox_failure(lines):
@@ -291,13 +307,15 @@ class Engine:
     def status(self):
         with self.lock:
             running = self.proc is not None and self.proc.poll() is None
+            real = os.path.realpath(self.program)   # a profile matches the file as the kernel resolves it
             return {
                 "installed": self.installed(), "version": VERSION, "source": SOURCE, "size": SIZE, "unpacked": UNPACKED,
                 "extra": WIDEVINE, "sha256": SHA256, "folder": self.root, "running": running, "ready": running and self.ready,
                 "installing": dict(self.installing) if self.installing else None, "error": self.error,
                 "sandbox": self.sandbox, "restricted": restricted(),
-                "command": f"sudo bash {shlex.quote(SANDBOX_SCRIPT)} {shlex.quote(self.program)}",
-                "undo": f"sudo bash {shlex.quote(SANDBOX_SCRIPT)} --remove {shlex.quote(self.program)}",
+                "profile": profile_present(self.program), "path_ok": bool(PROFILE_PATH.match(real)),
+                "command": f"sudo bash {shlex.quote(SANDBOX_SCRIPT)} {shlex.quote(real)}",
+                "undo": f"sudo bash {shlex.quote(SANDBOX_SCRIPT)} --remove {shlex.quote(real)}",
             }
 
     def setup(self):
@@ -310,6 +328,11 @@ class Engine:
         (for `version` of the engine, the one it showed). The page hears how it goes."""
         if accept is not True or version != VERSION:
             raise EngineError("the licence screen was not accepted for this version of the engine", "start")
+        if restricted() and not PROFILE_PATH.match(os.path.realpath(self.program)):
+            raise EngineError(
+                "This system needs a one-time administrator step for the engine, and the step cannot name a folder with spaces "
+                f"or unusual characters in its path ({self.root}). Start Ocean Mist with XDG_DATA_HOME set to a folder whose "
+                "path has only letters, digits and _ . / + - in it, then install the engine.", "start")
         with self.lock:
             if self.installing:
                 return
@@ -334,7 +357,9 @@ class Engine:
                     self.installing.update(step=name)
             self.setup()
         try:
-            self.stop(final=True)
+            gone = self.stop(final=True)
+            if gone is not None:
+                self._reap(gone, 5)
             install_runtime(self.root, self.fetch, progress, step, cancelled=lambda: self.stop_install)
             step("checking")
             self.check(inside=True)
@@ -351,11 +376,14 @@ class Engine:
         """Stop the helper and delete the engine and everything it kept."""
         if self.installing:
             raise EngineError("the engine is being installed", "start")
-        self.stop(final=True)
+        gone = self.stop(final=True)
+        if gone is not None:
+            self._reap(gone, 5)   # Chromium writes while it ends: the folder goes after it
         if os.path.basename(self.root) == "engine" and os.path.isdir(self.root) and not os.path.islink(self.root):
             shutil.rmtree(self.root, ignore_errors=True)
         with self.lock:
-            self.sandbox, self.error = "unknown", ""
+            self.sandbox = "unknown"
+            self.error = "the engine's folder could not be deleted completely" if os.path.exists(self.root) else ""
         self.setup()
 
     # -- checking the sandbox --
@@ -387,7 +415,8 @@ class Engine:
             if not inside:
                 self.setup()
             return False
-        threading.Thread(target=_drain, args=(proc.stderr, tail), daemon=True).start()
+        drain = threading.Thread(target=_drain, args=(proc.stderr, tail), daemon=True)
+        drain.start()
         timer = threading.Timer(CHECK_WITHIN, proc.kill)
         timer.daemon = True
         timer.start()
@@ -399,13 +428,14 @@ class Engine:
                     except ValueError:
                         pass
             proc.wait()
+            drain.join(1)   # its last words may still be in the pipe (a child that kept it open is not waited for)
         finally:
             timer.cancel()
             shutil.rmtree(folder, ignore_errors=True)
         said = next((e for e in lines if e.get("event") == "selftest"), None)
         if said and said.get("ok"):
             self.sandbox, self.error, ok = "ok", "", True
-        elif said or sandbox_failure(tail):
+        elif said or sandbox_failure(list(tail)):
             self.sandbox, self.error = "blocked", WORDS["sandbox"]
         else:
             self.sandbox, self.error = "unknown", WORDS["start"]
@@ -480,14 +510,15 @@ class Engine:
             self._send({"cmd": "volume", "value": self.volume, "muted": self.muted})
 
     def stop(self, final=False):
-        """Stop the song. The helper goes on a while, in case another comes (`final`: it ends now)."""
+        """Stop the song. The helper goes on a while, in case another comes (`final`: it is asked to end now,
+        and the helper that was asked, if there was one, is returned)."""
         with self.lock:
             self.song = None
             self.quiet = time.monotonic()
             if final:
-                self._end()
-            else:
-                self._send({"cmd": "stop"})
+                return self._end()
+            self._send({"cmd": "stop"})
+        return None
 
     def close(self):
         """The player is closing: end the helper and wait for it."""
@@ -565,9 +596,11 @@ class Engine:
             return
         finally:
             cookie = token = None
-        threading.Thread(target=self._read, args=(proc,), daemon=True).start()
-        threading.Thread(target=_drain, args=(proc.stderr, tail), daemon=True).start()
-        threading.Thread(target=self._wait, args=(proc,), daemon=True).start()
+        reader = threading.Thread(target=self._read, args=(proc,), daemon=True)
+        drain = threading.Thread(target=_drain, args=(proc.stderr, tail), daemon=True)
+        reader.start()
+        drain.start()
+        threading.Thread(target=self._wait, args=(proc, reader, drain), daemon=True).start()
         timer = threading.Timer(READY_WITHIN, self._late, args=(proc,))
         timer.daemon = True
         timer.start()
@@ -624,8 +657,10 @@ class Engine:
             elif name == "fail":
                 self.fail = event.get("code") if event.get("code") in WORDS else "crash"
 
-    def _wait(self, proc):
-        code = proc.wait()
+    def _wait(self, proc, reader, drain):
+        proc.wait()
+        reader.join(1)   # what it said last (a "fail", a sandbox line) may still be in its pipes; a child
+        drain.join(1)    # that kept a pipe open is not waited for
         with self.lock:
             if proc is not self.proc:
                 return
@@ -634,7 +669,7 @@ class Engine:
             if self.leaving is proc:
                 self.leaving = None
                 return
-            if not started and sandbox_failure(self.tail):
+            if not started and sandbox_failure(list(self.tail)):
                 fail = "sandbox"
             fail = fail or "crash"
             if fail == "sandbox":

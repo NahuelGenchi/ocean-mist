@@ -320,7 +320,7 @@ class Handler(BaseHTTPRequestHandler):
                 text = engine.status().get(which) if which in ("command", "undo") else None
                 if not text or self.host is None:
                     return {"ok": False, "error": "that cannot be copied"}
-                self.host.command("copy-text", {"text": text})
+                self.host.copy_text(text)
             else:
                 return {"ok": False, "error": "that is not something the engine can do"}
         except EngineError as error:
@@ -621,6 +621,18 @@ def run_app(argv):
         def command(self, cmd, msg):
             GLib.idle_add(self._run, cmd, msg)
 
+        def copy_text(self, text):
+            """Put `text` on the clipboard. Not a command of the page, which may ask for the engine's own command
+            to be copied but never for a text of its own: only `_engine_cmd` calls this, with a text the host named."""
+            GLib.idle_add(self._copy, str(text))
+
+        def _copy(self, text):
+            if self.app.window is not None:
+                clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+                clipboard.set_text(text, -1)
+                clipboard.store()   # a clipboard manager keeps it after the player closes
+            return False
+
         def _run(self, cmd, msg):
             app, window = self.app, self.app.window
             if window is None:
@@ -645,10 +657,6 @@ def run_app(argv):
                 app.choose("save", which=str(msg.get("list") or "local"))
             elif cmd == "add-folder":
                 app.choose("library")
-            elif cmd == "copy-text":
-                clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-                clipboard.set_text(str(msg.get("text") or ""), -1)
-                clipboard.store()   # a clipboard manager keeps it after the player closes
             elif cmd == "zoom":
                 app.set_zoom(msg.get("value"))
             elif cmd == "mini":
