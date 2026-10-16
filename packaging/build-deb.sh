@@ -26,14 +26,14 @@ set -euo pipefail
 
 fail() { echo "build-deb.sh: $*" >&2; exit 1; }
 
-for tool in git dpkg-deb tar gzip md5sum cut find sort sed date install python3; do
+for tool in git dpkg-deb tar gzip md5sum sha256sum cut tr awk grep find sort sed date install mktemp cp chmod touch python3; do
   command -v "$tool" >/dev/null 2>&1 || fail "needs $tool"
 done
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 git -C "$repo" rev-parse --verify -q 'HEAD^{commit}' >/dev/null || fail "$repo has no commit to build from"
-mkdir -p "${1:-$repo/dist}"
-out="$(cd "${1:-$repo/dist}" && pwd -P)"
+mkdir -p -- "${1:-$repo/dist}"
+out="$(cd -- "${1:-$repo/dist}" && pwd -P)"
 
 epoch="$(git -C "$repo" log -1 --format=%ct HEAD)"
 short="$(git -C "$repo" rev-parse --short=7 HEAD)"

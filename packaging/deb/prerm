@@ -15,7 +15,7 @@ if [ -z "${DPKG_ROOT:-}" ]; then
     case "$1" in
         remove | upgrade)
             if command -v py3clean >/dev/null 2>&1; then
-                py3clean -p ocean-mist /usr/lib/ocean-mist || true
+                py3clean -p ocean-mist || true
             fi
             ;;
     esac
