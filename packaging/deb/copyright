@@ -1,0 +1,49 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Ocean Mist
+Upstream-Contact: NahuelGenchi <65604505+NahuelGenchi@users.noreply.github.com>
+Source: https://github.com/NahuelGenchi/ocean-mist
+Comment:
+ The package installs the repository's files under /usr/lib/ocean-mist, so the
+ paths below are the repository's paths, relative to that folder.
+
+Files: *
+Copyright: 2026 NahuelGenchi
+License: GPL-3+
+
+Files: ui/fonts/tahoma.ttf
+       ui/fonts/tahomabd.ttf
+Copyright: 2004 Larry Snyder
+           2003 Bitstream, Inc.
+License: LGPL-2.1+
+Comment:
+ The Tahoma replacement fonts of the Wine project (https://www.winehq.org/),
+ based on Bitstream Vera Sans. Bitstream's notice and permission text, which
+ go with every copy of the fonts, are in ui/fonts/README.md, next to them.
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the Free
+ Software Foundation, either version 3 of the License, or (at your option)
+ any later version.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ details.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in "/usr/share/common-licenses/GPL-3".
+
+License: LGPL-2.1+
+ This library is free software; you can redistribute it and/or modify it
+ under the terms of the GNU Lesser General Public License as published by the
+ Free Software Foundation; either version 2.1 of the License, or (at your
+ option) any later version.
+ .
+ This library is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more
+ details.
+ .
+ On Debian systems, the complete text of the GNU Lesser General Public License
+ version 2.1 can be found in "/usr/share/common-licenses/LGPL-2.1".

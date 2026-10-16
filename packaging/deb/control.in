@@ -1,0 +1,26 @@
+Package: ocean-mist
+Version: @VERSION@
+Section: sound
+Priority: optional
+Architecture: all
+Maintainer: NahuelGenchi <65604505+NahuelGenchi@users.noreply.github.com>
+Installed-Size: @INSTALLED_SIZE@
+Depends: python3 (>= 3.11), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1
+Recommends: gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav
+Suggests: firefox | firefox-esr
+Homepage: https://github.com/NahuelGenchi/ocean-mist
+Description: music player with the look of Windows Media Player 9
+ Ocean Mist plays your music files and internet radio, and shows your
+ YouTube Music and Apple Music libraries, in a window drawn like the classic
+ Windows Media Player 9: the sculpted frame, the visualizations, a ten-band
+ equalizer, a media library and playlists. It is an unofficial fan project,
+ not affiliated with Microsoft.
+ .
+ Apple Music songs play in a playback engine that the player downloads when
+ you ask it to, after a license screen. On Ubuntu 24.04 and later that engine
+ needs a permission for its security sandbox. This package installs it as an
+ AppArmor profile that names only the engine's file in your own data folder,
+ so the player has nothing to ask you for.
+ .
+ YouTube Music and Apple Music sign in through Firefox, which this package
+ only suggests.

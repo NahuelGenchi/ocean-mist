@@ -1,0 +1,24 @@
+#!/bin/sh
+# Runs as the administrator before the package is removed or upgraded, and cannot make that fail.
+#   - on removal, takes the playback engine's AppArmor profile out of the running system (its file is a
+#     configuration file, so dpkg keeps it until the package is purged);
+#   - removes the compiled Python files made by postinst.
+# It touches nothing in anybody's home folder. With DPKG_ROOT set, dpkg is working on another root, not this system.
+set -e
+
+PROFILE=/etc/apparmor.d/ocean-mist-engine
+
+if [ -z "${DPKG_ROOT:-}" ]; then
+    if [ "$1" = remove ] && [ -f "$PROFILE" ] && command -v apparmor_parser >/dev/null 2>&1 && aa-status --enabled >/dev/null 2>&1; then
+        apparmor_parser -R "$PROFILE" || true
+    fi
+    case "$1" in
+        remove | upgrade)
+            if command -v py3clean >/dev/null 2>&1; then
+                py3clean -p ocean-mist /usr/lib/ocean-mist || true
+            fi
+            ;;
+    esac
+fi
+
+exit 0
