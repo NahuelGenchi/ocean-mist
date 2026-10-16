@@ -6,8 +6,9 @@
 // playlists and Liked music, and songs can be liked and put in your playlists.
 // Apple Music has a branch of the tree too: the host (apple.py) reads your
 // library there, signed in through Firefox as well, and its songs join the
-// same list. Apple's own audio is protected, so they play from YouTube Music,
-// where the host finds each one when its turn comes.
+// same list. Apple's own audio is protected, so the playback engine (engine.py)
+// plays them: its page here, under Apple Music, installs it and says what it
+// needs.
 (() => {
   const { $, state, api, on, onPlay, esc, clock, menu, base, sentence } = Mist;
   const SEARCHES = [['all', 'Top results'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']];
@@ -49,9 +50,9 @@
   // an album's, an artist's or a playlist's page, whichever service it is of
   const fetchPage = (kind, id) => (kind.startsWith('apple-')
     ? getApple(`page?kind=${kind.slice(6)}&id=${encodeURIComponent(id)}`) : get(`${kind}?id=${encodeURIComponent(id)}`));
-  // a song of Apple Music has no video until the host finds it on YouTube Music, when its turn comes
+  // a song of Apple Music has no video: the playback engine plays it by its Apple id
   const playable = (item) => !!item && (item.kind === 'song' || item.kind === 'video') && !!(item.video || item.apple);
-  const song = (item) => ({ video: item.video, apple: item.apple, title: item.title, artist: item.artist, album: item.album, year: item.year,
+  const song = (item) => ({ video: item.video, apple: item.apple, apple_lib: item.apple_lib, title: item.title, artist: item.artist, album: item.album, year: item.year,
     duration: item.duration, cover: item.cover, artist_id: item.artist_id, album_id: item.album_id });
   const songKey = (item) => (item.apple ? 'apple:' + item.apple : item.video);   // the host's name for it, and its row's mark
   const pictureUrl = (url) => base + (APPLE_PICTURES.test(url) ? 'apple/' : 'yt/') + 'picture?u=' + encodeURIComponent(url);
@@ -71,7 +72,11 @@
     if (node.kind === 'now') return;
     if (node.kind === 'list') { loadSaved(node.value); return; }
     if (node.kind === 'account') { loadLibrary(); return; }
-    if (node.kind === 'apple') { if (node.value !== 'sign-in') loadApple(node.value); return; }
+    if (node.kind === 'apple') {
+      if (node.value === 'engine') loadEngine();
+      else if (node.value !== 'sign-in') loadApple(node.value);
+      return;
+    }
     if (node.kind === 'search') {
       const words = yt.words, key = node.value + '\n' + words;
       if (!words || (yt.results[key] && !yt.results[key].error)) return;
@@ -181,7 +186,7 @@
       : node.kind === 'page' ? yt.pages[node.value]
       : node.kind === 'list' ? yt.saved[node.value]
       : node.kind === 'account' ? (signedIn() ? yt.library : null)
-      : node.kind === 'apple' ? (appleReady() && node.value !== 'sign-in' ? ap.lists[node.value] : null)
+      : node.kind === 'apple' ? (appleReady() && node.value !== 'sign-in' && node.value !== 'engine' ? ap.lists[node.value] : null)
       : { items: state.lists.youtube.map(asItem) };
     const rows = [], found = yt.found;
     if (found && !found.loading && !found.error) {
@@ -208,6 +213,7 @@
   };
   function emptyText() {
     const found = yt.found, node = yt.node;
+    if (node.kind === 'apple' && node.value === 'engine') return engineText();
     if (node.kind === 'account' && (!signedIn() || (found && found.signed_out))) return signInText(found && found.error);
     if (node.kind === 'apple' && (!appleReady() || node.value === 'sign-in' || (found && found.signed_out))) return appleSignInText(found && found.error);
     if (node.kind === 'search' && !yt.words) return 'Type what you are looking for in the search box at the top right, then press Enter.';
@@ -251,8 +257,8 @@
       'Sign in to see your Apple Music library here: what you added lately, your playlists, albums, artists and songs.<br><br>' +
       'You sign in at music.apple.com in Firefox, on Apple’s own page. Ocean Mist reads that sign-in from Firefox, uses it ' +
       'in memory only, and changes nothing in your account.<br><br>' +
-      'Apple’s own audio is protected, so a song of yours plays from YouTube Music: Ocean Mist looks up the same title and artist ' +
-      'there when its turn comes, and says so if it finds nothing.' +
+      'Apple’s songs are protected, so they play through Ocean Mist’s playback engine: a download you accept first, under ' +
+      'Playback engine. Playing them needs an active Apple Music subscription, which the engine checks.' +
       '<br><button id="ap-signin">Sign in with Firefox</button></div>';
   }
   // the table's three column titles
@@ -272,7 +278,7 @@
     const page = shownPage(), songs = yt.rows.filter((r) => playable(r.item)).map((r) => r.item);
     const total = songs.reduce((sum, t) => sum + (t.duration || 0), 0);
     const library = node.kind === 'account' && signedIn() && !(yt.found && yt.found.signed_out);
-    const mine = node.kind === 'apple' && appleReady() && node.value !== 'sign-in' && !(yt.found && yt.found.signed_out);
+    const mine = node.kind === 'apple' && appleReady() && node.value !== 'sign-in' && node.value !== 'engine' && !(yt.found && yt.found.signed_out);
     $('yt-head').hidden = !page && !library && !mine;
     if (mine) {
       const profile = ap.profile ? ` profile “${esc(ap.profile)}”` : '';
@@ -343,6 +349,7 @@
     if (yt.open.apple) {
       if (!appleReady()) rows.push({ depth: 1, label: 'Sign in…', node: { kind: 'apple', value: 'sign-in' } });
       else for (const [value, label] of APPLE) rows.push({ depth: 1, label, node: { kind: 'apple', value } });
+      rows.push({ depth: 1, label: 'Playback engine', node: { kind: 'apple', value: 'engine' } });
     }
     yt.tree = rows;
     $('yt-tree').innerHTML = rows.map((r, i) =>
@@ -417,7 +424,13 @@
     if (e.target.id === 'ap-signin') { appleSignIn(); return; }
     if (e.target.classList.contains('ap-profile')) { if (ap.choices) appleSignIn(ap.choices[Number(e.target.dataset.i)].profile); return; }
     if (e.target.id === 'ap-cancel') { ap.waiting = false; drawRows(true); return; }
+    if (e.target.closest('.en')) { engineClick(e.target); return; }
     const i = rowAt(e); if (i >= 0) select(i);
+  });
+  $('yt-rows').addEventListener('change', (e) => {   // the licence box of the engine's page
+    if (e.target.id !== 'en-ok') return;
+    eng.ticked = e.target.checked;
+    $('en-install').disabled = !eng.ticked;
   });
   $('yt-head').addEventListener('click', (e) => {
     if (e.target.id === 'yt-signout') signOut();
@@ -463,7 +476,7 @@
   });
   $('yt-scroll').addEventListener('scroll', () => {   // Apple Music lists carry on by themselves near their end
     const el = $('yt-scroll');
-    if (yt.node.kind === 'apple' && el.scrollHeight - el.scrollTop - el.clientHeight < 240) loadApple(yt.node.value, true);
+    if (yt.node.kind === 'apple' && yt.node.value !== 'engine' && el.scrollHeight - el.scrollTop - el.clientHeight < 240) loadApple(yt.node.value, true);
   });
   $('yt-more').addEventListener('click', () => {
     const node = yt.node, found = yt.found;
@@ -477,6 +490,113 @@
       if (yt.found === found) drawRows(true);
     });
   });
+
+  // ---- the playback engine ----
+  // Apple's songs are played by a download (Electron, with Google's Widevine) that the player runs without a
+  // window, only while one plays. This page is where it is accepted, installed, checked and removed; `eng.s` is
+  // what the host last said about it (engine-status, and the "engine-setup" events).
+  const eng = { s: null, ticked: false, loading: false, checking: false, copied: '', sure: 0 };
+  const megabytes = (bytes) => Math.round(bytes / 1048576);
+  function loadEngine() {
+    if (eng.loading) return;
+    eng.loading = true;
+    api('engine-status').then((r) => { eng.loading = false; if (r.ok) engineSeen(r); });
+  }
+  function engineSeen(status) {
+    const was = eng.s && eng.s.installing, now = status.installing;
+    eng.s = status;
+    eng.checking = false;
+    if (!same(yt.node, { kind: 'apple', value: 'engine' })) return;
+    const bar = $('en-bar');
+    if (bar && was && now && was.step === now.step && now.total) {   // only the bar moves while it downloads
+      bar.style.width = Math.min(100, Math.round(100 * now.done / now.total)) + '%';
+      $('en-note').textContent = installNote(now);
+      return;
+    }
+    drawRows(true);
+  }
+  function installNote(now) {
+    if (now.step === 'downloading') return `Downloading… ${megabytes(now.done)} of ${megabytes(now.total)} MB`;
+    if (now.step === 'unpacking') return 'Unpacking…';
+    return 'Checking that it can start its sandbox…';
+  }
+  function engineText() {
+    const s = eng.s;
+    if (!s) { loadEngine(); return 'Looking at the playback engine…'; }
+    const warn = s.error ? `<p class="warn">${esc(sentence(s.error))}</p>` : '';
+    if (s.installing) {
+      const now = s.installing, pct = now.step === 'downloading' && now.total ? Math.min(100, Math.round(100 * now.done / now.total)) : 100;
+      return '<div class="yt-sign en"><b>Installing the playback engine</b>' +
+        `<div class="bar"><i id="en-bar" style="width:${pct}%"></i></div><p id="en-note">${esc(installNote(now))}</p>` +
+        `<button id="en-cancel"${now.step === 'downloading' ? '' : ' disabled'}>Cancel</button></div>`;
+    }
+    if (!s.installed) {
+      return '<div class="yt-sign en"><b>Playback engine</b>' + warn +
+        '<p>Apple’s songs are protected, so this page cannot play them. Ocean Mist plays them with an engine of its own: a copy of ' +
+        'Chromium that runs in the background, with no window, only while an Apple Music song plays. It opens Apple’s web player and ' +
+        'nothing else, signed in with the sign-in Ocean Mist reads from Firefox, which it keeps in memory only.</p>' +
+        `<p><u>What is downloaded:</u> ${megabytes(s.size)} MB from ${esc(s.source)} (castlabs’s build of Electron ${esc(s.version.split('+')[0])}), ` +
+        `checked against the checksum Ocean Mist was made with (SHA-256 ${esc(s.sha256.slice(0, 12))}…) before it is used. The first time the engine ` +
+        `starts, it also gets Google’s Widevine module (about ${megabytes(s.extra)} MB) from Google, the way Chrome does.</p>` +
+        `<p><u>Where it goes:</u> ${esc(s.folder)}, about ${megabytes(s.unpacked + s.extra)} MB. Nothing else on your computer is touched, and Remove deletes it all.</p>` +
+        '<p><u>Licences:</u> Electron is MIT licensed and Chromium has its own open-source licences (both come in the download); ' +
+        'Widevine is Google’s module and comes under Google’s own terms.</p>' +
+        `<label><input type="checkbox" id="en-ok"${eng.ticked ? ' checked' : ''}> I accept these licences and want the engine downloaded.</label>` +
+        `<button id="en-install"${eng.ticked ? '' : ' disabled'}>Download and install</button></div>`;
+    }
+    if (s.sandbox === 'ok') {
+      return '<div class="yt-sign en"><b>Playback engine</b>' + warn +
+        `<p>Installed (Electron ${esc(s.version.split('+')[0])}) and ready: its security sandbox is on. Apple Music songs play through it. ` +
+        'It starts when you play one, ends a minute after the music stops (ten if you paused), and never shows a window.</p>' +
+        `<button id="en-check"${eng.checking ? ' disabled' : ''}>${eng.checking ? 'Checking…' : 'Check again'}</button>` +
+        `<button id="en-remove">${eng.sure > Date.now() ? 'Click again to remove it' : 'Remove the engine'}</button></div>`;
+    }
+    const checking = eng.checking ? ' disabled' : '', first = s.sandbox === 'unknown';
+    const again = `<button id="en-check"${checking}>${eng.checking ? 'Checking…' : first ? 'Check it now' : 'Check again'}</button>`;
+    if (s.sandbox === 'blocked' && s.restricted) {
+      return '<div class="yt-sign en"><b>One step is needed, once</b>' +
+        '<p>The engine keeps Apple’s page in Chromium’s security sandbox, and it never runs without it. Your system only lets programs ' +
+        'that AppArmor has a profile for create that sandbox (Ubuntu 24.04 and later do this for Chrome and Firefox too). ' +
+        'Ocean Mist cannot add the profile itself: it needs an administrator. Run this in a terminal, then press Check again:</p>' +
+        `<code>${esc(s.command)}</code><button id="en-copy">${eng.copied === 'command' ? 'Copied' : 'Copy the command'}</button>${again}` +
+        '<p>It adds one AppArmor profile that names only the engine’s file and gives it one permission (“userns”); read the script ' +
+        'first if you like. To take the profile away again:</p>' +
+        `<code>${esc(s.undo)}</code><button id="en-copy-undo">${eng.copied === 'undo' ? 'Copied' : 'Copy the command'}</button></div>`;
+    }
+    return '<div class="yt-sign en"><b>Playback engine</b>' + warn +
+      `<p>${s.sandbox === 'blocked' ? 'The engine cannot start its security sandbox on this system, and it never runs without it.'
+        : 'The engine is installed but has not been tried yet.'}</p>${again}` +
+      `<button id="en-remove">${eng.sure > Date.now() ? 'Click again to remove it' : 'Remove the engine'}</button></div>`;
+  }
+  function engineClick(el) {
+    const id = el.id;
+    if (id === 'en-install' && eng.s && eng.ticked) {
+      eng.s.error = '';
+      api('engine-install', { accept: true, version: eng.s.version }).then((r) => {
+        if (!r.ok) { Mist.flash(sentence(r.error || 'the engine could not be installed'), 8000); return; }
+        loadEngine();
+      });
+    } else if (id === 'en-cancel') api('engine-cancel');
+    else if (id === 'en-check') {
+      eng.checking = true; drawRows(true); api('engine-check');
+      setTimeout(() => { if (eng.checking) { eng.checking = false; loadEngine(); } }, 70000);   // the check gives up after a minute
+    }
+    else if (id === 'en-remove') {
+      if (eng.sure > Date.now()) { eng.sure = 0; api('engine-remove').then(() => { eng.ticked = false; loadEngine(); }); return; }
+      eng.sure = Date.now() + 4000;   // the first click only asks
+      drawRows(true);
+      setTimeout(() => { if (eng.sure && eng.sure <= Date.now()) { eng.sure = 0; if (same(yt.node, { kind: 'apple', value: 'engine' })) drawRows(true); } }, 4100);
+    } else if (id === 'en-copy' || id === 'en-copy-undo') {
+      const which = id === 'en-copy' ? 'command' : 'undo';
+      api('engine-copy', { which }).then((r) => {   // the host puts it on the clipboard
+        Mist.flash(r.ok ? 'Copied: paste it in a terminal' : 'Ocean Mist could not copy it; select the text and copy it', 5000);
+        if (r.ok) { eng.copied = which; drawRows(true); setTimeout(() => { eng.copied = ''; if (same(yt.node, { kind: 'apple', value: 'engine' })) drawRows(true); }, 3000); }
+      });
+    }
+  }
+  on('event', (msg) => { if (msg.event === 'engine-setup') engineSeen(msg); });
+  // a song needs the engine and it is not there: the page that installs it opens
+  on('engine-needed', () => { Mist.show('premium'); show({ kind: 'apple', value: 'engine' }); });
 
   // ---- your account, signed in through Firefox ----
   // Waits for a sign-in in Firefox, for a service whose state is in `box` (waiting, choices, note) and whose
@@ -509,8 +629,14 @@
     }
     draw();
   }
+  // the engine ends with the sign-in it was given: an Apple Music song that is on stops with it
+  function endAppleSong() {
+    const t = Mist.track(state.cur);
+    if (t && t.apple && state.station === null) Mist.stop();
+  }
   async function appleSignIn(profile) {
     if (await waitForSignIn(ap, 'apple', 'apple-sign-in', profile)) {
+      endAppleSong();
       state.settings.apple_account = true;
       ap.lists = {}; ap.profile = ''; ap.out = '';
       Mist.flash('Signed in to Apple Music through Firefox');
@@ -521,6 +647,7 @@
   }
   function appleSignOut() {
     api('apple-sign-out').then(() => {
+      endAppleSong();
       state.settings.apple_account = false;
       ap.lists = {}; ap.profile = ''; ap.out = ''; ap.note = ''; ap.choices = null;
       const apples = (n) => n.kind === 'apple' || (n.kind === 'page' && n.value.startsWith('apple-'));

@@ -25,6 +25,7 @@
     played: null,       // the last YouTube Music song that was heard
     queue: [],          // ids picked with "Play next", played before the list goes on
   };
+  let ext = null;       // the Apple Music song the playback engine plays (see "Apple Music songs" below)
   const hooks = {};
   const on = (name, fn) => { (hooks[name] = hooks[name] || []).push(fn); };
   const fire = (name, ...args) => { for (const fn of hooks[name] || []) fn(...args); };
@@ -89,8 +90,14 @@
   }
   function esc(text) { const d = document.createElement('span'); d.textContent = text; return d.innerHTML; }
   const sentence = (text) => (text ? text[0].toUpperCase() + text.slice(1) : '');
-  const length = () => (isFinite(audio.duration) ? audio.duration : 0);   // 0 for a live stream
   const isStream = (t) => !!t && t.source === 'youtube';
+  // an Apple Music song is not played by this page but by the playback engine (engine.py)
+  const outside = (t) => !!t && !!t.apple;
+  const length = () => {   // 0 for a live stream
+    const t = state.station === null ? track(state.cur) : null;
+    if (outside(t)) return (ext && ext.dur) || t.duration || 0;
+    return isFinite(audio.duration) ? audio.duration : 0;
+  };
 
   // ---- audio graph (equalizer, analyser for the visualizations, gain for volume) ----
   let actx = null, gain = null, analyserNode = null, fade = 1;
@@ -117,6 +124,7 @@
   function applyVolume() {
     const level = (state.settings.muted ? 0 : Math.pow(state.settings.volume, 1.6)) * fade;
     if (gain) gain.gain.value = level; else audio.volume = level;
+    if (ext) sendVolume();   // the engine's follows
     setSlider($('volume'), state.settings.volume);
     $('mute-waves').toggleAttribute('hidden', state.settings.muted);
     $('mute-x').toggleAttribute('hidden', !state.settings.muted);
@@ -139,7 +147,9 @@
     state.cur = id; state.sel = id; state.heard.add(id);
     ensureGraph();
     closeStream();
+    leaveOutside(t);
     if (!isStream(t)) audio.src = base + 'media/' + id;   // a YouTube Music song is fed by start()
+    else if (outside(t)) silence();                      // ...and an Apple Music song is played by the engine
     start();
     setMode('playing');
     showTrack();
@@ -151,6 +161,7 @@
     state.cur = null; state.station = id; state.radioTitle = ''; cueAt = 0; radioError = '';
     ensureGraph();
     closeStream();
+    leaveOutside();
     audio.src = base + 'radio/' + id + '?t=' + Date.now();
     start();
     setMode('playing');
@@ -176,6 +187,10 @@
   }
   function start() {
     const at = cueAt, t = track(state.cur);
+    if (state.station === null && outside(t)) {   // the engine plays it: from where it was paused, or from where it should start
+      if (ext && ext.t.id === t.id) extResume(); else extStart(t, at);
+      return;
+    }
     if (state.station === null && isStream(t)) {   // fed from where it should start
       if (!feed || feed.t.id !== t.id) openStream(t);
     } else if (at) {  // WebKit ignores a seek on a song that has not run yet: start it silently, jump, then let it be heard
@@ -189,7 +204,7 @@
   function toggle() {
     if (playSelection()) return;   // what is selected in the view on screen
     if (state.station !== null) { if (state.mode === 'playing') stop(); else playStation(state.station); return; }
-    if (state.mode === 'playing') { audio.pause(); setMode('paused'); return; }
+    if (state.mode === 'playing') { halt(); setMode('paused'); return; }
     if (state.cur === null || state.mode === 'stopped') {
       const first = inView(state.sel) || track(state.cur) || shown()[0];
       if (!first) { api('open-files'); return; }
@@ -201,17 +216,18 @@
   function stop(forget) {
     audio.pause();
     cueAt = 0;
+    leaveOutside();
     if (state.station !== null || feed) { closeStream(); audio.removeAttribute('src'); audio.load(); }   // hang up on the stream
     else { try { audio.currentTime = 0; } catch (e) { /* not loaded */ } }
     if (forget) { state.cur = null; state.station = null; state.radioTitle = ''; audio.removeAttribute('src'); audio.load(); showTrack(); }
     setMode('stopped');
     updateTime();
   }
-  const position = () => cueAt || audio.currentTime || 0;
+  const position = () => (ext ? extPosition() : cueAt || audio.currentTime || 0);
   function seekTo(seconds) {
     if (!length()) return;
     const target = Math.max(0, Math.min(length() - 0.2, seconds));
-    if (cueAt) { cueAt = Math.max(0.1, target); updateTime(); report(); } else audio.currentTime = target;
+    if (cueAt) { cueAt = Math.max(0.1, target); updateTime(); report(); } else if (ext) extSeek(target); else audio.currentTime = target;
   }
   function step(dir, auto) {
     if (state.station !== null) {  // on the radio, next and previous change the station
@@ -227,7 +243,7 @@
     if (!tracks.length) return;
     let i = tracks.findIndex((t) => t.id === state.cur);
     if (dir < 0) {
-      if (audio.currentTime > 3 && !auto) { audio.currentTime = 0; return; }
+      if (!auto && (ext ? extPosition() : audio.currentTime) > 3) { if (ext) extSeek(0); else audio.currentTime = 0; return; }
       if (state.settings.shuffle && state.history.length) { const back = state.history.pop(); const keep = state.history.slice(); play(back); state.history = keep; return; }
       i = i <= 0 ? tracks.length - 1 : i - 1;
     } else if (state.settings.shuffle && tracks.length > 1) {
@@ -379,6 +395,118 @@
     if (f) setTimeout(() => { if (f === feed && f.started && audio.readyState < 3 && !audio.paused) { f.stalled = true; statusTick(); } }, 700);
   });
 
+  // ---- Apple Music songs ----
+  // Apple's audio is protected: it cannot be played in this page, and nothing here can touch it. The
+  // playback engine (engine.py) plays it, in a helper that is never shown. This page tells the engine what
+  // to do (engine-play, -pause, -resume, -seek, -volume, -stop) and shows what it says back (the "engine"
+  // events): where the song is, how long it is, and when it ends. `ext` is the song it was asked to play:
+  // { t, serial, phase, pos, stamp, dur, started, stalled, want, asked, sought }.
+  let extSerial = 0, extTimer = 0, extVolumeTimer = 0;
+  const extLevel = () => ({ value: Math.pow(state.settings.volume, 1.6) * fade, muted: !!state.settings.muted });
+  // where the song is: the engine's last word, and the time since while it plays
+  function extPosition() {
+    if (!ext) return 0;
+    const moving = state.mode === 'playing' && ext.phase === 'playing';
+    const at = ext.pos + (moving ? (performance.now() - ext.stamp) / 1000 : 0);
+    return ext.dur ? Math.min(at, ext.dur) : at;
+  }
+  function extStart(t, at) {
+    const now = performance.now();
+    const e = ext = { t, serial: ++extSerial, phase: 'starting', pos: at || 0, stamp: now, dur: t.duration || 0, started: false, stalled: false, want: 'playing', asked: now, sought: null };
+    cueAt = 0;
+    clearInterval(extTimer); extTimer = setInterval(updateTime, 250);
+    const level = extLevel();
+    api('engine-play', { id: t.id, serial: e.serial, from: e.pos, volume: level.value, muted: level.muted }).then((r) => {
+      if (!r.ok && ext === e) extFailed(e, r.code, r.error);
+    });
+    statusTick(true);
+  }
+  function extPause() {
+    const e = ext;
+    if (!e) return;
+    e.pos = extPosition(); e.stamp = e.asked = performance.now(); e.phase = 'paused'; e.want = 'paused'; e.sought = null;
+    api('engine-pause');
+  }
+  function extResume() {
+    const e = ext;
+    e.stamp = e.asked = performance.now(); e.phase = e.started ? 'playing' : 'starting'; e.want = 'playing';
+    // the engine goes on from the place, or starts again at it if it had ended meanwhile
+    api('engine-resume').then((r) => { if (!r.ok && !r.code && ext === e) extStart(e.t, e.pos); });
+    statusTick(true);
+  }
+  function extSeek(target) {
+    const e = ext;
+    e.pos = e.sought = target; e.stamp = e.asked = performance.now();
+    api('engine-seek', { to: target });
+    updateTime(); report();
+  }
+  // the engine's volume follows the player's, a few times a second at most
+  function sendVolume() {
+    if (extVolumeTimer) return;
+    extVolumeTimer = setTimeout(() => {
+      extVolumeTimer = 0;
+      if (ext) { const level = extLevel(); api('engine-volume', { value: level.value, muted: level.muted }); }
+    }, 90);
+  }
+  // pause whatever plays: the player's own audio, or the engine's song
+  function halt() { if (ext) extPause(); else audio.pause(); }
+  // the player's own audio lets go, for a song that the engine plays
+  function silence() {
+    audio.pause();
+    if (audio.getAttribute('src')) { audio.removeAttribute('src'); audio.load(); }
+  }
+  // the Apple Music song is no longer the one that is on: the engine hears it, unless it is to play another
+  function leaveOutside(next) {
+    if (!ext) return;
+    ext = null;
+    clearInterval(extTimer); extTimer = 0;
+    if (!outside(next)) api('engine-stop');
+  }
+  // what the engine says about the song it plays
+  function extEvent(m) {
+    const e = ext;
+    if (!e || m.serial !== e.serial) return;   // about a song that is no longer the one
+    const now = performance.now(), settled = now - e.asked > 1500;   // an answer to an earlier request may still be on its way
+    if (m.phase === 'error') { extFailed(e, m.code, m.message); return; }
+    if (m.phase === 'ended') { songEnded(); return; }
+    if (m.duration > 0 && Math.abs(m.duration - e.dur) > 0.5) {
+      e.dur = m.duration;
+      if (Math.abs((e.t.duration || 0) - m.duration) > 0.5) { e.t.duration = m.duration; api('duration', { id: e.t.id, seconds: m.duration }); render(); }
+    }
+    const late = !settled && e.sought !== null && Math.abs(m.position - e.sought) > 3;   // from before the jump
+    if (m.phase === 'playing') {
+      if (!settled && e.want === 'paused') return;
+      if (state.mode === 'paused') { if (settled) api('engine-pause'); return; }   // it did not hear the pause
+      const first = !e.started, was = e.stalled;
+      e.phase = 'playing'; e.started = true; e.stalled = false;
+      if (!late) { e.pos = m.position; e.stamp = now; if (settled) e.sought = null; }
+      if (first) { streamFails = 0; flashUntil = 0; report(); }   // the host can announce it now
+      if (first || was) statusTick(true);
+    } else if (m.phase === 'paused') {
+      if (!settled && e.want === 'playing') return;
+      e.phase = 'paused';
+      if (!late) { e.pos = m.position; e.stamp = now; }
+      if (state.mode === 'playing') { setMode('paused'); flash('Apple Music paused the song', 6000); }
+    } else if (m.phase === 'loading' || m.phase === 'starting') {
+      e.stalled = e.started; e.phase = m.phase;
+      statusTick(true);
+    }
+    updateTime();
+  }
+  function extFailed(e, code, text) {
+    if (ext !== e) return;
+    ext = null;
+    clearInterval(extTimer); extTimer = 0;
+    const why = sentence(text || 'Apple Music could not play this song');
+    // the engine itself needs something: the Library page says what
+    if (code === 'not-installed' || code === 'sandbox') { stop(); fire('engine-needed', code); flash(why, 12000); return; }
+    // what is wrong for every song: the next one would fail too
+    const general = ['signed-out', 'no-subscription', 'limit', 'offline', 'widevine', 'crash', 'page', 'start'].includes(code);
+    if (general || ++streamFails >= 3) { streamFails = 0; stop(); flash(why, 30000); return; }
+    flash(why, 5000);
+    setTimeout(() => { if (state.cur === e.t.id && state.mode === 'playing') step(1, true); }, 2500);
+  }
+
   // what the host passes on from the keyboard's media keys and the desktop's controls
   function control(action, value) {
     const loaded = state.cur !== null || state.station !== null || state.lists.local.length > 0 || state.lists.youtube.length > 0;
@@ -403,8 +531,9 @@
       api('now', {
         id: state.cur, station: state.station, mode: state.mode, title: state.radioTitle,
         position: state.mode === 'stopped' ? 0 : position(), duration: length(), next: upcoming(),
-        // a YouTube Music song has started once it is heard, so one that cannot play is not announced
-        started: !isStream(track(state.cur)) || !!(feed && feed.t.id === state.cur && feed.started),
+        // a YouTube Music or Apple Music song has started once it is heard, so one that cannot play is not announced
+        started: outside(track(state.cur)) ? !!(ext && ext.t.id === state.cur && ext.started)
+          : !isStream(track(state.cur)) || !!(feed && feed.t.id === state.cur && feed.started),
       });
     }, 120);
   }
@@ -426,7 +555,10 @@
   }
   function showVis() {
     const preset = Visuals.presets[Visuals.index], t = track(state.cur);
-    $('vis-name').textContent = preset.name;
+    // the sound of an Apple Music song never reaches the player, so a visualization cannot follow it
+    const loose = !!preset.draw && state.station === null && outside(t);
+    $('vis-name').textContent = preset.name + (loose ? ' · not in time with the music' : '');
+    $('vis-name').title = loose ? 'Apple’s audio is protected: the playback engine plays it, so the visualizations and the equalizer cannot work on it' : '';
     const useArt = preset.art && t && t.art;
     $('vis-art').hidden = !useArt;
     if (useArt) $('vis-art').src = base + 'art/' + t.id;
@@ -454,7 +586,8 @@
     if (state.mode === 'stopped') text = t || s ? 'Stopped' : 'Ready';
     else if (state.mode === 'paused') text = 'Paused';
     else if (feed && !feed.started) text = 'Connecting to YouTube Music…';
-    else if (feed && feed.stalled) text = 'Buffering…';
+    else if (ext && !ext.started) text = 'Connecting to Apple Music…';
+    else if ((feed && feed.stalled) || (ext && ext.stalled)) text = 'Buffering…';
     else if (s) {
       const lines = ['Station: ' + s.name];
       if (state.radioTitle) lines.push('Song: ' + state.radioTitle);
@@ -698,7 +831,7 @@
       fade = Math.max(0, 1 - (Date.now() - began) / 8000);
       if (fade > 0 && state.mode === 'playing') { applyVolume(); return; }
       clearInterval(timer);
-      if (state.mode === 'playing') { if (state.station !== null) stop(); else { audio.pause(); setMode('paused'); } }
+      if (state.mode === 'playing') { if (state.station !== null) stop(); else { halt(); setMode('paused'); } }
       fade = 1; applyVolume();
       flash('Sleep timer: the music was stopped', 3600000);
     }, 100);
@@ -858,12 +991,17 @@
     }
     if (state.station !== null || feed) { flashUntil = 0; statusTick(true); }
   });
-  audio.addEventListener('ended', () => {
+  // the song ran to its end by itself (the player's own audio, or the engine's song)
+  function songEnded() {
     if (state.station !== null) { stop(); flash('The station stopped sending', 8000); return; }
     if (sleep.song) { sleep.song = false; stop(); flash('Sleep timer: the music was stopped', 3600000); return; }
-    if (repeatMode() === 'one' && track(state.cur)) { audio.currentTime = 0; start(); return; }
+    if (repeatMode() === 'one' && track(state.cur)) {
+      if (ext) { const t = ext.t; ext = null; extStart(t, 0); } else { audio.currentTime = 0; start(); }
+      return;
+    }
     step(1, true);
-  });
+  }
+  audio.addEventListener('ended', songEnded);
   let radioError = '';
   audio.addEventListener('error', () => {
     if (!audio.src) return;
@@ -908,6 +1046,7 @@
       else if (msg.event === 'play') refresh().then(() => { if (!msg.stay) show('now'); startTarget(msg); });
       else if (msg.event === 'control') control(msg.action, msg.value);
       else if (msg.event === 'notice') flash(msg.text, 6000);
+      else if (msg.event === 'engine') extEvent(msg);
       else if (msg.event === 'radio-title' && msg.id === state.station && msg.title !== state.radioTitle) {
         state.radioTitle = msg.title; showTrack(); flashUntil = 0; statusTick(true); report();
       } else if (msg.event === 'radio-error' && msg.id === state.station) radioError = msg.message;
@@ -920,7 +1059,7 @@
   }
 
   window.Mist = {
-    $, base, audio, state, api, on, fire, onPlay, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream,
+    $, base, audio, state, api, on, fire, onPlay, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream, outside,
     play, playStation, toggle, stop, step, setVis, applyVolume, cycleRepeat, repeatMode, control,
     menu, closeMenus, trackMenu, queueNext, queueLast, flash, render, show, layoutChanged, regions, setSleep, setZoom,
     probe() {  // handy for debugging
@@ -929,7 +1068,8 @@
       if (analyserNode) { analyserNode.getByteFrequencyData(data); analyserNode.getByteTimeDomainData(wave); }
       return JSON.stringify({ ctx: actx && actx.state, time: audio.currentTime, duration: audio.duration,
         peak: Math.max.apply(null, data), amp: Math.max.apply(null, [...wave].map((v) => Math.abs(v - 128))), paused: audio.paused, error: audio.error && audio.error.code, mode: state.mode,
-        cur: state.cur, station: state.station, queue: state.queue });
+        cur: state.cur, station: state.station, queue: state.queue,
+        engine: ext && { serial: ext.serial, phase: ext.phase, started: ext.started, at: Math.round(extPosition() * 10) / 10, length: ext.dur } });
     },
   };
 })();
