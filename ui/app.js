@@ -13,7 +13,8 @@
     lists: { local: [], youtube: [] },   // the songs of each, in order
     names: { local: '', youtube: '' },   // the saved playlist (or page) each came from
     show: 'local',      // the list the Now Playing pane shows
-    settings: { volume: 0.5, muted: false, vis: 0, shuffle: false, repeat: false, hue: 0, zoom: 1 },
+    settings: { volume: 0.5, muted: false, vis: 0, shuffle: false, repeat: false, hue: 0, zoom: 1,
+      dark: false, font: 'Tahoma9, Tahoma, "DejaVu Sans", sans-serif', font_size: 1 },
     stations: [], playlists: [], folders: [],
     cur: null,          // id of the loaded track
     station: null,      // id of the radio station tuned in (then cur is null)
@@ -873,9 +874,12 @@
       null,
       { label: 'Graphic equalizer', checked: !!state.settings.eq_open, run: () => Mist.eq.toggle() },
       { label: 'Player size', items: [1, 1.25, 1.5, 1.75, 2].map((z) => ({ label: `${z * 100}%`, checked: zoom === z, run: () => setZoom(z) })) },
+      { label: 'Dark skin', checked: !!state.settings.dark, run: () => setDark(!state.settings.dark) },
+      { label: 'Text size', items: SIZES.map(([label, size]) => ({ label, checked: (state.settings.font_size || 1) === size, run: () => setFontSize(size) })) },
+      { label: 'Font', items: FONTS.map(([label, font]) => ({ label, checked: (state.settings.font || FONTS[0][1]) === font, run: () => setFont(font) })) },
       { label: 'Sleep timer', checked: !!(sleep.at || sleep.song), items: sleepItems() },
       { label: 'Notify on song change', checked: !!state.settings.notify, run: () => { state.settings.notify = !state.settings.notify; saveSettings(); } },
-      { label: 'Compact mode', hint: 'Ctrl+2', run: () => Mist.skins.apply() },
+      { label: 'Compact mode', hint: 'Ctrl+2', run: () => Mist.skins.compact() },
       null,
       { label: 'Clear playlist', disabled: !shown().length, run: () => api('clear', { list: state.show }) },
     ], { above });
@@ -911,11 +915,35 @@
       label, checked: (state.settings.hue || 0) === hue, run: () => setHue(hue),
     })), { above: true, right: true });
   }
+  // dark skin: a body class that style.css turns into the dark palette
+  function applyDark() {
+    document.body.classList.toggle('dark', !!state.settings.dark);
+  }
+  function setDark(on) { state.settings.dark = !!on; applyDark(); saveSettings(); }
+
+  // the font and its size: two CSS variables the whole page gets its text from
+  const FONTS = [
+    ['Tahoma (classic)', 'Tahoma9, Tahoma, "DejaVu Sans", sans-serif'],
+    ['DejaVu Sans', '"DejaVu Sans", sans-serif'],
+    ['Liberation Sans', '"Liberation Sans", "DejaVu Sans", sans-serif'],
+    ['Noto Sans', '"Noto Sans", "DejaVu Sans", sans-serif'],
+    ['Ubuntu', 'Ubuntu, "DejaVu Sans", sans-serif'],
+  ];
+  const SIZES = [['100%', 1], ['110%', 1.1], ['120%', 1.2], ['130%', 1.3]];
+  function applyFont() {
+    const root = document.documentElement.style;
+    root.setProperty('--font-family', state.settings.font || FONTS[0][1]);
+    root.setProperty('--fs', String(state.settings.font_size || 1));
+    requestAnimationFrame(() => { updateTime(); setSlider($('volume'), state.settings.volume); regions(); });
+  }
+  function setFont(font) { state.settings.font = font; applyFont(); saveSettings(); }
+  function setFontSize(size) { state.settings.font_size = size; applyFont(); saveSettings(); }
+
   function applySettings() {
     Visuals.scale = state.settings.zoom || 1;
     Visuals.select(state.settings.vis || 0);
     showToggles();
-    applyHue(); applyVolume(); showVis();
+    applyHue(); applyDark(); applyFont(); applyVolume(); showVis();
     fire('settings');
   }
 
@@ -1029,7 +1057,7 @@
     else if (e.ctrlKey && key === 't') cycleRepeat();
     else if (e.ctrlKey && key === 'h') toggleShuffle();
     else if (e.ctrlKey && key === '1') Mist.skins.leave();
-    else if (e.ctrlKey && key === '2') Mist.skins.apply();
+    else if (e.ctrlKey && key === '2') Mist.skins.compact();
     else if (key === 'arrowleft') seekTo(position() - 5);
     else if (key === 'arrowright') seekTo(position() + 5);
     else if (key === 'arrowup' || key === 'arrowdown') setVolume(state.settings.volume + (key === 'arrowup' ? 0.05 : -0.05));
@@ -1068,6 +1096,7 @@
     $, base, audio, state, api, on, fire, onPlay, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream, outside,
     play, playStation, toggle, stop, step, setVis, applyVolume, cycleRepeat, repeatMode, control,
     menu, closeMenus, trackMenu, queueNext, queueLast, flash, render, show, layoutChanged, regions, setSleep, setZoom,
+    setDark, applyDark, setFont, setFontSize, applyFont,
     probe() {  // handy for debugging
       const data = new Uint8Array(analyserNode ? analyserNode.frequencyBinCount : 1);
       const wave = new Uint8Array(analyserNode ? analyserNode.fftSize : 1).fill(128);
