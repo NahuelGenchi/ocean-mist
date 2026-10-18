@@ -82,6 +82,7 @@ LIBRARY = {
     "albums": ("libraryV3", "AlbumResponseWrapper", "Albums"),
     "artists": ("libraryV3", "ArtistResponseWrapper", "Artists"),
 }
+PSEUDO = "LibraryPseudoPlaylistResponseWrapper"   # Liked Songs, Your Episodes in the playlists list
 SCAN = 10                        # mixed pages read at most for one page of a kind
 # what a request's address says when it signs you out, in the spellings Spotify might use
 SIGN_OUT = ("log.?out", "sign.?out", "log.?off", "sign.?off", "unauthori[sz]e")
@@ -816,6 +817,7 @@ class SpotifyMusic:
         self.last = 0.0
         self.generation = 0       # changes when you sign out: a request begun before is refused
         self.unfiltered = False   # Spotify refused the library's filter: the mixed list is read from then on
+        self.pseudo = {}          # per kind: the rows of its first page that are not the kind's own (Liked Songs)
 
     # -- the page --
     def _ask(self, op, route, variables=None, optional=None):
@@ -902,35 +904,43 @@ class SpotifyMusic:
         shape, others = _SHAPES[kind], {LIBRARY[k][1] for k in _SHAPES if k != kind}
         rows = []
         for _ in range(SCAN):
+            # the page's own request has no filter (its library opens on everything), but Spotify's takes
+            # the one its chips send, which gives the kind's own list and count
+            filtered = not self.unfiltered
             asked = {"offset": offset, "limit": PAGE}
             try:
-                body, shaped = self._ask(op, HOME, asked, {} if self.unfiltered else {"filters": [chip]})
+                body = self._ask(op, HOME, dict(asked, filters=[chip]) if filtered else asked)
             except SpotifyError as error:
-                if "filters" not in error.shaped:
+                if not filtered or str(error) != CHANGED:
                     raise
                 # Spotify answered the filtered list with errors in place of it: the mixed list, for the
                 # rest of the session (the rows kept by their kind, with no total)
-                self.unfiltered = True
-                body, shaped = self._ask(op, HOME, asked, {})
+                self.unfiltered, filtered = True, False
+                body = self._ask(op, HOME, asked)
             page = _dict(_at(body, "data", "me", "libraryV3"))
             items = page.get("items") if isinstance(page.get("items"), list) else []
             total = page.get("totalCount") if isinstance(page.get("totalCount"), int) else None
-            mixed = False
+            mixed, pseudo = False, 0
             for item in items:
                 kept = _at(item, "item", "__typename")
                 if kept != wrapper:
                     mixed = mixed or kept in others
+                    pseudo += kept == PSEUDO   # Liked Songs (and Your Episodes), which the count includes
                     continue
                 row = shape(_at(item, "item", "data"))
                 if row:
                     rows.append(row)
             more = None if len(items) < PAGE or not items or (total is not None and offset + len(items) >= total) \
                 else offset + len(items)
+            if offset == 0:
+                self.pseudo[kind] = pseudo
             # the kind's own list: asked with its filter, and no other kind came back
-            own = "filters" in shaped and not mixed
+            own = filtered and not mixed
             if own or rows or more is None:
                 break
             offset = more   # a mixed page with none of the kind: read on, so the kind does not look empty
+        if own and total is not None:
+            total = max(len(rows), total - self.pseudo.get(kind, 0))
         return {"items": rows, "more": more, "total": total if own else None}
 
     def page_of(self, kind, ident):
