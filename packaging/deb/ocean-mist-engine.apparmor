@@ -18,7 +18,6 @@ include <tunables/global>
 
 profile ocean-mist-engine @{HOME}/.local/share/ocean-mist/engine/electron/electron flags=(unconfined) {
   userns,
-  @{exec_path} mr,
 
   # Site-specific additions and overrides. See local/README for details.
   include if exists <local/ocean-mist-engine>

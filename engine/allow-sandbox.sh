@@ -65,7 +65,6 @@ include <tunables/global>
 
 profile $name $program flags=(unconfined) {
   userns,
-  @{exec_path} mr,
 }
 PROFILE
 }
