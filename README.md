@@ -327,7 +327,7 @@ What Ocean Mist reads, and when:
 Ocean Mist looks for your Firefox profiles in the same places as for YouTube Music, and Firefox is the only browser it can read. Whether a song plays depends on your subscription and on Spotify having it for your account.
 
 > [!CAUTION]
-> These are Spotify's own web-player requests, not a published API, and signed in they are tied to your account. Spotify could change the page, sign the session out, or restrict the account. Ocean Mist makes them only for what you ask, at a person's pace, and reads only.
+> These are Spotify's own web-player requests, not a published API, and signed in they are tied to your account. Spotify's User Guidelines do not allow reaching the service by automated means, so Spotify could change the page, sign the session out, or restrict the account. Ocean Mist makes them only for what you ask, at a person's pace, and reads only.
 
 </details>
 
@@ -409,7 +409,7 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 - **Gapless playback** between songs is not built yet.
 - **YouTube Music** signs in through Firefox only. Library albums, artists, songs and uploads are not there yet, playlists cannot be made or renamed, and live streams do not play.
 - **Apple Music** is read-only. Its songs play in the playback engine, which is a 117 MB download and, on Ubuntu 24.04 and later, needs a permission for its sandbox (the package installs it; without the package it asks once, with administrator rights); the equalizer and the visualizations cannot work on them, there is a gap of a few seconds between songs, and Apple limits how many devices stream at once. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
-- **Spotify** is read-only, like Apple Music: Liked Songs, playlists, albums and artists from your library, no search of all of Spotify, and its songs need Spotify Premium. It signs in through Firefox only. Other streaming services are not started.
+- **Spotify** is read-only, like Apple Music: Liked Songs, playlists, albums and artists from your library, no search of all of Spotify, and its songs need Spotify Premium; they play in the playback engine, with the same limits as Apple Music's (the download, the sandbox step, no equalizer or visualizations, a gap between songs), and Spotify plays one stream per account. It signs in through Firefox only. Other streaming services are not started.
 - **Releases**: the Debian package is published with each release on GitHub (0.1.0 is the first) and checked on Ubuntu 26.04 only. There is no apt repository, Flatpak or Snap yet, so a newer release is installed the same way, by downloading its package.
 
 | Milestone | Outcome |
