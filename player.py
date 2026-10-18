@@ -428,14 +428,15 @@ class Handler(BaseHTTPRequestHandler):
         return result
 
     def _end_engine(self, service):
-        """The sign-in of `service` changed: the playback helper ends if it serves that service, or is
-        starting for it, as it holds the earlier sign-in. A song of the other service plays on."""
+        """The sign-in of `service` changed: the song of that service, playing or on its way, stops and
+        its helper ends, as it holds the earlier sign-in. A song of the other service plays on, even
+        while the helper of this one is still ending to make way for it."""
         engine = self.engine
         if engine is None:
             return
         with engine.lock:
             song = engine.song
-            ours = engine.service == service or bool(song and song.get("service", "apple") == service)
+            ours = song.get("service", "apple") == service if song else engine.service == service
             if ours:
                 engine.stop(final=True)
 
