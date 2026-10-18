@@ -98,12 +98,12 @@ function pageHookSpotify() {
         om.outside = true; om.pauseFor = om.serial;   // a pause Ocean Mist did not ask for (another device, say)
       });
       el.addEventListener('ended', () => { if (el === om.song) over(el); });
-      // a new address in the same element: the page went on to another track. Not in the song's first seconds:
+      // a new address in the same element: the page went on to another track. Not before its first second:
       // Spotify's player sets its element up again just after it starts (an "emptied" at 0 s), and the song goes on
       for (const kind of ['emptied', 'loadstart']) {
         el.addEventListener(kind, () => {
           if (el !== om.song) return;
-          if ((Number(om.last) || 0) >= 3) over(el);
+          if ((Number(om.last) || 0) >= 1) over(el);
           else om.length = 0;   // its length is read again once it is known
         });
       }
