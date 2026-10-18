@@ -249,11 +249,13 @@ function pageHookSpotify() { return window.__om ? 'hooked' : 'missing'; }
 
 // plays one song: its page is already open (the helper went to it); wait for the Play button, click it (a real
 // click: no autoplay block) and wait for the song's element to start. A newer song asked for meanwhile (serial)
-// ends this try; so does a stop (it sets the serial to -1), and then nothing may be left playing; a pause that came
-// while the song was being queued lets it start paused. Where a song goes on from is applied by the watch.
-async function pagePlaySpotify(id, volume, serial) {
+// ends this try; so does a stop (it sets the serial to -1), and then nothing may be left playing. `paused`: a pause
+// came while the song's page loaded (main.js kept it, as this document did not exist yet), and the song starts
+// paused, as it does after a pause that comes while this waits for it. Where a song goes on from is applied by the
+// watch.
+async function pagePlaySpotify(id, volume, serial, paused) {
   const om = window.__om;
-  om.serial = serial; om.error = ''; om.pauseFor = null; om.outside = false; om.song = null; om.done = 0; om.length = 0;
+  om.serial = serial; om.error = ''; om.pauseFor = paused ? serial : null; om.outside = false; om.song = null; om.done = 0; om.length = 0;
   const quiet = () => { for (const el of om.seen) { try { if (!el.muted && !el.paused) el.pause(); } catch (e) { /* gone */ } } };
   const failed = (code) => { om.error = code; quiet(); return JSON.stringify({ ok: false, code }); };
   const until = Date.now() + 15000;
@@ -302,7 +304,7 @@ function pageWatchSpotify() {
   }
   let elsewhere = false;
   try { elsewhere = state === 'paused' && !!om.outside && !!document.querySelector('[data-testid="connect-bar"],[data-testid="connect-device-bar"]'); } catch (e) { /* not known */ }
-  return JSON.stringify({ signed, state, time: duration ? Math.min(time, duration) : time, duration, ended: om.ended || 0, error: om.error || '', elsewhere });
+  return JSON.stringify({ signed, state, time: duration ? Math.min(time, duration) : time, duration, ended: om.ended || 0, error: om.error || '', elsewhere, serial: om.serial || 0 });
 }
 
 async function pagePauseSpotify() {
@@ -374,7 +376,11 @@ const open = (address) => Promise.race([
   page.loadURL(address), delay(READY_WITHIN).then(() => { throw new Fail('offline', 'the page did not load in time'); })]);
 
 // ---- the song ----
-let cur = null;                     // { serial, phase, armed, seekTo, endedBase, said, stalled, stopped }
+// { serial, phase, armed, seekTo, endedBase, said, stalled, stopped, placed, paused, volume }: for Spotify, placed
+// once the song's play is under way in its own document; until then a pause, a resume and a volume wait here
+// (paused, and the volume below), as the document that is open is still the one the song leaves. volume: the one
+// the song's play was given
+let cur = null;
 let last = { time: 0, duration: 0 };
 let volume = 0.5, muted = false;
 let unsigned = 0;                   // polls in a row that said the sign-in is gone
@@ -407,7 +413,7 @@ async function play(cmd) {
   const ids = (Array.isArray(cmd.ids) ? cmd.ids : []).map(String).filter((id) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$/.test(id)).slice(0, 4);
   const from = Number(cmd.from) > 1 ? Number(cmd.from) : 0;
   last = { time: 0, duration: 0 };
-  const song = cur = { serial, phase: 'loading', armed: false, seekTo: from, endedBase: 0, said: 0, stalled: 0, stopped: 0 };
+  const song = cur = { serial, phase: 'loading', armed: false, seekTo: from, endedBase: 0, said: 0, stalled: 0, stopped: 0, placed: !P.go, paused: false, volume };
   say('state', { serial, state: 'loading', position: 0, duration: 0 });
   if (!ids.length) { problem(serial, 'NO_SONG'); return; }
   if (P.go) {   // Spotify: the song plays from its own page; go there (the preload puts the hook in)
@@ -426,7 +432,10 @@ async function play(cmd) {
   if (before) song.endedBase = before.ended;   // the ends of earlier songs do not count
   let result;
   try {
-    result = await inPageFor(LOADING_WITHIN, P.play, P.go ? ids[0] : ids, volume, serial);
+    if (P.go) {   // from here on what is asked for goes to the song's document, which this play makes its own
+      song.placed = true; song.volume = volume;
+      result = await inPageFor(LOADING_WITHIN, P.play, ids[0], volume, serial, song.paused);
+    } else result = await inPageFor(LOADING_WITHIN, P.play, ids, volume, serial);
   } catch (e) {
     result = { ok: false, code: e instanceof Late ? 'TIMEOUT' : 'PAGE_ERROR' };
     if (e instanceof Late) inPage(P.stop).catch(() => null);   // it may still start by itself later, and must not
@@ -434,6 +443,8 @@ async function play(cmd) {
   if (cur !== song || result.code === 'SUPERSEDED') return;   // another song was asked for meanwhile
   if (!result.ok) { problem(serial, result.code); return; }
   song.armed = true;
+  // a volume that came while the song was waited for: the play gave the song the one before
+  if (P.go && volume !== song.volume) inPage(P.volume, volume).catch(() => null);
 }
 
 async function tick() {
@@ -444,6 +455,7 @@ async function tick() {
     const w = await inPage(P.watch);
     if (cur !== song) return;   // another song was asked for, or this one is over, while the page was looked at
     unanswered = 0;
+    if (P.go && w.serial !== song.serial) { reportState('ended'); cur = null; return; }   // the song's document is gone
     unsigned = w.signed ? 0 : unsigned + 1;
     if (unsigned >= 3) throw new Fail('signed-out', 'the page says the sign-in is gone');
     if (w.state === 'playing' || w.state === 'paused') last = { time: w.time, duration: w.duration || last.duration };
@@ -458,13 +470,14 @@ async function tick() {
     }
     song.stopped = w.state === 'stopped' ? song.stopped + 1 : 0;
     if (w.state === 'playing' || w.state === 'paused') song.stalled = 0;
+    // where a song restored from earlier goes on from (a Spotify song that starts paused gets it at once)
+    if (song.seekTo && (w.state === 'playing' || (P.go && w.state === 'paused'))) {
+      const to = song.seekTo; song.seekTo = 0;
+      await inPage(P.seek, to).catch(() => null);
+      if (cur !== song) return;   // another song was asked for meanwhile: its place is not this one's
+      last.time = to;
+    }
     if (w.state === 'playing') {
-      if (song.seekTo) {   // where a song restored from earlier goes on from
-        const to = song.seekTo; song.seekTo = 0;
-        await inPage(P.seek, to).catch(() => null);
-        if (cur !== song) return;   // another song was asked for meanwhile: its place is not this one's
-        last.time = to;
-      }
       if (song.phase !== 'playing' || Date.now() - song.said >= BEAT) reportState('playing');
     } else if (w.state === 'paused') {
       if (song.phase !== 'paused') reportState('paused');
@@ -483,18 +496,19 @@ async function tick() {
 // ---- commands ----
 async function command(msg) {
   try {
+    const song = cur;
+    const waits = !!song && !song.placed;   // Spotify's song whose page is loading: its play takes this with it
     if (msg.cmd === 'play') await play(msg);
-    else if (msg.cmd === 'pause') await inPage(P.pause);
-    else if (msg.cmd === 'resume') await inPage(P.resume);
+    else if (msg.cmd === 'pause') { if (waits) song.paused = true; await inPage(P.pause); }   // what plays now pauses too
+    else if (msg.cmd === 'resume') { if (waits) song.paused = false; else await inPage(P.resume); }
     else if (msg.cmd === 'seek') {
       const to = Math.max(0, Number(msg.to) || 0);
-      const song = cur;
       if (song && song.phase === 'loading') song.seekTo = to;   // when it has started
       else { await inPage(P.seek, to); if (cur === song) { last.time = to; if (cur) cur.said = 0; } }
     } else if (msg.cmd === 'volume') {
       volume = Math.max(0, Math.min(1, Number(msg.value) || 0)); muted = !!msg.muted;
       page.setAudioMuted(muted);
-      await inPage(P.volume, volume);
+      if (!waits) await inPage(P.volume, volume);
     } else if (msg.cmd === 'stop') {
       cur = null;
       await inPage(P.stop);
@@ -621,12 +635,11 @@ async function run() {
       if (!plan) await delay(300);
     }
     if (!/^premium/i.test(plan)) throw new Fail('no-subscription', 'the account has no active Spotify Premium subscription');
-    // a document Ocean Mist did not go to: the song in the one it left is over
-    page.on('did-start-navigation', (details, url, inPlace, mainFrame) => {
-      const main = details && typeof details.isMainFrame === 'boolean' ? details.isMainFrame : !!mainFrame;
-      const same = details && typeof details.isSameDocument === 'boolean' ? details.isSameDocument : !!inPlace;
-      if (main && !same && cur && cur.armed && !leaving) { reportState('ended'); cur = null; }
-    });
+    // a document Ocean Mist did not go to: the song in the one it left is over. Only a navigation that commits counts
+    // ("did-navigate" comes once the window has a new document of the page's): one that is blocked, or never commits,
+    // leaves the page and its song where they are. An error page that takes the document's place says no
+    // "did-navigate"; the watch sees that the song's document is gone
+    page.on('did-navigate', () => { if (cur && cur.armed && !leaving) { reportState('ended'); cur = null; } });
     say('ready', { store: '', premium: 'yes' });
   } else {
     // Apple's player refuses to queue anything while the page is open on another store (country) than the account's

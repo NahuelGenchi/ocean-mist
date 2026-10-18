@@ -92,7 +92,6 @@ WORDS = {
     "not-installed": "Apple Music songs need the playback engine; install it under Apple Music, Playback engine",
     "signed-out": "Apple Music says you are signed out; sign in again in Firefox",
     "no-subscription": "Your Apple Music account has no active subscription, so its songs cannot be played",
-    "no-plan": "Ocean Mist could not confirm that your Apple Music account has an active subscription, so its songs are not played",
     "unavailable": "Apple Music cannot play this song for your account",
     "limit": "Apple Music is playing on another device; it allows one at a time",
     "offline": "Ocean Mist cannot reach Apple Music; check the internet connection",
@@ -104,7 +103,8 @@ WORDS = {
     "start": "The playback engine could not start",
 }
 
-# the same, in Spotify's words: what the page is told while a Spotify song plays
+# the same, in Spotify's words: what the page is told while a Spotify song plays (and "no-plan", which only
+# Spotify's helper says: it plays only an account whose plan its page said)
 SPOTIFY_WORDS = dict(WORDS, **{
     "not-installed": "Spotify songs need the playback engine; install it under Spotify, Playback engine",
     "signed-out": "Spotify says you are signed out; sign in again in Firefox",
@@ -860,12 +860,12 @@ class Engine:
                     self.quiet = time.monotonic()
                 self.emit("engine", phase=phase, serial=song["serial"], position=position, duration=song["duration"])
             elif name == "problem" and song and event.get("serial") == song["serial"]:
-                code = event.get("code") if event.get("code") in WORDS else "play"
+                code = event.get("code") if event.get("code") in self._words() else "play"
                 self.song = None
                 self.quiet = time.monotonic()
                 self.emit("engine", phase="error", serial=song["serial"], code=code, message=self._words()[code])
             elif name == "fail":
-                self.fail = event.get("code") if event.get("code") in WORDS else "crash"
+                self.fail = event.get("code") if event.get("code") in self._words() else "crash"
 
     def _wait(self, proc, reader, drain):
         proc.wait()
