@@ -427,6 +427,18 @@ class Handler(BaseHTTPRequestHandler):
         result["signed_in"] = bool(chosen)
         return result
 
+    def _end_engine(self, service):
+        """The sign-in of `service` changed: the playback helper ends if it serves that service, or is
+        starting for it, as it holds the earlier sign-in. A song of the other service plays on."""
+        engine = self.engine
+        if engine is None:
+            return
+        with engine.lock:
+            song = engine.song
+            ours = engine.service == service or bool(song and song.get("service", "apple") == service)
+            if ours:
+                engine.stop(final=True)
+
     def _similar(self, video, skip):
         """Songs like this one that are not in `skip` (video ids), for the
         Now Playing list; YTError when YouTube Music cannot say."""
@@ -561,15 +573,13 @@ class Handler(BaseHTTPRequestHandler):
             if result.get("signed_in"):   # a page or a helper opened with an earlier sign-in is not used for this one
                 if self.apple is not None:
                     self.apple.close()
-                if self.engine is not None:
-                    self.engine.stop(final=True)
+                self._end_engine("apple")
         elif cmd == "spotify-sign-in":
             result = self._sign_in(msg, "spotify_account", firefox.spotify_signed_in, firefox.SPOTIFY_SIGN_IN)
             if result.get("signed_in"):
                 if self.spotify is not None:
                     self.spotify.close()
-                if self.engine is not None:
-                    self.engine.stop(final=True)
+                self._end_engine("spotify")
         elif cmd in ("yt-sign-out", "apple-sign-out", "spotify-sign-out"):   # Ocean Mist stops using the sign-in; Firefox stays signed in
             which = {"yt-sign-out": "yt_account", "spotify-sign-out": "spotify_account"}.get(cmd, "apple_account")
             library.settings[which] = False
@@ -578,8 +588,7 @@ class Handler(BaseHTTPRequestHandler):
                 reader = self.spotify if cmd == "spotify-sign-out" else self.apple
                 if reader is not None:
                     reader.close()
-                if self.engine is not None:
-                    self.engine.stop(final=True)
+                self._end_engine("spotify" if cmd == "spotify-sign-out" else "apple")
         elif cmd in ("yt-like", "yt-playlist-add", "yt-playlist-remove"):
             music, video = self.music, str(msg.get("video"))
             try:
@@ -1239,7 +1248,7 @@ def main():
         library.add_paths(sys.argv[3:])
         library.scan()
         server = start_server(library, "dev", port=int(sys.argv[2]), music=YTMusic(),
-                              engine=Engine(lambda: engine_sign_in(library), library.emit))
+                              engine=Engine(lambda service: engine_sign_in(library, service), library.emit))
         print(f"http://127.0.0.1:{server.server_address[1]}/dev/", flush=True)
         threading.Event().wait()
         return 0
