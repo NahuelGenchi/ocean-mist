@@ -302,7 +302,7 @@ function pageWatchSpotify() {
   }
   let elsewhere = false;
   try { elsewhere = state === 'paused' && !!om.outside && !!document.querySelector('[data-testid="connect-bar"],[data-testid="connect-device-bar"]'); } catch (e) { /* not known */ }
-  return JSON.stringify({ signed, state, time: duration ? Math.min(time, duration) : time, duration, ended: om.ended || 0, error: om.error || '', elsewhere });
+  return JSON.stringify({ signed, state, time: duration ? Math.min(time, duration) : time, duration, ended: om.ended || 0, error: om.error || '', elsewhere, serial: om.serial || 0 });
 }
 
 async function pagePauseSpotify() {
@@ -444,6 +444,7 @@ async function tick() {
     const w = await inPage(P.watch);
     if (cur !== song) return;   // another song was asked for, or this one is over, while the page was looked at
     unanswered = 0;
+    if (P.go && w.serial !== song.serial) { reportState('ended'); cur = null; return; }   // the song's document is gone
     unsigned = w.signed ? 0 : unsigned + 1;
     if (unsigned >= 3) throw new Fail('signed-out', 'the page says the sign-in is gone');
     if (w.state === 'playing' || w.state === 'paused') last = { time: w.time, duration: w.duration || last.duration };
@@ -621,12 +622,11 @@ async function run() {
       if (!plan) await delay(300);
     }
     if (!/^premium/i.test(plan)) throw new Fail('no-subscription', 'the account has no active Spotify Premium subscription');
-    // a document Ocean Mist did not go to: the song in the one it left is over
-    page.on('did-start-navigation', (details, url, inPlace, mainFrame) => {
-      const main = details && typeof details.isMainFrame === 'boolean' ? details.isMainFrame : !!mainFrame;
-      const same = details && typeof details.isSameDocument === 'boolean' ? details.isSameDocument : !!inPlace;
-      if (main && !same && cur && cur.armed && !leaving) { reportState('ended'); cur = null; }
-    });
+    // a document Ocean Mist did not go to: the song in the one it left is over. Only a navigation that commits counts
+    // ("did-navigate" comes once the window has a new document of the page's): one that is blocked, or never commits,
+    // leaves the page and its song where they are. An error page that takes the document's place says no
+    // "did-navigate"; the watch sees that the song's document is gone
+    page.on('did-navigate', () => { if (cur && cur.armed && !leaving) { reportState('ended'); cur = null; } });
     say('ready', { store: '', premium: 'yes' });
   } else {
     // Apple's player refuses to queue anything while the page is open on another store (country) than the account's
