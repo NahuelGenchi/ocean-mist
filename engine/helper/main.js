@@ -253,7 +253,7 @@ function pageHookSpotify() { return window.__om ? 'hooked' : 'missing'; }
 // came while the song's page loaded (main.js kept it, as this document did not exist yet), and the song starts
 // paused, as it does after a pause that comes while this waits for it. Where a song goes on from is applied by the
 // watch.
-async function pagePlaySpotify(id, volume, serial, paused) {
+async function pagePlaySpotify(id, volume, serial, paused, within) {
   const om = window.__om;
   om.serial = serial; om.error = ''; om.pauseFor = paused ? serial : null; om.outside = false; om.song = null; om.done = 0; om.length = 0;
   const quiet = () => { for (const el of om.seen) { try { if (!el.muted && !el.paused) el.pause(); } catch (e) { /* gone */ } } };
@@ -270,7 +270,7 @@ async function pagePlaySpotify(id, volume, serial, paused) {
   if (om.serial !== serial) return JSON.stringify({ ok: false, code: 'SUPERSEDED' });
   if (!button) return failed('PLAY_BUTTON');
   try { button.click(); } catch (e) { return failed('PLAY_BUTTON'); }
-  const started = Date.now() + 20000;   // the song's element has this long to start: after it, it did not
+  const started = Date.now() + (Number(within) || 20000);   // the song's element has this long to start: after it, it did not
   while (Date.now() < started && !om.song && !om.error) {
     if (om.serial !== serial) {
       if (om.serial === -1) quiet();
@@ -416,29 +416,48 @@ async function play(cmd) {
   const song = cur = { serial, phase: 'loading', armed: false, seekTo: from, endedBase: 0, said: 0, stalled: 0, stopped: 0, placed: !P.go, paused: false, volume };
   say('state', { serial, state: 'loading', position: 0, duration: 0 });
   if (!ids.length) { problem(serial, 'NO_SONG'); return; }
-  if (P.go) {   // Spotify: the song plays from its own page; go there (the preload puts the hook in)
-    let hooked;
-    try {
-      await open(`${site}track/${ids[0]}`);
-      hooked = await inPage(P.hook);
-    } catch (e) {
-      if (cur === song) problem(serial, e instanceof Late ? 'TIMEOUT' : 'offline');
-      return;
-    }
-    if (cur !== song) return;   // another song was asked for while this one's page loaded
-    if (hooked !== 'hooked') { fatal(new Fail('page', 'the page has no hook')); return; }
-  }
-  const before = await inPage(P.watch).catch(() => null);
-  if (before) song.endedBase = before.ended;   // the ends of earlier songs do not count
   let result;
-  try {
-    if (P.go) {   // from here on what is asked for goes to the song's document, which this play makes its own
-      song.placed = true; song.volume = volume;
-      result = await inPageFor(LOADING_WITHIN, P.play, ids[0], volume, serial, song.paused);
-    } else result = await inPageFor(LOADING_WITHIN, P.play, ids, volume, serial);
-  } catch (e) {
-    result = { ok: false, code: e instanceof Late ? 'TIMEOUT' : 'PAGE_ERROR' };
-    if (e instanceof Late) inPage(P.stop).catch(() => null);   // it may still start by itself later, and must not
+  if (P.go) {
+    // Spotify: the song plays from its own page; go there (the preload puts the hook in). Now and then Spotify's
+    // page takes the click and never makes the song's element (its buttons say it plays, and nothing loads), and
+    // now and then the page does not open: the song's page is then opened once more, and asked again
+    for (let attempt = 1; ; attempt++) {
+      const again = attempt < 2;
+      song.placed = false;
+      let hooked;
+      try {
+        await open(`${site}track/${ids[0]}`);
+        hooked = await inPage(P.hook);
+      } catch (e) {
+        if (cur !== song) return;
+        if (again && !(e instanceof Late)) continue;
+        problem(serial, e instanceof Late ? 'TIMEOUT' : 'offline');
+        return;
+      }
+      if (cur !== song) return;   // another song was asked for while this one's page loaded
+      if (hooked !== 'hooked') { fatal(new Fail('page', 'the page has no hook')); return; }
+      const before = await inPage(P.watch).catch(() => null);
+      if (before) song.endedBase = before.ended;   // the ends of earlier songs do not count
+      try {   // from here on what is asked for goes to the song's document, which this play makes its own
+        song.placed = true; song.volume = volume;
+        result = await inPageFor(LOADING_WITHIN, P.play, ids[0], volume, serial, song.paused, again ? 12000 : 20000);
+      } catch (e) {
+        result = { ok: false, code: e instanceof Late ? 'TIMEOUT' : 'PAGE_ERROR' };
+        if (e instanceof Late) inPage(P.stop).catch(() => null);   // it may still start by itself later, and must not
+      }
+      if (cur !== song || result.code === 'SUPERSEDED') return;
+      if (again && result.code === 'NO_AUDIO') continue;
+      break;
+    }
+  } else {
+    const before = await inPage(P.watch).catch(() => null);
+    if (before) song.endedBase = before.ended;   // the ends of earlier songs do not count
+    try {
+      result = await inPageFor(LOADING_WITHIN, P.play, ids, volume, serial);
+    } catch (e) {
+      result = { ok: false, code: e instanceof Late ? 'TIMEOUT' : 'PAGE_ERROR' };
+      if (e instanceof Late) inPage(P.stop).catch(() => null);   // it may still start by itself later, and must not
+    }
   }
   if (cur !== song || result.code === 'SUPERSEDED') return;   // another song was asked for meanwhile
   if (!result.ok) { problem(serial, result.code); return; }
