@@ -503,14 +503,6 @@
   }
   function extFailed(e, code, text) {
     if (ext !== e) return;
-    // the song was taken over by another device of the account: it is paused here, and Play takes it back
-    if (code === 'elsewhere') {
-      e.pos = extPosition(); e.stamp = e.asked = performance.now(); e.phase = 'paused'; e.want = 'paused'; e.sought = null;
-      if (state.mode === 'playing') setMode('paused');
-      flash(sentence(text || `${serviceName(e.t)} is playing on another device, so the song was paused here`), 8000);
-      updateTime();
-      return;
-    }
     ext = null;
     clearInterval(extTimer); extTimer = 0;
     const unsure = e.t.spotify ? 'Ocean Mist could not confirm that your Spotify account has Premium, so its songs were not played'
