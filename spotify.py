@@ -90,11 +90,13 @@ SIGN_OUT = ("log.?out", "sign.?out", "log.?off", "sign.?off", "unauthori[sz]e")
 class SpotifyError(YTError):
     """What went wrong, worded for the status line. A YTError, so that what
     answers a YouTube Music error answers this too; `signed_out` when Spotify
-    no longer accepts the sign-in."""
+    no longer accepts the sign-in; `shaped`, the optional variables that were
+    set on a request Spotify answered with nothing (see Page.call)."""
 
     def __init__(self, message, signed_out=False, status=0, general=False):
         super().__init__(message, general=general, signed_out=signed_out)
         self.status = status
+        self.shaped = ()
 
 
 # ---- what the page is asked ----
@@ -270,6 +272,7 @@ class Page:
         self.queue, self.running = [], {}   # calls not sent yet, in order; calls running
         self.doc = None      # the mark of the document the page was last up in
         self.going = 0       # counts the page's loads, so that a look at an earlier one stops
+        self.begun = False       # the load _go asked for has started: what WebKit says before is of the one it replaced
         self.committed = False   # the load the page is waiting for has replaced the document
         self.released = False
         self.view = self.holder = self.expiry = None
@@ -379,6 +382,7 @@ class Page:
     def _go(self, route):
         """Take the view to one of the page's own routes, and wait for it again."""
         self.state, self.route, self.loaded, self.seen, self.committed = "loading", route, None, None, False
+        self.begun = False
         self.going += 1
         going = self.going
         self.deadline = time.monotonic() + READY
@@ -394,13 +398,17 @@ class Page:
         return False
 
     def _load_changed(self, view, event):
+        if event == self.WebKit2.LoadEvent.STARTED:
+            self.begun = True
+        if not self.begun:   # the load this one replaced, saying how it ended
+            return
         if event == self.WebKit2.LoadEvent.COMMITTED:
             self.committed = True
         if event == self.WebKit2.LoadEvent.FINISHED and self.loaded is None:
             self.loaded = time.monotonic()
 
     def _load_failed(self, view, event, uri, error):
-        if self.state != "loading" or self.loaded is not None:
+        if self.state != "loading" or not self.begun or self.loaded is not None:
             return False
         WebKit2 = self.WebKit2
         try:   # a load another one replaced (a redirect of the page's own, say) is no sign of being offline
@@ -538,6 +546,8 @@ class Page:
                 except SpotifyError as error:
                     if error.signed_out:   # Spotify no longer takes this sign-in: the next request reads Firefox's again
                         self._fail(error)
+                    if isinstance(said, dict) and said.get("ok") and isinstance(said.get("shaped"), list):
+                        error.shaped = tuple(said["shaped"])   # Spotify may be refusing what was set
                     wanted(False, error)
                 else:
                     shaped = said.get("shaped") if isinstance(said.get("shaped"), list) else []
@@ -805,6 +815,7 @@ class SpotifyMusic:
         self.page = None          # the Page; touched on the main thread only
         self.last = 0.0
         self.generation = 0       # changes when you sign out: a request begun before is refused
+        self.unfiltered = False   # Spotify refused the library's filter: the mixed list is read from then on
 
     # -- the page --
     def _ask(self, op, route, variables=None, optional=None):
@@ -891,7 +902,16 @@ class SpotifyMusic:
         shape, others = _SHAPES[kind], {LIBRARY[k][1] for k in _SHAPES if k != kind}
         rows = []
         for _ in range(SCAN):
-            body, shaped = self._ask(op, HOME, {"offset": offset, "limit": PAGE}, {"filters": [chip]})
+            asked = {"offset": offset, "limit": PAGE}
+            try:
+                body, shaped = self._ask(op, HOME, asked, {} if self.unfiltered else {"filters": [chip]})
+            except SpotifyError as error:
+                if "filters" not in error.shaped:
+                    raise
+                # Spotify answered the filtered list with errors in place of it: the mixed list, for the
+                # rest of the session (the rows kept by their kind, with no total)
+                self.unfiltered = True
+                body, shaped = self._ask(op, HOME, asked, {})
             page = _dict(_at(body, "data", "me", "libraryV3"))
             items = page.get("items") if isinstance(page.get("items"), list) else []
             total = page.get("totalCount") if isinstance(page.get("totalCount"), int) else None
