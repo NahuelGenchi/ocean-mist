@@ -455,7 +455,8 @@ async function tick() {
     const w = await inPage(P.watch);
     if (cur !== song) return;   // another song was asked for, or this one is over, while the page was looked at
     unanswered = 0;
-    if (P.go && w.serial !== song.serial) { reportState('ended'); cur = null; return; }   // the song's document is gone
+    // the song's document is gone (only once it is there: while the song's page loads, the one it leaves answers)
+    if (P.go && song.armed && w.serial !== song.serial) { reportState('ended'); cur = null; return; }
     unsigned = w.signed ? 0 : unsigned + 1;
     if (unsigned >= 3) throw new Fail('signed-out', 'the page says the sign-in is gone');
     if (w.state === 'playing' || w.state === 'paused') last = { time: w.time, duration: w.duration || last.duration };
