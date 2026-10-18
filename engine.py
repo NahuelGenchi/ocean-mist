@@ -838,7 +838,7 @@ class Engine:
     def _event(self, proc, event):
         name = event.get("event")
         with self.lock:
-            if proc is not self.proc:
+            if proc is not self.proc or proc is self.leaving:   # a helper that was asked to end serves no song
                 return
             song = self.song
             if name == "start":
