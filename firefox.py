@@ -1,8 +1,9 @@
-"""The YouTube Music and Apple Music sign-ins of your Firefox, for Ocean Mist.
+"""The YouTube Music, Apple Music and Spotify sign-ins of your Firefox, for
+Ocean Mist.
 
-Ocean Mist has no sign-in of its own. You sign in to YouTube Music, or to
-Apple Music, in Firefox, on the service's own page, and when you ask Ocean
-Mist for something of your account (your library, a like, a change to a
+Ocean Mist has no sign-in of its own. You sign in to YouTube Music, to Apple
+Music or to Spotify, in Firefox, on the service's own page, and when you ask
+Ocean Mist for something of your account (your library, a like, a change to a
 playlist), it reads that sign-in from Firefox's cookie file and uses it.
 
 The sign-in is that of the Firefox profile you chose. When you sign in and
@@ -13,12 +14,13 @@ The file is opened read-only and read straight into memory, with the changes
 Firefox still keeps in its write-ahead log: no copy goes to disk, nothing is
 written, and Firefox is not disturbed. Only the profile's YouTube cookies
 are taken, or, for Apple Music, the one cookie its web player signs in with
-(media-user-token), and they are let go once the request is made. The next
-request reads them again, so they are always the ones Firefox has now.
-Standard library only.
+(media-user-token), or, for Spotify, the cookies its web player signs in with
+(sp_dc, and the companions it sends along), and they are let go once the
+request is made. The next request reads them again, so they are always the
+ones Firefox has now. Standard library only.
 
-    python3 firefox.py      which profiles have a YouTube or Apple Music
-                            sign-in (no values)
+    python3 firefox.py      which profiles have a YouTube, Apple Music or
+                            Spotify sign-in (no values)
 """
 import configparser
 import glob
@@ -45,6 +47,11 @@ KEYS = ("SAPISID", "__Secure-3PAPISID")   # what a signed-in request is signed w
 APPLE_SIGN_IN = "https://music.apple.com/"
 APPLE_HOSTS = (".music.apple.com", "music.apple.com")
 APPLE_KEY = "media-user-token"
+# Spotify: its own site, and the cookies its web player signs in with; a browser
+# sends them to open.spotify.com. sp_dc is the session; the others come along.
+SPOTIFY_SIGN_IN = "https://open.spotify.com/"
+SPOTIFY_HOSTS = (".spotify.com", "spotify.com", "open.spotify.com")
+SPOTIFY_KEYS = ("sp_dc", "sp_key", "sp_t")
 SAFE = re.compile(r"[!#-+\--:<-\[\]-~]+\Z")   # what may go in a Cookie header, unquoted
 WAL_MAGIC = (0x377F0682, 0x377F0683)
 WAL_VERSION = 3007000
@@ -357,6 +364,76 @@ def apple_token(folder):
     return found[1] if found else None
 
 
+class SpotifyCookie:
+    """One cookie of a Spotify sign-in, as Firefox keeps it."""
+
+    def __init__(self, name, value, host, expires, secure, http_only, same_site):
+        self.name, self.value, self.host, self.expires = name, value, host, expires
+        self.secure, self.http_only, self.same_site = secure, http_only, same_site
+
+    def __repr__(self):
+        return f"<Spotify cookie {self.name}>"   # never the value, in a log or a traceback
+
+
+class SpotifyToken:
+    """A Spotify sign-in as Firefox has it now: the cookies its web player
+    signs in with (sp_dc first), and how Firefox keeps them."""
+
+    def __init__(self, cookies):
+        self.cookies = cookies   # [SpotifyCookie]
+
+    def __repr__(self):
+        return "<Spotify sign-in>"   # never the cookies, in a log or a traceback
+
+
+def _spotify_cookies(folder, now):
+    """A profile's Spotify sign-in: (when it was last used, SpotifyToken), or None."""
+    con = open_cookies(folder)
+    if con is None:
+        return None
+    marks = ",".join("?" * len(SPOTIFY_HOSTS))
+    names = ",".join("?" * len(SPOTIFY_KEYS))
+    try:   # not those of containers, private windows or partitioned (third-party) storage
+        rows = con.execute(
+            "SELECT name, value, host, expiry, lastAccessed, isSecure, isHttpOnly, sameSite FROM moz_cookies"
+            f" WHERE name IN ({names}) AND host IN ({marks}) AND originAttributes = '' AND path = '/'"
+            " ORDER BY length(host) DESC, creationTime DESC", (*SPOTIFY_KEYS, *SPOTIFY_HOSTS)).fetchall()
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        con.close()
+    found, used = {}, 0
+    for name, value, host, expiry, last, secure, http_only, same_site in rows:
+        expiry = expiry / 1000 if expiry > 1e11 else expiry   # seconds, or milliseconds in newer versions
+        if (expiry and expiry <= now) or name in found or not SAFE.match(str(value)):
+            continue
+        found[name] = SpotifyCookie(name, value, host, expiry, bool(secure), bool(http_only), same_site)
+        used = max(used, last)
+    if "sp_dc" not in found or not used:
+        return None
+    return used, SpotifyToken([found[name] for name in SPOTIFY_KEYS if name in found])
+
+
+def spotify_signed_in():
+    """The profiles that have a Spotify sign-in, the most recently used
+    first: [(folder, name)]. No cookie is kept."""
+    now, found = time.time(), []
+    for folder in profiles():
+        sign = _spotify_cookies(folder, now)
+        if sign:
+            found.append((sign[0], folder))
+    return _ranked(found)
+
+
+def spotify_token(folder):
+    """The Spotify sign-in of one of Firefox's profiles (a folder that
+    profiles() lists) as Firefox has it now, or None. Read now, each time:
+    keep it only as long as it is needed."""
+    folder = os.path.realpath(folder)
+    found = _spotify_cookies(folder, time.time()) if folder in profiles() else None
+    return found[1] if found else None
+
+
 if __name__ == "__main__":
     now = time.time()
     folders, called = profiles(), names()
@@ -365,10 +442,11 @@ if __name__ == "__main__":
         return f"last used {max(0, int((now - last / 1e6) / 60))} min ago"
 
     for folder in folders:
-        youtube, apple = _signed_in(folder, now), _apple_cookie(folder, now)
+        youtube, apple, spotify = _signed_in(folder, now), _apple_cookie(folder, now), _spotify_cookies(folder, now)
         where = os.path.relpath(folder, os.path.expanduser("~"))
         print(f"{where} ({called.get(folder) or 'no name'}): "
               + (f"signed in to YouTube, {ago(youtube[0])}" if youtube else "no YouTube sign-in") + "; "
-              + (f"signed in to Apple Music, {ago(apple[0])}" if apple else "no Apple Music sign-in"))
+              + (f"signed in to Apple Music, {ago(apple[0])}" if apple else "no Apple Music sign-in") + "; "
+              + (f"signed in to Spotify, {ago(spotify[0])}" if spotify else "no Spotify sign-in"))
     if not folders:
         print("no Firefox profile found")
