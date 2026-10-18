@@ -159,6 +159,18 @@
       if (same(yt.node, { kind: 'apple', value: kind })) drawRows(true);
     });
   }
+  // a page of a part of your Spotify library. Spotify's page may send the kinds of the library mixed together, the
+  // host keeping those of the kind asked for, so a page can bring none of them: the next one is asked for then,
+  // until one brings some or the host says there are no more (and after EMPTY_PAGES of them, Show more carries on)
+  const EMPTY_PAGES = 10;
+  async function spotifyPage(kind, offset) {
+    let r = await getSpotify(`library?kind=${kind}` + (offset ? `&offset=${offset}` : ''));
+    for (let empty = 1; !r.error && !(r.items || []).length && r.more != null && r.more > (offset || 0) && empty < EMPTY_PAGES; empty++) {
+      offset = r.more;
+      r = await getSpotify(`library?kind=${kind}&offset=${offset}`);
+    }
+    return r;
+  }
   // a part of your Spotify library, the same way as Apple Music's
   function loadSpotify(kind, more) {
     if (!spotifyReady()) return;
@@ -166,7 +178,7 @@
     if (more) {
       if (!list || !list.items || list.more == null || list.busy) return;
       list.busy = true; drawRows(true);
-      getSpotify(`library?kind=${kind}&offset=${list.more}`).then((r) => {
+      spotifyPage(kind, list.more).then((r) => {
         list.busy = false;
         if (r.error) { Mist.flash(sentence(r.error), 6000); if (r.signed_out) spotifyOut(r); }
         else { list.items = list.items.concat(r.items || []); list.more = r.more; list.total = r.total ?? list.total; }
@@ -176,7 +188,7 @@
     }
     if (list && (list.loading || (!list.error && Date.now() - list.at < 10 * 60 * 1000))) return;
     sp.lists[kind] = { loading: true };
-    getSpotify(`library?kind=${kind}`).then((r) => {
+    spotifyPage(kind, 0).then((r) => {
       if (r.error) {
         sp.lists[kind] = { error: r.error, signed_out: r.signed_out };
         if (r.signed_out) spotifyOut(r);
@@ -207,7 +219,7 @@
     let page = yt.pages[key];
     if (!page || page.error || page.loading) {
       page = await fetchPage(kind, id);
-      if (page.error) { if (!quiet) failed(page, kind.startsWith('apple-')); if (page.signed_out) outFor(kind)(page); return null; }
+      if (page.error) { if (!quiet) failed(page, kind); else if (page.signed_out) outFor(kind)(page); return null; }
       yt.pages[key] = page;
       if (kind === 'mine') learn(page.tracks); else if (!quiet) remember(key, page.title);
     }
@@ -384,7 +396,7 @@
     else if (items.length) {
       const noun = listing ? NOUNS.songs : NOUNS[node.kind === 'account' ? 'playlists' : node.value], n = listing ? songs.length : items.length;
       text = `${n} ${n === 1 ? noun[0] : noun[1]}` + (listing && total ? `, ${clock(total)}` : '');
-      if ((node.kind === 'apple' || node.kind === 'spotify') && found.more != null) text = `${n} of ${found.total || 'more'} ${noun[1]}`;
+      if ((node.kind === 'apple' || node.kind === 'spotify') && found.more != null && found.total > n) text = `${n} of ${found.total} ${noun[1]}`;   // (without a total, the count alone)
     }
     $('yt-count').textContent = text;
     const mayMore = node.kind === 'search' || node.kind === 'apple' || node.kind === 'spotify';
@@ -822,14 +834,15 @@
     }
     draw();
   }
-  // the engine ends with the sign-in it was given: a song of a service that is on stops with it
-  function endAppleSong() {
+  // the engine ends with the sign-in it was given: a song of that service that is on stops with it (one of the
+  // other service's plays on, as the engine keeps their sign-ins apart)
+  function endSongOf(service) {
     const t = Mist.track(state.cur);
-    if (t && (t.apple || t.spotify) && state.station === null) Mist.stop();
+    if (t && (service === 'spotify' ? t.spotify : t.apple) && state.station === null) Mist.stop();
   }
   async function appleSignIn(profile) {
     if (await waitForSignIn(ap, 'apple', 'apple-sign-in', profile)) {
-      endAppleSong();
+      endSongOf('apple');
       state.settings.apple_account = true;
       ap.lists = {}; ap.profile = ''; ap.out = '';
       Mist.flash('Signed in to Apple Music through Firefox');
@@ -840,7 +853,7 @@
   }
   async function spotifySignIn(profile) {
     if (await waitForSignIn(sp, 'spotify', 'spotify-sign-in', profile)) {
-      endAppleSong();
+      endSongOf('spotify');
       state.settings.spotify_account = true;
       sp.lists = {}; sp.profile = ''; sp.out = '';
       Mist.flash('Signed in to Spotify through Firefox');
@@ -851,7 +864,7 @@
   }
   function appleSignOut() {
     api('apple-sign-out').then(() => {
-      endAppleSong();
+      endSongOf('apple');
       state.settings.apple_account = false;
       ap.lists = {}; ap.profile = ''; ap.out = ''; ap.note = ''; ap.choices = null;
       const apples = (n) => n.kind === 'apple' || (n.kind === 'page' && n.value.startsWith('apple-'));
@@ -865,7 +878,7 @@
   }
   function spotifySignOut() {
     api('spotify-sign-out').then(() => {
-      endAppleSong();
+      endSongOf('spotify');
       state.settings.spotify_account = false;
       sp.lists = {}; sp.profile = ''; sp.out = ''; sp.note = ''; sp.choices = null;
       const theirs = (n) => n.kind === 'spotify' || (n.kind === 'page' && n.value.startsWith('spotify-'));
@@ -893,9 +906,11 @@
     });
   }
   function signedOut(r) { yt.library = { error: r.error, signed_out: true }; drawTree(); }
-  function failed(r, apple) {
-    Mist.flash(sentence(r.error || (apple ? 'Apple Music did not answer' : 'YouTube Music did not answer')), 6000);
-    if (r.signed_out) (apple ? appleOut : signedOut)(r);
+  // `kind`: what was asked for, which says whose sign-in it was (YouTube Music's when there is none)
+  function failed(r, kind = '') {
+    const who = kind.startsWith('apple-') ? 'Apple Music' : kind.startsWith('spotify-') ? 'Spotify' : 'YouTube Music';
+    Mist.flash(sentence(r.error || `${who} did not answer`), 6000);
+    if (r.signed_out) outFor(kind)(r);
   }
   // a page of yours that changed: read again the next time it is shown
   function stale(key) {
