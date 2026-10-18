@@ -83,11 +83,9 @@
     if (which !== 'youtube') return LISTS[which];
     const songs = state.lists.youtube;
     const apple = songs.filter((t) => t.apple).length, spotify = songs.filter((t) => t.spotify).length;
-    if (!apple && !spotify) return LISTS.youtube;
-    if (!spotify) return apple === songs.length ? 'Apple Music' : 'YouTube Music and Apple Music';
-    if (!apple && spotify === songs.length) return 'Spotify';
-    if (apple && spotify && apple + spotify === songs.length) return 'Apple Music and Spotify';
-    return `YouTube Music, Apple Music and Spotify`;
+    // the services its songs come from, and only those (an empty list is YouTube Music's)
+    const names = [apple + spotify < songs.length || !songs.length ? LISTS.youtube : '', apple ? 'Apple Music' : '', spotify ? 'Spotify' : ''].filter(Boolean);
+    return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
   }
   const listLabel = () => state.names[state.show] || listName(state.show);
   // the list playback goes through: the current song's, or else the one in view
@@ -505,12 +503,22 @@
   }
   function extFailed(e, code, text) {
     if (ext !== e) return;
+    // the song was taken over by another device of the account: it is paused here, and Play takes it back
+    if (code === 'elsewhere') {
+      e.pos = extPosition(); e.stamp = e.asked = performance.now(); e.phase = 'paused'; e.want = 'paused'; e.sought = null;
+      if (state.mode === 'playing') setMode('paused');
+      flash(sentence(text || `${serviceName(e.t)} is playing on another device, so the song was paused here`), 8000);
+      updateTime();
+      return;
+    }
     ext = null;
     clearInterval(extTimer); extTimer = 0;
-    const why = sentence(text || `${serviceName(e.t)} could not play this song`);
+    const unsure = e.t.spotify ? 'Ocean Mist could not confirm that your Spotify account has Premium, so its songs were not played'
+      : 'Ocean Mist could not confirm that your Apple Music account has an active subscription, so its songs were not played';
+    const why = sentence(text || (code === 'no-plan' ? unsure : `${serviceName(e.t)} could not play this song`));
     // the engine itself needs something: the Library page says what
     if (code === 'not-installed' || code === 'sandbox') { stop(); fire('engine-needed', code); flash(why, 12000); return; }
-    // what is wrong for every song: the next one would fail too
+    // what is wrong for every song: the next one would fail too (the plan that could not be confirmed, too)
     const general = ['signed-out', 'no-subscription', 'no-plan', 'limit', 'offline', 'widevine', 'crash', 'page', 'start'].includes(code);
     if (general || ++streamFails >= 3) { streamFails = 0; stop(); flash(why, 30000); return; }
     flash(why, 5000);
