@@ -21,10 +21,12 @@
  *      {"cmd":"volume","value":0.3,"muted":false}
  * out  start, widevine, ready, state, problem, denied, fail, selftest
  *
- * What may need updating when a service changes its page is kept together, in "what the page is asked".
+ * What may need updating when a service changes its page is kept together, in "what the page is asked" and,
+ * for Spotify, in spotify-preload.js (the hook it puts into Spotify's page before the page's own scripts).
  */
 const { app, BrowserWindow, session, components } = require('electron');
 const fs = require('fs');
+const path = require('path');
 
 const T0 = Date.now();
 const arg = (name) => {
@@ -59,6 +61,7 @@ const SIGNED_WITHIN = 10000;      // ...and this long, once its player is up, to
 const WIDEVINE_WITHIN = 240000;   // Google's module can have to come over the network on the first run
 const LOADING_WITHIN = 40000;     // a song that has not started by then did not
 const PAGE_WITHIN = 10000;        // the page gets this long to answer a look or a command (a song being queued gets LOADING_WITHIN)
+const PLAN_WITHIN = 15000;        // Spotify's page gets this long, once it is up, to have said the account's plan
 const PAGE_DEAD_AFTER = 3;        // looks in a row that were not answered in time: the page is hung, and the helper ends
 const TICK = 500;                 // how often the page is asked how the song is doing
 const BEAT = 1000;                // how often the position is said while a song plays
@@ -218,10 +221,10 @@ async function pageStop() {
 
 // ---- Spotify's page ----
 // Spotify has no player object to ask: a track's page offers a Play button, and the page plays through a media
-// element its own scripts made. The account's subscription comes from the page's own "accountAttributes"
-// answer (the account's product), caught by the hook; where it cannot be caught, the account is asked once the
-// page's own way, and a refusal there (a rate limit, a CORS block) is not fatal. The testids and the request
-// shapes may change when Spotify changes its page.
+// element its own scripts made, which is never in the document. The hook that follows those elements and keeps the
+// account's plan (the product of the page's own "accountAttributes" answer) is put in before the page's scripts run,
+// by spotify-preload.js, in every document; these functions read what it keeps. The testids and the request shapes
+// may change when Spotify changes its page.
 
 // is Spotify's player up, and does it say you are signed in?
 function pageReadySpotify() {
@@ -232,160 +235,74 @@ function pageReadySpotify() {
   } catch (e) { return JSON.stringify({ host: location.host, api: false, signed: false }); }
 }
 
-// the account's subscription, from the page's own accountAttributes answer (its product), or asked once with
-// the page's own bearer; where neither is at hand the helper goes on and plays
-async function pageAccountSpotify() {
-  if (typeof window.__omProduct === 'string') return JSON.stringify({ active: /^premium/i.test(window.__omProduct), product: window.__omProduct, seen: true });
-  const ops = window.__omOps || {};
-  const productOf = (body) => {
-    try {
-      const account = body && body.data && body.data.me && body.data.me.account;
-      return account && typeof account.product === 'string' ? account.product : '';
-    } catch (e) { return ''; }
-  };
-  const until = Date.now() + 8000;
-  while (Date.now() < until) {
-    const body = (ops.responses || {}).accountAttributes;
-    if (body) { const product = productOf(body); if (product) return JSON.stringify({ active: /^premium/i.test(product), product, seen: true }); }
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  }
-  let bearer = '';
-  try {
-    for (const name of Object.keys(ops.requests || {})) {
-      const headers = (ops.requests[name] || {}).headers || {};
-      for (const key of Object.keys(headers)) if (key.toLowerCase() === 'authorization' && /^bearer\s+/i.test(headers[key])) { bearer = headers[key].replace(/^bearer\s+/i, ''); break; }
-      if (bearer) break;
-    }
-  } catch (e) { /* no requests were caught */ }
-  if (bearer) {
-    try {
-      const reply = await fetch((window.__omApi || 'https://api.spotify.com') + '/v1/me', { headers: { Authorization: 'Bearer ' + bearer }, credentials: 'omit' });
-      if (reply.ok) {
-        const body = await reply.json();
-        const product = body && typeof body.product === 'string' ? body.product : '';
-        return JSON.stringify({ active: !product || /^premium/i.test(product), product, seen: true });
-      }
-      return JSON.stringify({ active: true, status: reply.status, seen: false });
-    } catch (e) { /* asking was not possible */ }
-  }
-  return JSON.stringify({ active: true, seen: false });
+// the account's plan as the page's own accountAttributes answer gave it, '' while it has not come (a stand-in may
+// say it with window.__omProduct, which counts only when the helper runs against one)
+function pageAccountSpotify(standIn) {
+  const om = window.__om;
+  if (!om) return JSON.stringify({ hooked: false, product: '' });
+  const product = standIn && typeof window.__omProduct === 'string' ? window.__omProduct : om.product;
+  return JSON.stringify({ hooked: true, product: String(product || '').slice(0, 40) });
 }
 
-// once per page: catch the page's own requests (names, headers, bodies and answers, for the account's product),
-// count the media element's ends, and remember the media elements the page makes
-function pageHookSpotify() {
-  if (window.__om) return 'hooked';
-  const om = window.__om = { ended: 0, error: '', serial: 0, pauseFor: null, seen: [] };
-  document.addEventListener('ended', () => { om.ended += 1; }, true);
-  if (!window.__omOps) {   // the page's own requests, kept in memory only
-    const ops = window.__omOps = { requests: {}, responses: {} };
-    const nameOf = (body) => { try { return String((JSON.parse(String(body)) || {}).operationName || ''); } catch (e) { return ''; } };
-    const wanted = (url) => String(url).indexOf('api.spotify.com') >= 0 || String(url).indexOf('api-partner.spotify.com') >= 0;
-    try {
-      const realFetch = window.fetch;
-      window.fetch = function (input, init) {
-        try {
-          const url = String((input && input.url) || input || '');
-          if (wanted(url)) {
-            const headers = {};
-            try { for (const [key, value] of new Headers((init && init.headers) || (input && input.headers) || {})) headers[key] = value; } catch (e) { /* no headers read */ }
-            const name = nameOf(init && typeof init.body === 'string' ? init.body : '');
-            if (name) ops.requests[name] = { url, headers, body: String(init.body) };
-            return realFetch.apply(this, arguments).then((reply) => {
-              try { reply.clone().json().then((body) => { if (name) ops.responses[name] = body; }).catch(() => null); } catch (e) { /* not JSON */ }
-              return reply;
-            });
-          }
-        } catch (e) { /* go on with the plain fetch */ }
-        return realFetch.apply(this, arguments);
-      };
-      const realOpen = XMLHttpRequest.prototype.open, realSend = XMLHttpRequest.prototype.send, realHeader = XMLHttpRequest.prototype.setRequestHeader;
-      XMLHttpRequest.prototype.open = function (method, url) { this.__omUrl = String(url || ''); this.__omHeaders = {}; return realOpen.apply(this, arguments); };
-      XMLHttpRequest.prototype.setRequestHeader = function (key, value) { try { this.__omHeaders[String(key)] = String(value); } catch (e) { /* fine */ } return realHeader.apply(this, arguments); };
-      XMLHttpRequest.prototype.send = function (body) {
-        try {
-          if (wanted(this.__omUrl)) {
-            const xhr = this, name = nameOf(body);
-            if (name) {
-              ops.requests[name] = { url: xhr.__omUrl, headers: xhr.__omHeaders || {}, body: String(body || '') };
-              xhr.addEventListener('load', () => { try { ops.responses[name] = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ } });
-            }
-          }
-        } catch (e) { /* go on with the plain send */ }
-        return realSend.apply(this, arguments);
-      };
-    } catch (e) { /* without a hook the account is asked once, or not at all */ }
-  }
-  // the media element that is playing the song: the ones the page made that are not paused, not muted and
-  // carry a length, over a canvas's silent video
-  om.pick = function () {
-    const all = om.seen.slice();
-    try { for (const cand of document.querySelectorAll('video,audio')) if (all.indexOf(cand) < 0) all.push(cand); } catch (e) { /* nothing to add */ }
-    let best = null, rank = -1;
-    for (const cand of all) {
-      const r = (cand.paused ? 0 : 4) + (cand.muted ? 0 : 2) + (Number(cand.duration) > 0 ? 1 : 0);
-      if (r > rank) { rank = r; best = cand; }
-    }
-    return best;
-  };
-  const track = (el) => { try { if (el && om.seen.indexOf(el) < 0) om.seen.push(el); } catch (e) { /* full */ } };
-  try {
-    const realPlay = HTMLMediaElement.prototype.play;
-    HTMLMediaElement.prototype.play = function () { track(this); return realPlay.apply(this, arguments); };
-    for (const cand of document.querySelectorAll('video,audio')) track(cand);
-  } catch (e) { /* pick() still looks at the document */ }
-  return 'hooked';
-}
+// is the preload's hook in this document?
+function pageHookSpotify() { return window.__om ? 'hooked' : 'missing'; }
 
 // plays one song: its page is already open (the helper went to it); wait for the Play button, click it (a real
-// click: no autoplay block) and let the song's element appear. A newer song asked for meanwhile (serial) ends
-// this try; so does a stop (it sets the serial to -1), and then nothing may be left playing; a pause that came
+// click: no autoplay block) and wait for the song's element to start. A newer song asked for meanwhile (serial)
+// ends this try; so does a stop (it sets the serial to -1), and then nothing may be left playing; a pause that came
 // while the song was being queued lets it start paused. Where a song goes on from is applied by the watch.
 async function pagePlaySpotify(id, volume, serial) {
   const om = window.__om;
-  om.serial = serial; om.error = ''; om.pauseFor = null;
-  const superseded = (code) => JSON.stringify({ ok: false, code });
+  om.serial = serial; om.error = ''; om.pauseFor = null; om.outside = false; om.song = null; om.done = 0; om.length = 0;
+  const quiet = () => { for (const el of om.seen) { try { if (!el.muted && !el.paused) el.pause(); } catch (e) { /* gone */ } } };
+  const failed = (code) => { om.error = code; quiet(); return JSON.stringify({ ok: false, code }); };
   const until = Date.now() + 15000;
   let button = null;
   while (Date.now() < until) {
-    if (document.querySelector('[data-testid="login-button"]')) return superseded('SIGNED_OUT');
+    if (document.querySelector('[data-testid="login-button"]')) return JSON.stringify({ ok: false, code: 'SIGNED_OUT' });
+    if (om.serial !== serial) break;
     button = document.querySelector('[data-testid="play-button"]');
     if (button) break;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  if (om.serial !== serial) return superseded('SUPERSEDED');
-  if (!button) return superseded('PLAY_BUTTON');
-  try { button.click(); } catch (e) { return superseded('PLAY_BUTTON'); }
-  const started = Date.now() + 10000;
-  while (Date.now() < started) {
+  if (om.serial !== serial) return JSON.stringify({ ok: false, code: 'SUPERSEDED' });
+  if (!button) return failed('PLAY_BUTTON');
+  try { button.click(); } catch (e) { return failed('PLAY_BUTTON'); }
+  const started = Date.now() + 20000;   // the song's element has this long to start: after it, it did not
+  while (Date.now() < started && !om.song && !om.error) {
     if (om.serial !== serial) {
-      if (om.serial === -1) { try { const el = om.pick(); if (el) el.pause(); } catch (e) { /* nothing to stop */ } }
-      return superseded('SUPERSEDED');
+      if (om.serial === -1) quiet();
+      return JSON.stringify({ ok: false, code: 'SUPERSEDED' });
     }
-    const el = om.pick();
-    if (el && Number(el.duration) > 0) break;
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
-  if (om.pauseFor === serial) { try { const el = om.pick(); if (el) el.pause(); } catch (e) { /* the next look says so */ } }
-  try { const el = om.pick(); if (el) el.volume = volume; } catch (e) { /* the page's own volume is close enough */ }
+  if (om.serial !== serial) { if (om.serial === -1) quiet(); return JSON.stringify({ ok: false, code: 'SUPERSEDED' }); }
+  if (om.error) return failed(om.error);
+  if (!om.song) return failed('NO_AUDIO');
+  if (om.pauseFor === serial) { try { om.song.pause(); } catch (e) { /* the next look says so */ } }
+  try { om.song.volume = volume; } catch (e) { /* the page's own volume is close enough */ }
   return JSON.stringify({ ok: true, code: '' });
 }
 
-// how the song is doing
+// how the song is doing; "elsewhere" when a pause Ocean Mist did not ask for came with the page saying that the
+// account plays on another device
 function pageWatchSpotify() {
   const om = window.__om || {};
   const signed = !!document.querySelector('[data-testid="user-widget-link"]');
   let el = null;
   try { el = om.pick ? om.pick() : null; } catch (e) { el = null; }
   const time = el ? Number(el.currentTime) || 0 : 0;
-  const duration = el ? Number(el.duration) || 0 : 0;
+  const duration = om.length || (el && Number.isFinite(Number(el.duration)) ? Number(el.duration) : 0);
   let state = 'loading';
-  if (el) {
+  if (om.done && om.done === om.serial) state = 'ended';
+  else if (el) {
     if (el.ended) state = 'ended';
     else if (!el.paused) state = 'playing';
-    else if (duration > 0 && time > 0) state = om.pauseFor === om.serial ? 'paused' : 'stopped';
+    else if (time > 0 || (el === om.song && om.pauseFor === om.serial)) state = 'paused';
   }
-  return JSON.stringify({ signed, state, time, duration, ended: om.ended || 0, error: om.error || '' });
+  let elsewhere = false;
+  try { elsewhere = state === 'paused' && !!om.outside && !!document.querySelector('[data-testid="connect-bar"],[data-testid="connect-device-bar"]'); } catch (e) { /* not known */ }
+  return JSON.stringify({ signed, state, time: duration ? Math.min(time, duration) : time, duration, ended: om.ended || 0, error: om.error || '', elsewhere });
 }
 
 async function pagePauseSpotify() {
@@ -394,12 +311,14 @@ async function pagePauseSpotify() {
   return 'ok';
 }
 async function pageResumeSpotify() {
-  const om = window.__om; if (om) om.pauseFor = null;
-  try { const el = om && om.pick(); if (el) await el.play(); } catch (e) { /* not playing */ }
+  const om = window.__om; if (!om || om.done === om.serial) return 'ok';   // a song that is over does not start again
+  om.pauseFor = null; om.outside = false;
+  try { const el = om.pick(); if (el) await el.play(); } catch (e) { /* not playing */ }
   return 'ok';
 }
 async function pageSeekSpotify(to) {
-  try { const el = window.__om && window.__om.pick(); if (el) el.currentTime = Math.max(0, Number(to) || 0); } catch (e) { /* not playing */ }
+  const om = window.__om;
+  try { const el = om && om.pick(); if (el) { om.seekAt = Date.now(); el.currentTime = Math.max(0, Number(to) || 0); om.last = el.currentTime; } } catch (e) { /* not playing */ }
   return 'ok';
 }
 function pageVolumeSpotify(value) {
@@ -407,7 +326,9 @@ function pageVolumeSpotify(value) {
   return 'ok';
 }
 async function pageStopSpotify() {
-  try { const om = window.__om; if (om) om.serial = -1; const el = om && om.pick(); if (el) el.pause(); } catch (e) { /* not playing */ }
+  const om = window.__om; if (!om) return 'ok';
+  om.serial = -1;
+  for (const el of om.seen) { try { if (!el.muted && !el.paused) el.pause(); } catch (e) { /* not playing */ } }
   return 'ok';
 }
 
@@ -489,15 +410,17 @@ async function play(cmd) {
   const song = cur = { serial, phase: 'loading', armed: false, seekTo: from, endedBase: 0, said: 0, stalled: 0, stopped: 0 };
   say('state', { serial, state: 'loading', position: 0, duration: 0 });
   if (!ids.length) { problem(serial, 'NO_SONG'); return; }
-  if (P.go) {   // Spotify: the song plays from its own page; go there and put the hook in first
+  if (P.go) {   // Spotify: the song plays from its own page; go there (the preload puts the hook in)
+    let hooked;
     try {
       await open(`${site}track/${ids[0]}`);
-      await inPage(P.hook);
+      hooked = await inPage(P.hook);
     } catch (e) {
       if (cur === song) problem(serial, e instanceof Late ? 'TIMEOUT' : 'offline');
       return;
     }
     if (cur !== song) return;   // another song was asked for while this one's page loaded
+    if (hooked !== 'hooked') { fatal(new Fail('page', 'the page has no hook')); return; }
   }
   const before = await inPage(P.watch).catch(() => null);
   if (before) song.endedBase = before.ended;   // the ends of earlier songs do not count
@@ -525,6 +448,7 @@ async function tick() {
     if (unsigned >= 3) throw new Fail('signed-out', 'the page says the sign-in is gone');
     if (w.state === 'playing' || w.state === 'paused') last = { time: w.time, duration: w.duration || last.duration };
     if (w.error) { problem(song.serial, w.error); return; }
+    if (w.elsewhere) { problem(song.serial, 'DEVICE_LIMIT'); return; }   // the account plays on another device now
     const over = w.ended > song.endedBase || w.state === 'ended' || w.state === 'completed';
     const finished = song.phase === 'playing' && w.state !== 'playing' && w.duration > 5 && w.time >= w.duration - 0.6;
     if (over || finished) {
@@ -670,6 +594,8 @@ async function run() {
     webPreferences: {
       session: ses, backgroundThrottling: false, contextIsolation: true, nodeIntegration: false,
       sandbox: true, images: false, spellcheck: false, autoplayPolicy: 'no-user-gesture-required',
+      // Spotify's: the hook goes into each document before the page's own scripts (it gives the page nothing)
+      ...(service === 'spotify' ? { preload: path.join(__dirname, 'spotify-preload.js') } : {}),
     },
   });
   page = win.webContents;
@@ -684,12 +610,24 @@ async function run() {
   await waitReady();
 
   if (service === 'spotify') {
-    page.on('dom-ready', () => { inPage(P.hook).catch(() => null); });   // the account's answer comes early
-    await inPage(P.hook);
-    page.on('did-navigate', () => { inPage(P.hook).catch(() => null); });
-    const account = await inPage(P.account);
-    if (account && account.active === false) throw new Fail('no-subscription', 'the account has no active Spotify Premium subscription');
-    say('ready', { store: '', premium: account && account.seen ? (account.active ? 'yes' : 'no') : 'unknown' });
+    // a song plays only for an account known to have Premium: a plan whose name starts with "premium"
+    const until = Date.now() + PLAN_WITHIN;
+    let plan = '';
+    while (!plan) {
+      const said = await inPage(P.account, !!STAND_IN);
+      if (!said.hooked) throw new Fail('page', 'the page has no hook');
+      plan = said.product;
+      if (!plan && Date.now() > until) throw new Fail('no-plan', 'the page did not say the account\'s plan in time');
+      if (!plan) await delay(300);
+    }
+    if (!/^premium/i.test(plan)) throw new Fail('no-subscription', 'the account has no active Spotify Premium subscription');
+    // a document Ocean Mist did not go to: the song in the one it left is over
+    page.on('did-start-navigation', (details, url, inPlace, mainFrame) => {
+      const main = details && typeof details.isMainFrame === 'boolean' ? details.isMainFrame : !!mainFrame;
+      const same = details && typeof details.isSameDocument === 'boolean' ? details.isSameDocument : !!inPlace;
+      if (main && !same && cur && cur.armed && !leaving) { reportState('ended'); cur = null; }
+    });
+    say('ready', { store: '', premium: 'yes' });
   } else {
     // Apple's player refuses to queue anything while the page is open on another store (country) than the account's
     let account = await inPage(P.account);

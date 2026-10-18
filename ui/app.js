@@ -511,7 +511,7 @@
     // the engine itself needs something: the Library page says what
     if (code === 'not-installed' || code === 'sandbox') { stop(); fire('engine-needed', code); flash(why, 12000); return; }
     // what is wrong for every song: the next one would fail too
-    const general = ['signed-out', 'no-subscription', 'limit', 'offline', 'widevine', 'crash', 'page', 'start'].includes(code);
+    const general = ['signed-out', 'no-subscription', 'no-plan', 'limit', 'offline', 'widevine', 'crash', 'page', 'start'].includes(code);
     if (general || ++streamFails >= 3) { streamFails = 0; stop(); flash(why, 30000); return; }
     flash(why, 5000);
     setTimeout(() => { if (state.cur === e.t.id && state.mode === 'playing') step(1, true); }, 2500);
