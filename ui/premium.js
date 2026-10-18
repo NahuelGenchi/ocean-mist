@@ -287,7 +287,12 @@
       : node.kind === 'spotify' ? 'Reading your Spotify library…' : 'Opening…';
     if (found.error) return esc(sentence(found.error));
     if (node.kind === 'apple') return node.value === 'recent' ? 'Nothing was added to your Apple Music library lately.' : `There are no ${NOUNS[node.value][1]} in your Apple Music library.`;
-    if (node.kind === 'spotify') return `There are no ${(SPOTIFY.find((s) => s[0] === node.value) || ['', NOUNS[node.value][1]])[1].toLowerCase()} in your Spotify library.`;
+    if (node.kind === 'spotify') {
+      const what = (SPOTIFY.find((s) => s[0] === node.value) || ['', NOUNS[node.value][1]])[1].toLowerCase();
+      // the pages read so far held none of the kind, but the library goes on: Show more reads further
+      if (found.more != null) return `No ${what} were found in the first part of your Spotify library. Show more looks further.`;
+      return `There are no ${what} in your Spotify library.`;
+    }
     if (node.kind === 'now') return 'Nothing is in the YouTube Music list. The songs you play or add here go into it.';
     if (node.kind === 'list') return 'This playlist has no songs that can be found.';
     if (node.kind === 'account') return 'There are no playlists in your library yet.';
@@ -396,7 +401,8 @@
     else if (items.length) {
       const noun = listing ? NOUNS.songs : NOUNS[node.kind === 'account' ? 'playlists' : node.value], n = listing ? songs.length : items.length;
       text = `${n} ${n === 1 ? noun[0] : noun[1]}` + (listing && total ? `, ${clock(total)}` : '');
-      if ((node.kind === 'apple' || node.kind === 'spotify') && found.more != null && found.total > n) text = `${n} of ${found.total} ${noun[1]}`;   // (without a total, the count alone)
+      if (node.kind === 'apple' && found.more != null) text = `${n} of ${found.total || 'more'} ${noun[1]}`;
+      if (node.kind === 'spotify' && found.more != null && found.total > n) text = `${n} of ${found.total} ${noun[1]}`;   // (without a total, the count alone)
     }
     $('yt-count').textContent = text;
     const mayMore = node.kind === 'search' || node.kind === 'apple' || node.kind === 'spotify';
