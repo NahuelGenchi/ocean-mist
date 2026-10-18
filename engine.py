@@ -929,7 +929,7 @@ def _drain(stream, tail):
         tail.append(line.rstrip()[:300])
 
 
-def _no_sign_in():
+def _no_sign_in(service=None):
     raise EngineError(WORDS["signed-out"], "signed-out")
 
 
