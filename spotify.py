@@ -64,6 +64,9 @@ WINDOW = (1600, 1000)            # the size the windowless view lays the page ou
 OFFLINE = "cannot reach Spotify; check the internet connection"
 SIGNED_OUT = "Spotify says you are signed out; sign in again in Firefox"
 CHANGED = "Spotify changed something Ocean Mist depends on, so the player needs an update"
+# after a few of its pages have opened in one view, Spotify's page shows a notice
+# that this browser cannot play, in place of its player; a new view opens it again
+REFUSED = "Spotify's page would not open in Ocean Mist; try again"
 UNSAFE = "Ocean Mist could not keep Spotify's page from signing you out, so it did not open it"
 
 PICTURE_HOSTS = re.compile(r"^https://(?:[a-z0-9-]+\.)*(?:scdn\.co|spotifycdn\.com|spotify\.com)/", re.I)
@@ -107,9 +110,10 @@ READY_JS = """(() => {
   try {
     const widget = !!document.querySelector('[data-testid="user-widget-link"]');
     const login = !!document.querySelector('[data-testid="login-button"]');
+    const refused = !!document.querySelector('[data-testid="error-page"]');
     const doc = (window.__omOps && window.__omOps.doc) || '';
-    return JSON.stringify({ host: location.host, doc, up: widget || login, signed: widget && !login });
-  } catch (e) { return JSON.stringify({ host: location.host, doc: '', up: false, signed: false }); }
+    return JSON.stringify({ host: location.host, doc, up: widget || login, signed: widget && !login, refused });
+  } catch (e) { return JSON.stringify({ host: location.host, doc: '', up: false, signed: false, refused: false }); }
 })()"""
 
 # the hook, put in the page before it loads: it keeps each of the page's own
@@ -465,6 +469,9 @@ class Page:
                 self.doc = said["doc"]
                 self._ready()
                 return
+            if new and said.get("refused"):   # Spotify's notice in place of its player: see REFUSED
+                self._fail(SpotifyError(REFUSED))
+                return
             if new and said.get("up"):
                 self.seen = self.seen or now
             if moved or (self.seen and now - self.seen > SETTLE):   # the page asks for a sign-in
@@ -696,6 +703,14 @@ def _row(kind, **fields):
     return item
 
 
+def _songs_part(union):
+    """The part of an album's answer that holds its songs: tracksV2, or tracks in the older shape."""
+    for name in ("tracksV2", "tracks"):
+        if isinstance(union.get(name), dict):
+            return union[name]
+    return {}
+
+
 def song(res):
     """A song of a playlist (or of the library), as a row; None if it names nothing."""
     if not isinstance(res, dict):
@@ -715,6 +730,8 @@ def song(res):
         album = _text(album_of.get("name"))
         year = _year((album_of.get("date") or {}).get("isoString") if isinstance(album_of.get("date"), dict) else "")
         cover = _cover((album_of.get("coverArt") or {}).get("sources") if isinstance(album_of.get("coverArt"), dict) else None)
+    elif not isinstance(res.get("identityTrait"), dict) and isinstance(res.get("artists"), dict):
+        artist = _profile(res)   # a song of an album's page, which names no album of its own
     else:
         seen = res.get("identityTrait") if isinstance(res.get("identityTrait"), dict) else {}
         artist = _text(_first((seen.get("contributors") or {}).get("items", []) if isinstance(seen.get("contributors"), dict) else []).get("name"))
@@ -725,6 +742,8 @@ def song(res):
         cover = _cover((visual.get("squareCoverImage") or {}).get("sources") if isinstance(visual.get("squareCoverImage"), dict) else None)
     if isinstance(res.get("trackDuration"), dict):
         millis = res["trackDuration"].get("totalMilliseconds")
+    elif isinstance(res.get("duration"), dict):
+        millis = res["duration"].get("totalMilliseconds")
     elif isinstance(res.get("consumptionExperienceTrait"), dict):
         seconds = _at(res, "consumptionExperienceTrait", "duration", "seconds")
         millis = seconds * 1000 if isinstance(seconds, (int, float)) else 0
@@ -823,7 +842,15 @@ class SpotifyMusic:
     def _ask(self, op, route, variables=None, optional=None):
         """Spotify's answer to the page's own request `op`, asked again on `route`
         with `variables`; with `optional` (see Page.call), (answer, the optional
-        ones set)."""
+        ones set). A view Spotify's page refused (see REFUSED) is replaced once."""
+        try:
+            return self._ask_once(op, route, variables, optional)
+        except SpotifyError as error:
+            if str(error) != REFUSED:
+                raise
+            return self._ask_once(op, route, variables, optional)
+
+    def _ask_once(self, op, route, variables, optional):
         done, box = threading.Event(), {}
         generation = self.generation
         token = None if self.page is not None and self.page.state != "dead" else self.token_source()
@@ -968,7 +995,7 @@ class SpotifyMusic:
                 body = self._ask("getAlbum", route, {"uri": uri, "offset": offset, "limit": PAGE})
                 data = body.get("data") if isinstance(body, dict) else None
                 union = _dict(_at(data, "albumUnion"))
-            page = union.get("tracks") if isinstance(union.get("tracks"), dict) else {}
+            page = _songs_part(union)
             items = page.get("items") if isinstance(page.get("items"), list) else []
             for item in items:
                 if not isinstance(item, dict):
@@ -982,14 +1009,17 @@ class SpotifyMusic:
                 break
         title = _text(union.get("name"))
         artist = _profile(union)
+        year = _year((union.get("date") or {}).get("isoString") if isinstance(union.get("date"), dict) else "")
         cover = _cover((union.get("coverArt") or {}).get("sources") if isinstance(union.get("coverArt"), dict) else None)
         if not cover:
             cover = next((t["cover"] for t in tracks if t["cover"]), "")
-        meta = union.get("tracks") if isinstance(union.get("tracks"), dict) else {}
+        for row in tracks:   # an album's songs do not name the album
+            row["album"], row["year"] = row["album"] or title, row["year"] or year
+            row["cover"], row["artist"] = row["cover"] or cover, row["artist"] or artist
+        meta = _songs_part(union)
         total = meta.get("totalCount") if isinstance(meta.get("totalCount"), int) else None
         return {"service": "spotify", "kind": "album", "id": ident, "title": title or "Album",
-                "artist": artist, "year": _year((union.get("date") or {}).get("isoString")
-                                                if isinstance(union.get("date"), dict) else ""),
+                "artist": artist, "year": year,
                 "label": "Album", "cover": cover, "tracks": tracks[:LIMIT], "groups": [],
                 "info": f"{total} {'song' if total == 1 else 'songs'}" if isinstance(total, int) else ""}
 
