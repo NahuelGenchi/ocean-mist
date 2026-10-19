@@ -440,7 +440,8 @@ async function play(cmd) {
       if (before) song.endedBase = before.ended;   // the ends of earlier songs do not count
       try {   // from here on what is asked for goes to the song's document, which this play makes its own
         song.placed = true; song.volume = volume;
-        result = await inPageFor(LOADING_WITHIN, P.play, ids[0], volume, serial, song.paused, again ? 12000 : 20000);
+        // a song that starts makes its element about a second after the click (0.9 to 1.3 s, live): 5 s without one is a stall
+        result = await inPageFor(LOADING_WITHIN, P.play, ids[0], volume, serial, song.paused, again ? 5000 : 20000);
       } catch (e) {
         result = { ok: false, code: e instanceof Late ? 'TIMEOUT' : 'PAGE_ERROR' };
         if (e instanceof Late) inPage(P.stop).catch(() => null);   // it may still start by itself later, and must not
