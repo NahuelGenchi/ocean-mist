@@ -5,6 +5,8 @@
 #
 #   OCEAN_MIST_VERSION=0.2.0 packaging/build-deb.sh     a release build with exactly that version
 #   OCEAN_MIST_KEEP_WORK=1   packaging/build-deb.sh     keep the folder the package is assembled in
+#   OCEAN_MIST_APPARMOR_ROOT=DIR packaging/build-deb.sh  also parse the AppArmor profiles with the AppArmor unpacked
+#                                                        in DIR (dpkg-deb -x of an older release's apparmor package)
 #
 # It needs git and dpkg-deb (dpkg-deb comes with every Debian-based system; git is one "apt install git" away). It
 # installs nothing and needs no root.
@@ -28,7 +30,7 @@ set -euo pipefail
 
 fail() { echo "build-deb.sh: $*" >&2; exit 1; }
 
-for tool in git dpkg-deb tar gzip md5sum sha256sum cut tr awk grep find sort sed date install mktemp cp chmod touch wc python3; do
+for tool in git dpkg-deb tar gzip md5sum sha256sum cut tr awk grep find sort sed date install mktemp cp chmod touch wc realpath python3; do
   command -v "$tool" >/dev/null 2>&1 || fail "needs $tool"
 done
 
@@ -131,12 +133,53 @@ for script in "$pkg/DEBIAN/postinst" "$pkg/DEBIAN/prerm" "$pkg/usr/bin/ocean-mis
   sh -n "$script" || fail "$script does not parse"
 done
 bash -n "$lib/engine/allow-sandbox.sh" || fail "engine/allow-sandbox.sh does not parse"
+
+# The engine's two AppArmor profiles: the package's, and the one engine/allow-sandbox.sh writes for an engine file
+# the package's does not name (printed here for a stand-in engine folder, since the script checks the file it is given).
+engine_check="$(realpath -e -- "$work")/engine-check/electron"
+mkdir -p "$engine_check"
+touch "$engine_check/libffmpeg.so"
+install -m 755 /dev/null "$engine_check/electron"
+bash "$lib/engine/allow-sandbox.sh" --print "$engine_check/electron" > "$work/step-profile" \
+  || fail "engine/allow-sandbox.sh --print wrote no profile: $(cat "$work/step-profile")"
+profiles=("$pkg/etc/apparmor.d/ocean-mist-engine" "$work/step-profile")
+names=("the engine's profile" "the profile engine/allow-sandbox.sh writes")
+# AppArmor 5.0 declares some variables by itself (@{exec_path}, @{attach_path}). 4.0, the oldest AppArmor the package
+# allows, does not, and refuses a profile that uses one (issue #38), while the parser of the machine that builds may
+# accept it. So the profiles use no variable but @{HOME}, which 4.0's tunables declare.
+for i in "${!profiles[@]}"; do
+  extra="$(grep -oE '@\{[^}]*\}' "${profiles[$i]}" | sort -u | grep -vxF '@{HOME}' | tr '\n' ' ' || true)"
+  [ -z "$extra" ] || fail "${names[$i]} uses ${extra% }, which AppArmor 4.0 does not declare"
+done
 if ! command -v apparmor_parser >/dev/null 2>&1; then
-  echo "build-deb.sh: apparmor_parser not found, the profile was not parsed" >&2
+  echo "build-deb.sh: apparmor_parser not found, the profiles were not parsed" >&2
 elif [ ! -e /etc/apparmor.d/abi/4.0 ]; then
-  echo "build-deb.sh: this system's AppArmor is older than 4.0 (no abi/4.0), the profile was not parsed" >&2
+  echo "build-deb.sh: this system's AppArmor is older than 4.0 (no abi/4.0), the profiles were not parsed" >&2
 else
-  apparmor_parser -Q -T -K "$pkg/etc/apparmor.d/ocean-mist-engine" || fail "AppArmor does not accept the engine's profile"
+  for i in "${!profiles[@]}"; do
+    apparmor_parser -Q -T -K "${profiles[$i]}" || fail "AppArmor does not accept ${names[$i]}"
+  done
+fi
+# and with an older AppArmor, unpacked from its package into a folder (dpkg-deb -x, never installed)
+if [ -n "${OCEAN_MIST_APPARMOR_ROOT:-}" ]; then
+  old="$(cd -- "$OCEAN_MIST_APPARMOR_ROOT" 2>/dev/null && pwd -P)" || fail "OCEAN_MIST_APPARMOR_ROOT is not a folder"
+  old_parser=""
+  for candidate in "$old/usr/sbin/apparmor_parser" "$old/sbin/apparmor_parser"; do
+    if [ -x "$candidate" ]; then old_parser="$candidate"; break; fi
+  done
+  [ -n "$old_parser" ] || fail "no apparmor_parser in $old"
+  [ -d "$old/etc/apparmor.d/abi" ] || fail "no etc/apparmor.d/abi in $old"
+  old_version="$("$old_parser" --version | head -1)"
+  old_options=(--base="$old/etc/apparmor.d" -Q -T -K)
+  if [ -f "$old/etc/apparmor/parser.conf" ]; then old_options=(--config-file="$old/etc/apparmor/parser.conf" "${old_options[@]}"); fi
+  # on that system the script would name the newest abi it has, as it does on this one
+  old_abi="$(ls "$old/etc/apparmor.d/abi" | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+  sed "s|^abi <abi/[^>]*>,\$|abi <abi/${old_abi:-4.0}>,|" "$work/step-profile" > "$work/step-profile-old"
+  old_profiles=("$pkg/etc/apparmor.d/ocean-mist-engine" "$work/step-profile-old")
+  for i in "${!old_profiles[@]}"; do
+    "$old_parser" "${old_options[@]}" "${old_profiles[$i]}" || fail "$old_version does not accept ${names[$i]}"
+  done
+  echo "build-deb.sh: both profiles parse with $old_version" >&2
 fi
 if command -v desktop-file-validate >/dev/null 2>&1; then
   desktop-file-validate "$pkg/usr/share/applications/io.github.nahuelgenchi.OceanMist.desktop" || fail "the menu entry is not valid"
