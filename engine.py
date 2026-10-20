@@ -86,6 +86,7 @@ ENV_KEEP = ("HOME", "PATH", "USER", "LOGNAME", "LANG", "LANGUAGE", "XDG_RUNTIME_
             "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "PULSE_SERVER", "PULSE_COOKIE", "PULSE_RUNTIME_PATH",
             "http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 SAME_SITE = {0: "no_restriction", 1: "lax", 2: "strict"}   # Firefox's number, as Electron names it
+LEVELS = re.compile(r"[A-Za-z0-9+/]{512}")   # a helper's levels line: 384 bytes, as base64
 
 # what the page is told, per kind of failure
 WORDS = {
@@ -866,6 +867,11 @@ class Engine:
                 self.emit("engine", phase="error", serial=song["serial"], code=code, message=self._words()[code])
             elif name == "fail":
                 self.fail = event.get("code") if event.get("code") in self._words() else "crash"
+            elif name == "levels" and song and event.get("serial") == song["serial"] and song["phase"] == "playing":
+                # the spectrum of what plays, for the visualizations: 384 bands, a byte each, as base64
+                bands = event.get("b")
+                if isinstance(bands, str) and LEVELS.fullmatch(bands):
+                    self.emit("levels", serial=song["serial"], b=bands)
 
     def _wait(self, proc, reader, drain):
         proc.wait()

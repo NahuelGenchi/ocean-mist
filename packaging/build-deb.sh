@@ -122,7 +122,7 @@ conffiles="$(wc -l < "$pkg/DEBIAN/conffiles")"
 grep -qvE '^[0-9a-f]{32}  [^ ]' "$pkg/DEBIAN/md5sums" && fail "a checksum is missing from the checksum list"
 [ -z "$(find "$pkg" -perm /7000 -print -quit)" ] || fail "a file has a set-user-id, set-group-id or sticky bit"
 [ -z "$(find "$pkg" \( -name __pycache__ -o -name '*.pyc' \) -print -quit)" ] || fail "compiled Python files got in"
-for file in player.py ui/index.html engine/helper/main.js engine/helper/spotify-preload.js engine/allow-sandbox.sh; do
+for file in player.py ui/index.html engine/helper/main.js engine/helper/spotify-preload.js engine/helper/listen.html engine/helper/listen.js engine/helper/listen-preload.js engine/allow-sandbox.sh; do
   [ -f "$lib/$file" ] || fail "$file is missing"
 done
 [ -x "$lib/engine/allow-sandbox.sh" ] || fail "engine/allow-sandbox.sh is not executable"

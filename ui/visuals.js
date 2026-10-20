@@ -8,6 +8,11 @@ window.Visuals = (function () {
   let running = false, raf = 0, last = 0, clock = 0, index = 0;
   let randomPick = 0, randomUntil = 0, bassAvg = 0;
   const peaks = [];
+  // the playback engine's levels, for an Apple Music or Spotify song (whose sound never reaches the page): the low
+  // bands of the same spectrum the analyser gives, about 30 times a second, and no wave
+  const LIVE_FOR = 400;   // ms a reading counts for
+  let outside = null, outsideAt = -1e9, wasLive = false, onLive = null;
+  const isLive = () => performance.now() - outsideAt < LIVE_FOR;
 
   function hsl(h, s, l, a) { return `hsla(${((h % 360) + 360) % 360},${s}%,${l}%,${a === undefined ? 1 : a})`; }
 
@@ -170,8 +175,31 @@ window.Visuals = (function () {
     peaks.length = 0;
   }
 
+  // a wave made of the engine's bands: sixteen of them, each at its own pitch and level, as the wave the analyser
+  // would have shown is made of them too
+  function waveOfBands() {
+    const parts = [];
+    let total = 0;
+    for (let k = 0; k < 16; k++) {
+      const lo = Math.floor(Math.pow(383, k / 16)), hi = Math.max(lo + 1, Math.floor(Math.pow(383, (k + 1) / 16)));
+      let v = 0; for (let j = lo; j < hi; j++) v = Math.max(v, freq[j]);
+      const amp = Math.pow(v / 255, 3);   // bytes are decibels: back to something like an amplitude
+      parts.push([amp, (TAU * (lo + hi)) / 2 / wave.length, clock * (3 + k * 1.7)]);
+      total += amp;
+    }
+    const scale = 118 / Math.max(1, total);
+    for (let i = 0; i < wave.length; i++) {
+      let s = 0; for (const [amp, step, phase] of parts) s += amp * Math.sin(i * step + phase);
+      wave[i] = Math.max(0, Math.min(255, Math.round(128 + s * scale)));
+    }
+  }
+
   function sample() {
-    if (analyser) {
+    if (isLive()) {
+      freq.fill(0);
+      freq.set(outside.subarray(0, Math.min(outside.length, freq.length)));
+      waveOfBands();
+    } else if (analyser) {
       analyser.getByteFrequencyData(freq);
       analyser.getByteTimeDomainData(wave);
     }
@@ -189,6 +217,8 @@ window.Visuals = (function () {
 
   function frame(now) {
     raf = requestAnimationFrame(frame);
+    const live = isLive();
+    if (live !== wasLive) { wasLive = live; if (onLive) onLive(live); }
     const dt = Math.min(0.1, (now - last) / 1000 || 0); last = now;
     if (!running) return;
     clock += dt;
@@ -210,6 +240,18 @@ window.Visuals = (function () {
       buffer = document.createElement('canvas'); bctx = buffer.getContext('2d');
       resize(); raf = requestAnimationFrame(frame);
     },
+    // the engine's levels (base64 of a byte a band), and who wants to know when they come and when they stop
+    feed(levels) {
+      try {
+        const raw = atob(String(levels));
+        if (!outside || outside.length !== raw.length) outside = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) outside[i] = raw.charCodeAt(i);
+        outsideAt = performance.now();
+      } catch (e) { /* not levels: the last ones run out */ }
+    },
+    get live() { return isLive(); },
+    get since() { return performance.now() - outsideAt; },
+    onLive(fn) { onLive = fn; },
     setAnalyser(node) {
       analyser = node;
       if (node) { freq = new Uint8Array(node.frequencyBinCount); wave = new Uint8Array(node.fftSize); }
