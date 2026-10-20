@@ -1,14 +1,15 @@
 // Premium Services: YouTube Music inside the player. The host (ytmusic.py)
 // searches and opens albums, artists and playlists; their songs go into the
 // YouTube Music list, a Now Playing list of its own beside My Music, and play
-// like files. That list, like what is searched and opened here, is kept in
-// memory only. Signed in through Firefox (firefox.py), the Library shows your
-// playlists and Liked music, and songs can be liked and put in your playlists.
-// Apple Music and Spotify have branches of the tree too: the hosts (apple.py,
-// spotify.py) read your libraries there, signed in through Firefox as well,
-// and their songs join the same list. Their audio is protected, so the
-// playback engine (engine.py) plays it: its page here, under both branches,
-// installs it and says what it needs.
+// like files. The streaming lists, like what is searched and opened here, are
+// kept in memory only. Signed in through Firefox (firefox.py), the Library
+// shows your playlists and Liked music, and songs can be liked and put in your
+// playlists. Apple Music and Spotify have branches of the tree too: the hosts
+// (apple.py, spotify.py) read your libraries there, signed in through Firefox
+// as well, and their songs go into lists of their own, Apple Music's and
+// Spotify's. Their audio is protected, so the playback engine (engine.py)
+// plays it: its page here, under both branches, installs it and says what it
+// needs.
 (() => {
   const { $, state, api, on, onPlay, esc, clock, menu, base, sentence } = Mist;
   const SEARCHES = [['all', 'Top results'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']];
@@ -20,7 +21,7 @@
   const yt = {
     words: '',                // what was searched for
     kind: 'songs',            // the search the box runs
-    // what the table shows: the YouTube Music list ('now'), a search, a page
+    // what the table shows: the streaming list in view ('now'), a search, a page
     // ('album:ID', or 'mine:ID' for one of your playlists), a saved playlist
     // ('list', its path), your library ('account') or Apple Music's ('apple', a part of it)
     node: { kind: 'search', value: 'songs' },
@@ -68,7 +69,7 @@
     duration: item.duration, cover: item.cover, artist_id: item.artist_id, album_id: item.album_id });
   const songKey = (item) => (item.apple ? 'apple:' + item.apple : item.spotify ? 'spotify:' + item.spotify : item.video);   // the host's name for it, and its row's mark
   const pictureUrl = (url) => base + (APPLE_PICTURES.test(url) ? 'apple/' : SPOTIFY_PICTURES.test(url) ? 'spotify/' : 'yt/') + 'picture?u=' + encodeURIComponent(url);
-  // a song of the YouTube Music list or of a saved playlist, as a row like a search result's
+  // a song of a streaming list or of a saved playlist, as a row like a search result's
   const asItem = (t) => Object.assign(song(t), { kind: 'song', track: t.id });
   const savedName = (path) => (state.playlists.find((p) => p.path === path) || {}).name || '';
   const playing = () => { const t = Mist.track(state.cur); return t && songKey(t); };
@@ -251,7 +252,7 @@
       : node.kind === 'account' ? (signedIn() ? yt.library : null)
       : node.kind === 'apple' ? (appleReady() && node.value !== 'sign-in' && node.value !== 'engine' ? ap.lists[node.value] : null)
       : node.kind === 'spotify' ? (spotifyReady() && node.value !== 'sign-in' ? sp.lists[node.value] : null)
-      : { items: state.lists.youtube.map(asItem) };
+      : { items: state.lists[Mist.streamList()].map(asItem) };
     const rows = [], found = yt.found;
     if (found && !found.loading && !found.error) {
       if (node.kind !== 'page') for (const item of found.items) rows.push({ item });
@@ -293,7 +294,7 @@
       if (found.more != null) return `No ${what} were found in the first part of your Spotify library. Show more looks further.`;
       return `There are no ${what} in your Spotify library.`;
     }
-    if (node.kind === 'now') return 'Nothing is in the YouTube Music list. The songs you play or add here go into it.';
+    if (node.kind === 'now') return `Nothing is in the ${Mist.listName(Mist.streamList())} list. The songs you play or add here go into their service's list.`;
     if (node.kind === 'list') return 'This playlist has no songs that can be found.';
     if (node.kind === 'account') return 'There are no playlists in your library yet.';
     return node.kind === 'search' ? `YouTube Music found nothing for “${esc(yt.words)}”.` : 'There is nothing to play here.';
@@ -433,7 +434,7 @@
     }
     rows.push({ depth: 0, label: 'My Playlists', fold: 'lists' });
     if (yt.open.lists) {
-      const saved = state.playlists.filter((p) => p.list === 'youtube');
+      const saved = state.playlists.filter((p) => p.list !== 'local');   // the streaming services' saved playlists
       for (const p of saved) rows.push({ depth: 1, label: p.name, node: { kind: 'list', value: p.path } });
       if (!saved.length) rows.push({ depth: 1, label: '(none saved yet)', dim: true });
     }
@@ -480,7 +481,7 @@
   });
 
   // ---- playing ----
-  // the songs the table shows become the YouTube Music list, from one of them on
+  // the songs the table shows become their service's list, from one of them on
   function playRows(item) {
     const songs = yt.rows.map((r) => r.item).filter(playable);
     if (!songs.length) return;
