@@ -73,7 +73,7 @@ function pageHookSpotify() {
   const finite = (n) => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : 0);
   const asked = () => om.serial > 0 && om.done !== om.serial;
   const over = (el) => {   // the song Ocean Mist asked for is over: say so, and let nothing go on after it
-    if (om.done === om.serial) return;
+    if (!asked()) return;   // no song is asked for (the page goes to another's), or it is over already
     om.done = om.serial; om.ended += 1;
     try { if (!el.paused) el.pause(); } catch (e) { /* it stopped by itself */ }
   };

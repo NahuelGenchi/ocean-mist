@@ -244,6 +244,29 @@ function pageAccountSpotify(standIn) {
   return JSON.stringify({ hooked: true, product: String(product || '').slice(0, 40) });
 }
 
+// goes to another song's page inside the page that is open, as a link of Spotify's own does (no new document, so
+// nothing has to start up again): the song that plays stops first, and the page is there once its address and title
+// are the new song's and its Play button is a new one (the old ones are marked, so that none of them is clicked).
+// 'stuck' when that does not come in time, or when the song's page is the one that is open already (its button
+// would pause it): the helper then opens the song's page as a document of its own
+async function pageMoveSpotify(path) {
+  const om = window.__om;
+  if (!om || location.pathname === path) return 'stuck';
+  om.serial = -1; om.song = null;   // what the element of the song it leaves does from here on is not a song's
+  for (const el of om.seen) { try { if (!el.muted && !el.paused) el.pause(); } catch (e) { /* not playing */ } }
+  const before = document.title;
+  for (const b of document.querySelectorAll('[data-testid="play-button"]')) b.setAttribute('data-om-old', '');
+  history.pushState({}, '', path);
+  window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+  const until = Date.now() + 3000;
+  while (Date.now() < until) {
+    if (location.pathname === path && document.title !== before
+        && document.querySelector('[data-testid="track-page"] [data-testid="action-bar-row"] [data-testid="play-button"]:not([data-om-old])')) return 'moved';
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return 'stuck';
+}
+
 // is the preload's hook in this document?
 function pageHookSpotify() { return window.__om ? 'hooked' : 'missing'; }
 
@@ -258,12 +281,13 @@ async function pagePlaySpotify(id, volume, serial, paused, within) {
   om.serial = serial; om.error = ''; om.pauseFor = paused ? serial : null; om.outside = false; om.song = null; om.done = 0; om.length = 0;
   const quiet = () => { for (const el of om.seen) { try { if (!el.muted && !el.paused) el.pause(); } catch (e) { /* gone */ } } };
   const failed = (code) => { om.error = code; quiet(); return JSON.stringify({ ok: false, code }); };
-  const until = Date.now() + 15000;
+  const until = Date.now() + 15000, others = Date.now() + 4000;   // the top bar's, where the song's own does not come
   let button = null;
   while (Date.now() < until) {
     if (document.querySelector('[data-testid="login-button"]')) return JSON.stringify({ ok: false, code: 'SIGNED_OUT' });
     if (om.serial !== serial) break;
-    button = document.querySelector('[data-testid="play-button"]');
+    button = document.querySelector('[data-testid="track-page"] [data-testid="action-bar-row"] [data-testid="play-button"]:not([data-om-old])')
+      || (Date.now() > others ? document.querySelector('[data-testid="topbar"] [data-testid="play-button"]:not([data-om-old])') : null);   // the song's own (the top bar's can still be the page's before), not one of a page it left
     if (button) break;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -350,7 +374,7 @@ const inPage = (fn, ...args) => inPageFor(PAGE_WITHIN, fn, ...args);
 // document of its own, which the helper goes to before playing from it
 let P = null;
 const pageSet = () => service === 'spotify'
-  ? { ready: pageReadySpotify, account: pageAccountSpotify, hook: pageHookSpotify, play: pagePlaySpotify, watch: pageWatchSpotify,
+  ? { ready: pageReadySpotify, account: pageAccountSpotify, hook: pageHookSpotify, move: pageMoveSpotify, play: pagePlaySpotify, watch: pageWatchSpotify,
       pause: pagePauseSpotify, resume: pageResumeSpotify, seek: pageSeekSpotify, volume: pageVolumeSpotify, stop: pageStopSpotify, go: true }
   : { ready: pageReady, account: pageAccount, hook: pageHook, play: pagePlay, watch: pageWatch,
       pause: pagePause, resume: pageResume, seek: pageSeek, volume: pageVolume, stop: pageStop, go: false };
@@ -386,6 +410,8 @@ let volume = 0.5, muted = false;
 let unsigned = 0;                   // polls in a row that said the sign-in is gone
 let unanswered = 0;                 // looks in a row that the page did not answer in time
 let watching = false;
+let moving = null;                  // Spotify: the page's move to a song's page, while it is under way
+let clicked = false;                // Spotify: a song was asked of this page and has not started (it may yet)
 
 const reportState = (state, extra) => {
   cur.phase = state; cur.said = Date.now();
@@ -418,15 +444,26 @@ async function play(cmd) {
   if (!ids.length) { problem(serial, 'NO_SONG'); return; }
   let result;
   if (P.go) {
-    // Spotify: the song plays from its own page; go there (the preload puts the hook in). Now and then Spotify's
-    // page takes the click and never makes the song's element (its buttons say it plays, and nothing loads), and
-    // now and then the page does not open: the song's page is then opened once more, and asked again
+    // Spotify: the song plays from its own page. The first try goes there inside the page that is open, which
+    // starts the song in about a second; where that does not work, the song's page is opened as a document of its
+    // own (the preload puts the hook in). Now and then Spotify's page takes the click and never makes the song's
+    // element (its buttons say it plays, and nothing loads), and now and then the page does not open: the song's
+    // page is then opened once more, as a document of its own, and asked again
     for (let attempt = 1; ; attempt++) {
       const again = attempt < 2;
       song.placed = false;
       let hooked;
       try {
-        await open(`${site}track/${ids[0]}`);
+        // not while an earlier song may yet start in this page, or its page is still being drawn: Spotify can
+        // start that song after this one's click (live, at 0.3 s apart). Its own document leaves nothing of it behind
+        let moved = 'stuck';
+        if (again && !clicked && !moving && page.getURL().startsWith(site)) {
+          const going = moving = inPageFor(5000, P.move, `/track/${ids[0]}`).catch(() => 'stuck');
+          moved = await going;
+          if (moving === going) moving = null;
+        }
+        if (cur !== song) return;
+        if (moved !== 'moved') { await open(`${site}track/${ids[0]}`); clicked = false; }
         hooked = await inPage(P.hook);
       } catch (e) {
         if (cur !== song) return;
@@ -441,7 +478,9 @@ async function play(cmd) {
       try {   // from here on what is asked for goes to the song's document, which this play makes its own
         song.placed = true; song.volume = volume;
         // a song that starts makes its element about a second after the click (0.9 to 1.3 s, live): 5 s without one is a stall
+        clicked = true;
         result = await inPageFor(LOADING_WITHIN, P.play, ids[0], volume, serial, song.paused, again ? 5000 : 20000);
+        if (result.ok) clicked = false;
       } catch (e) {
         result = { ok: false, code: e instanceof Late ? 'TIMEOUT' : 'PAGE_ERROR' };
         if (e instanceof Late) inPage(P.stop).catch(() => null);   // it may still start by itself later, and must not
