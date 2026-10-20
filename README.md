@@ -148,10 +148,10 @@ Ocean Mist has no build step and nothing to compile: it is a handful of Python f
 
 ### As a package (Ubuntu 24.04 or later, Debian 13 or later)
 
-Download `ocean-mist_0.1.1_all.deb` from the [latest release](https://github.com/NahuelGenchi/ocean-mist/releases/latest) (its SHA-256 is in the release notes). Open that file with your software installer, or install it from a terminal in the folder you saved it to (apt brings the libraries Ocean Mist needs):
+Download `ocean-mist_0.2.0_all.deb` from the [latest release](https://github.com/NahuelGenchi/ocean-mist/releases/latest) (its SHA-256 is in the release notes). Open that file with your software installer, or install it from a terminal in the folder you saved it to (apt brings the libraries Ocean Mist needs):
 
 ```sh
-sudo apt install ./ocean-mist_0.1.1_all.deb
+sudo apt install ./ocean-mist_0.2.0_all.deb
 ```
 
 To install a newer commit than the release, build the package from a copy of the repository instead. That needs `git` (`sudo apt install git` if you do not have it) and `dpkg-deb` (every Debian-based system has it), and no administrator rights:
@@ -411,8 +411,8 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 - **Gapless playback** between songs is not built yet.
 - **YouTube Music** signs in through Firefox only. Library albums, artists, songs and uploads are not there yet, playlists cannot be made or renamed, and live streams do not play.
 - **Apple Music** is read-only. Its songs play in the playback engine, which is a 117 MB download and, on Ubuntu 24.04 and later, needs a permission for its sandbox (the package installs it; without the package it asks once, with administrator rights); the equalizer cannot work on them (the visualizations do), there is a gap of a few seconds between songs, and Apple limits how many devices stream at once. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
-- **Spotify** is read-only, like Apple Music: Liked Songs, playlists, albums and artists from your library, no search of all of Spotify, and its songs need Spotify Premium; they play in the playback engine, with the same limits as Apple Music's (the download, the sandbox step, no equalizer), the first song takes about five seconds to start and the others a second or two, and Spotify plays one stream per account. It signs in through Firefox only. Other streaming services are not started.
-- **Releases**: the Debian package is published with each release on GitHub (0.1.0 was the first; 0.1.1 fixes its AppArmor profile for Ubuntu 24.04 and Debian 13) and checked on Ubuntu 26.04 only. There is no apt repository, Flatpak or Snap yet, so a newer release is installed the same way, by downloading its package.
+- **Spotify** is read-only, like Apple Music: Liked Songs, playlists, albums and artists from your library, no search of all of Spotify, and its songs need Spotify Premium; they play in the playback engine, with the same limits as Apple Music's (the download, the sandbox step, no equalizer), the first song takes about five seconds to start and the others a second or two, and Spotify plays one stream per account. Now and then Spotify's own page goes on to another track about a second and a half into a song, which the player takes for the song's end and moves on (seen only after hundreds of test plays on one account, and not solved). It signs in through Firefox only. Other streaming services are not started.
+- **Releases**: the Debian package is published with each release on GitHub (0.1.0 was the first; 0.1.1 fixes its AppArmor profile for Ubuntu 24.04 and Debian 13; 0.2.0 adds Spotify) and checked on Ubuntu 26.04 only. There is no apt repository, Flatpak or Snap yet, so a newer release is installed the same way, by downloading its package.
 
 | Milestone | Outcome |
 | :--- | :--- |
