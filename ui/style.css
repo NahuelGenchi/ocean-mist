@@ -56,6 +56,7 @@ body.tinted #yt-none { filter: hue-rotate(calc(var(--hue) * -1)); }
 }
 #np-select:hover { background: linear-gradient(#fbfdff, #f1f5fb 50%, #e4eaf5); }
 .np-ico { position: absolute; left: 4px; top: 3.5px; width: 13px; height: 13px; }
+#np-label { display: inline-block; max-width: 111px; vertical-align: top; overflow: hidden; text-overflow: ellipsis; }   /* a long name ends before the arrow */
 .np-chev { position: absolute; left: 136px; top: 6.5px; width: 10px; height: 7px; }
 .wbtn { position: absolute; top: 10px; width: 16px; height: 16px; color: #33416f; border-radius: 3px; }
 .wbtn svg { width: 12px; height: 12px; }
