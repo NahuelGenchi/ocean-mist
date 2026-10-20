@@ -975,6 +975,8 @@
   $('shuffle').addEventListener('click', toggleShuffle);
   $('repeat').addEventListener('click', cycleRepeat);
   $('np-select').addEventListener('click', (e) => listMenu(e.currentTarget));
+  // a name cut short with "…" shows in full under the pointer
+  $('np-label').addEventListener('mouseenter', (e) => { const l = e.currentTarget; l.title = l.scrollWidth > l.clientWidth ? l.textContent : ''; });
   $('list-menu').addEventListener('click', (e) => mainMenu(e.currentTarget, true));
   $('shade').addEventListener('click', (e) => mainMenu(e.currentTarget));
   $('tint').addEventListener('click', (e) => hueMenu(e.currentTarget));
