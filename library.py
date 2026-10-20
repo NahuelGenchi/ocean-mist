@@ -1,16 +1,17 @@
-"""What the player knows: the two Now Playing lists, the media library, saved
+"""What the player knows: the Now Playing lists, the media library, saved
 playlists, radio stations and the settings, kept in state.json; the files
 themselves are only ever read.
 
-My Music holds files. YouTube Music holds YouTube Music songs, whose "path" is
-their address on music.youtube.com, the songs of Apple Music (apple.py): their
-"path" is an Apple Music address, and "video" stays empty, as the playback
-engine (engine.py) plays them from Apple, by their "apple" id (and "apple_lib",
-the id in the user's own library, when that differs), and the songs of Spotify
-(spotify.py): their "path" is a Spotify address, and "video" stays empty too,
-as the engine plays them from Spotify by their "spotify" id.
-That list lives in memory only: nothing from streaming is written to disk. So
-it starts empty each time, a song in it is never the resume point, and its
+My Music holds files. Each streaming service has a list of its own: YouTube
+Music's holds its songs, whose "path" is their address on music.youtube.com;
+Apple Music's holds the songs of Apple Music (apple.py): their "path" is an
+Apple Music address, and "video" stays empty, as the playback engine
+(engine.py) plays them from Apple, by their "apple" id (and "apple_lib", the id
+in the user's own library, when that differs); Spotify's holds the songs of
+Spotify (spotify.py): their "path" is a Spotify address, and "video" stays empty
+too, as the engine plays them from Spotify by their "spotify" id.
+Those lists live in memory only: nothing from streaming is written to disk. So
+they start empty each time, a song in them is never the resume point, and their
 covers wait in the runtime folder, which is not on disk, until the player
 closes."""
 import hashlib
@@ -42,7 +43,7 @@ TAG_CACHE = os.path.join(CACHE_DIR, "tags.json")
 # YouTube Music covers, as files for the desktop's media controls; named after
 # the app id, so a test instance never clears the covers of the real player
 STREAM_COVERS = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), APP_ID)
-LISTS = ("local", "youtube")   # the Now Playing lists: My Music, and YouTube Music
+LISTS = ("local", "youtube", "apple", "spotify")   # the Now Playing lists: My Music, and one for each streaming service
 AUDIO_EXTENSIONS = {
     ".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav", ".wma",
 }
@@ -85,8 +86,10 @@ def is_playlist(name):
 
 
 def list_for(track):
-    """The Now Playing list a track belongs in."""
-    return "youtube" if track.get("source") else "local"
+    """The Now Playing list a track belongs in: its service's, or My Music."""
+    if not track.get("source"):
+        return "local"
+    return "apple" if track.get("apple") else ("spotify" if track.get("spotify") else "youtube")
 
 
 def stream_key(track):
@@ -295,7 +298,7 @@ class Library:
     def save(self):
         with self.lock:   # written inside it too, so two saves cannot mix in the file
             data = {"settings": dict(self.settings),
-                    "playlist": [t["path"] for t in self.lists["local"]],   # never the YouTube Music list
+                    "playlist": [t["path"] for t in self.lists["local"]],   # never a streaming service's list
                     "list": self.names["local"], "stations": list(self.stations),
                     "playlists": list(self._remembered), "resume": self.resume}
             _write_json(STATE_FILE, data)
@@ -448,14 +451,12 @@ class Library:
         return track
 
     def add_streams(self, items, replace=False, name="", named=None):
-        """Put YouTube Music songs, and Apple Music and Spotify ones, in their
+        """Put YouTube Music, Apple Music and Spotify songs in their service's
         list: after what is there, or as the whole list (named `name`). Returns
         their tracks.
         `named`: only while the list is still the one with that name, so that a job that fills
         a list in the background adds nothing once something else was chosen."""
         with self.lock:
-            if named is not None and self.names["youtube"] != str(named)[:200]:
-                return []
             chosen, listed = [], set()
             for item in items[:ytmusic.PLAYLIST_LIMIT]:
                 track = self._stream(item) if isinstance(item, dict) else None
@@ -464,12 +465,18 @@ class Library:
                     chosen.append(track)
             if not chosen:
                 return []
-            if replace:
-                self.lists["youtube"], self.names["youtube"] = chosen, str(name or "")[:200]
-            else:
-                listed = {t["id"] for t in self.lists["youtube"]}
-                self.lists["youtube"] += [t for t in chosen if t["id"] not in listed]
-        self._changed("youtube")
+            if named is not None and self.names[list_for(chosen[0])] != str(named)[:200]:
+                return []
+            parts = {}   # a request holds one service's songs, but each goes to its own list
+            for track in chosen:
+                parts.setdefault(list_for(track), []).append(track)
+            for which, part in parts.items():
+                if replace:
+                    self.lists[which], self.names[which] = part, str(name or "")[:200]
+                else:
+                    listed = {t["id"] for t in self.lists[which]}
+                    self.lists[which] += [t for t in part if t["id"] not in listed]
+        self._changed(*parts)
         return chosen
 
     def stream_found(self, video, details):
@@ -498,14 +505,14 @@ class Library:
             return self.by_id.get(track_id)
 
     def list_of(self, track_id):
-        """The Now Playing list a track is in ("local" or "youtube"), or None."""
+        """The Now Playing list a track is in (one of LISTS), or None."""
         with self.lock:
             return next((which for which in LISTS
                          if any(t["id"] == track_id for t in self.lists[which])), None)
 
     def _changed(self, *which):
         """After a change to these lists: My Music is written down (the
-        YouTube Music list never is), and the page is told."""
+        streaming services' lists never are), and the page is told."""
         if "local" in which:
             self.save()
         self.emit("playlist")
@@ -854,9 +861,10 @@ class Library:
         return sorted(found, key=lambda item: _natural(item["name"]))
 
     def _playlist_list(self, path):
-        """The list a saved playlist belongs with: YouTube Music when it holds
-        only YouTube Music songs, My Music otherwise (read again when the
-        file changes)."""
+        """The list a saved playlist belongs with: a streaming service's when it
+        holds only streamed songs (the first one's service, should an earlier
+        version have mixed them), My Music otherwise (read again when the file
+        changes)."""
         try:
             info = os.stat(path)
         except OSError:
@@ -867,9 +875,14 @@ class Library:
         if known and known[0] == stamp:
             return known[1]
         entries = read_playlist(path)
-        which = "youtube" if entries and all(
-            "://" in entry and (ytmusic.video_id(entry) or apple.song_id(entry) or spotify.song_id(entry))
-            for entry in entries) else "local"
+        def service(entry):
+            if "://" not in entry:
+                return None
+            if ytmusic.video_id(entry):
+                return "youtube"
+            return "apple" if apple.song_id(entry) else ("spotify" if spotify.song_id(entry) else None)
+        services = [service(entry) for entry in entries]
+        which = services[0] if services and all(services) else "local"
         with self.lock:
             self._playlist_lists[path] = (stamp, which)
         return which
@@ -911,9 +924,9 @@ class Library:
         return unique
 
     def open_playlist(self, path):
-        """Load a saved playlist: its files become My Music, its YouTube
-        Music songs the YouTube Music list (a playlist holds one kind, but the
-        previous version could mix them). A playlist that only names a
+        """Load a saved playlist: its files become My Music, its streamed
+        songs their service's list (a playlist holds one kind, but earlier
+        versions could mix them). A playlist that only names a
         stream becomes a radio station. Returns what to play."""
         path = os.path.abspath(path)
         chosen = self.playlist_tracks(path)

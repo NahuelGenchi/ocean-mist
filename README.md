@@ -99,7 +99,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Now Playing list</strong></td>
-    <td>Two lists, one player: My Music for your files and a second list for what you play from Premium Services, which takes its name from the service its songs come from (YouTube Music, Apple Music, Spotify, or a mix), kept apart and switched at the list's top right. Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
+    <td>A list for each source, one player: My Music for your files, and one each for what you play from YouTube Music, Apple Music and Spotify in Premium Services, kept apart and switched at the window's top right (Apple Music and Spotify are offered while you are signed in to them). Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Playlists</strong></td>
@@ -115,11 +115,11 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Apple Music</strong></td>
-    <td>In Premium Services: sign in through Firefox and browse your Apple Music library the way the website shows it: Recently added, Playlists, Albums, Artists and Songs, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. Play puts the songs in the second Now Playing list; on a row of Recently added it puts the whole feed there, in the order shown, starting at the row you chose. Apple's own audio is protected, so the songs play in Apple's own web player, which Ocean Mist runs without a window in a <em>playback engine</em> that you download once, after a licence screen, and that runs only while a song of a service plays. It needs an active Apple Music subscription, which the engine checks, and the equalizer and the visualizations cannot work on Apple's songs. Nothing is changed in your account, and nothing of Apple's is kept on disk (see <em>Signing in to Apple Music</em> below).</td>
+    <td>In Premium Services: sign in through Firefox and browse your Apple Music library the way the website shows it: Recently added, Playlists, Albums, Artists and Songs, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. Play puts the songs in the Apple Music list, a Now Playing list of its own, which the list chooser at the top right offers while you are signed in; on a row of Recently added it puts the whole feed there, in the order shown, starting at the row you chose. Apple's own audio is protected, so the songs play in Apple's own web player, which Ocean Mist runs without a window in a <em>playback engine</em> that you download once, after a licence screen, and that runs only while a song of a service plays. It needs an active Apple Music subscription, which the engine checks, and the equalizer and the visualizations cannot work on Apple's songs. Nothing is changed in your account, and nothing of Apple's is kept on disk (see <em>Signing in to Apple Music</em> below).</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Spotify</strong></td>
-    <td>In Premium Services: sign in through Firefox and browse your Spotify library the way the web player shows it: Liked Songs, Playlists, Albums and Artists, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. Play puts the songs in the second Now Playing list. Spotify's own audio is protected, so the songs play in Spotify's own web player, which the same <em>playback engine</em> as Apple Music runs without a window, only while a song of a service plays. It needs an active Spotify Premium subscription, which the engine checks, and the equalizer and the visualizations cannot work on Spotify's songs. Nothing is changed in your account, and nothing of Spotify's is kept on disk (see <em>Signing in to Spotify</em> below).</td>
+    <td>In Premium Services: sign in through Firefox and browse your Spotify library the way the web player shows it: Liked Songs, Playlists, Albums and Artists, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. Play puts the songs in the Spotify list, a Now Playing list of its own, which the list chooser at the top right offers while you are signed in. Spotify's own audio is protected, so the songs play in Spotify's own web player, which the same <em>playback engine</em> as Apple Music runs without a window, only while a song of a service plays. It needs an active Spotify Premium subscription, which the engine checks, and the equalizer and the visualizations cannot work on Spotify's songs. Nothing is changed in your account, and nothing of Spotify's is kept on disk (see <em>Signing in to Spotify</em> below).</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Formats</strong></td>
@@ -243,7 +243,7 @@ What Ocean Mist reads, and when:
 
 - It reads the sign-in only while you are signed in (or signing in), and only when it asks for something of your account: your library, a playlist of yours, a like, a change to a playlist.
 - It reads it from the cookie file of the Firefox profile you chose, read-only and straight into memory: no copy goes to disk, and the file is never written to. It takes only the YouTube cookies, not those of containers, and lets them go once the request is made. While you sign in, it reads every profile's cookie file this way, to see which ones are signed in. It also reads the profiles' names, to tell them apart.
-- It never asks Google for your name, email address or photo. Your library, likes and playlists stay in memory, like the YouTube Music list. The only thing remembered is which Firefox profile you chose.
+- It never asks Google for your name, email address or photo. Your library, likes and playlists stay in memory, like the streaming services' lists. The only thing remembered is which Firefox profile you chose.
 - Searches, albums, artists, similar songs and the music itself are still asked for anonymously, so they do not show in your YouTube history.
 
 **Sign out**, at the top of Library, only stops Ocean Mist from using the sign-in: Firefox stays signed in. To sign out of YouTube itself, do it in Firefox. If you sign out there, or clear Firefox's cookies, Ocean Mist is signed out too.
@@ -390,7 +390,7 @@ flowchart LR
 | Path | What is in it |
 | :--- | :--- |
 | `player.py` | The host: window, input shape, local server, file dialogs, sizes, notifications |
-| `library.py` | The two Now Playing lists (My Music is saved, YouTube Music, with the service songs in it, stays in memory), the library scan, playlists, stations, settings |
+| `library.py` | The Now Playing lists (My Music is saved; YouTube Music's, Apple Music's and Spotify's stay in memory), the library scan, playlists, stations, settings |
 | `tags.py` | Tag, cover and length reader for six formats, standard library only |
 | `radio.py` | Relays a station to the page and reads its song titles |
 | `ytmusic.py` | YouTube Music: searches, albums, artists, playlists, similar songs and covers, and each song's audio repacked for the page; signed in, your library, likes and playlist changes. Standard library only |

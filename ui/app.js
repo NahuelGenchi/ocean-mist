@@ -8,10 +8,10 @@
   const audio = $('audio');
   const probe = new Audio(); probe.preload = 'metadata';
 
-  const LISTS = { local: 'My Music', youtube: 'YouTube Music' };   // the Now Playing lists (the second holds Apple Music's and Spotify's songs too)
+  const LISTS = { local: 'My Music', youtube: 'YouTube Music', apple: 'Apple Music', spotify: 'Spotify' };   // the Now Playing lists: My Music, and one for each streaming service
   const state = {
-    lists: { local: [], youtube: [] },   // the songs of each, in order
-    names: { local: '', youtube: '' },   // the saved playlist (or page) each came from
+    lists: { local: [], youtube: [], apple: [], spotify: [] },   // the songs of each, in order
+    names: { local: '', youtube: '', apple: '', spotify: '' },   // the saved playlist (or page) each came from
     show: 'local',      // the list the Now Playing pane shows
     settings: { volume: 0.5, muted: false, vis: 0, shuffle: false, repeat: false, hue: 0, zoom: 1 },
     stations: [], playlists: [], folders: [],
@@ -48,7 +48,7 @@
   }
   async function refresh() {
     const data = await (await fetch(base + 'api/state')).json();
-    const known = new Map([...state.lists.local, ...state.lists.youtube].map((t) => [t.id, t]));
+    const known = new Map(Object.values(state.lists).flat().map((t) => [t.id, t]));
     const looks = (t) => (t ? [t.title, t.artist, t.album, t.art].join('\n') : '');
     const before = looks(track(state.cur));
     for (const which of Object.keys(LISTS)) {
@@ -73,19 +73,20 @@
   }
 
   // ---- helpers ----
-  const track = (id) => state.lists.local.find((t) => t.id === id) || state.lists.youtube.find((t) => t.id === id);
+  const track = (id) => { for (const which of Object.keys(LISTS)) { const t = state.lists[which].find((x) => x.id === id); if (t) return t; } return undefined; };
   const station = (id) => state.stations.find((s) => s.id === id);
-  const listOf = (t) => (isStream(t) ? 'youtube' : 'local');   // the list a song belongs in
+  // the list a song belongs in: its service's, or My Music
+  const listOf = (t) => (!isStream(t) ? 'local' : t.apple ? 'apple' : t.spotify ? 'spotify' : 'youtube');
   const shown = () => state.lists[state.show];
   const inView = (id) => shown().find((t) => t.id === id);
-  // what a list is called: the streaming one after the service its songs come from
-  function listName(which) {
-    if (which !== 'youtube') return LISTS[which];
-    const songs = state.lists.youtube;
-    const apple = songs.filter((t) => t.apple).length, spotify = songs.filter((t) => t.spotify).length;
-    // the services its songs come from, and only those (an empty list is YouTube Music's)
-    const names = [apple + spotify < songs.length || !songs.length ? LISTS.youtube : '', apple ? 'Apple Music' : '', spotify ? 'Spotify' : ''].filter(Boolean);
-    return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+  const listName = (which) => LISTS[which];
+  // the lists the chooser offers: Apple Music's and Spotify's while signed in to them, or while theirs has songs or is in view
+  const offered = (which) => !['apple', 'spotify'].includes(which) || !!state.settings[which + '_account'] || state.lists[which].length > 0 || state.show === which;
+  // the streaming list Premium Services shows as Now Playing: the one in view, or else the current song's
+  function streamList() {
+    if (state.show !== 'local') return state.show;
+    const t = track(state.cur);
+    return t && listOf(t) !== 'local' ? listOf(t) : 'youtube';
   }
   const listLabel = () => state.names[state.show] || listName(state.show);
   // the list playback goes through: the current song's, or else the one in view
@@ -521,7 +522,7 @@
 
   // what the host passes on from the keyboard's media keys and the desktop's controls
   function control(action, value) {
-    const loaded = state.cur !== null || state.station !== null || state.lists.local.length > 0 || state.lists.youtube.length > 0;
+    const loaded = state.cur !== null || state.station !== null || Object.values(state.lists).some((l) => l.length > 0);
     if (action === 'playpause') { if (loaded) toggle(); else playSelection(); }   // never the file dialog
     else if (action === 'play') { if (state.mode !== 'playing') { if (loaded) toggle(); else playSelection(); } }
     else if (action === 'pause') { if (state.mode === 'playing') toggle(); }
@@ -588,7 +589,7 @@
     $('empty-hint').hidden = state.cur !== null || state.station !== null || shown().length > 0;
     $('hint-list').textContent = listLabel();
     $('hint-local').hidden = state.show !== 'local';   // files go to My Music only
-    $('hint-youtube').hidden = state.show !== 'youtube';
+    $('hint-youtube').hidden = state.show === 'local';   // a streaming service's list fills from Premium Services
   }
   function setVis(i) {
     state.settings.vis = Visuals.select(i);
@@ -645,7 +646,7 @@
     const total = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     $('total-time').textContent = 'Total Time: ' + clock(total);
     $('np-label').textContent = listLabel();
-    $('np-select').title = `Switch between My Music and ${listName('youtube')}, open music or a saved playlist`;
+    $('np-select').title = 'Switch between My Music and the lists of your streaming services, open music or a saved playlist';
     emptyHint();
     const current = list.querySelector('.cur');
     if (current && render.lastCur !== state.cur) { current.scrollIntoView({ block: 'nearest' }); render.lastCur = state.cur; }
@@ -900,7 +901,7 @@
   function showList(which) { state.show = which; render(); }
   function listMenu(anchor) {
     const rect = anchor.getBoundingClientRect();
-    const lists = Object.keys(LISTS).map((which) => ({ label: listName(which), checked: state.show === which, run: () => showList(which) }));
+    const lists = Object.keys(LISTS).filter(offered).map((which) => ({ label: listName(which), checked: state.show === which, run: () => showList(which) }));
     const saved = state.playlists.filter((p) => p.list === state.show)
       .map((p) => ({ label: p.name, checked: p.name === state.names[state.show], run: () => playPlaylist(p.path) }));
     menu(rect.left, rect.bottom + 1, [...lists, null, ...fileItems(), null,
@@ -1081,7 +1082,7 @@
 
   window.Mist = {
     $, base, audio, state, api, on, fire, onPlay, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream, outside,
-    play, playStation, toggle, stop, step, setVis, applyVolume, cycleRepeat, repeatMode, control,
+    play, playStation, toggle, stop, step, listName, listOf, streamList, setVis, applyVolume, cycleRepeat, repeatMode, control,
     menu, closeMenus, trackMenu, queueNext, queueLast, flash, render, show, layoutChanged, regions, setSleep, setZoom,
     probe() {  // handy for debugging
       const data = new Uint8Array(analyserNode ? analyserNode.frequencyBinCount : 1);
