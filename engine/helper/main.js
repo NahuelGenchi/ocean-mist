@@ -19,12 +19,13 @@
  *      {"cmd":"play","serial":7,"ids":["i.AbC","1234"],"from":0}    the first id that the service accepts plays
  *      {"cmd":"pause"} {"cmd":"resume"} {"cmd":"seek","to":12.5} {"cmd":"stop"} {"cmd":"quit"}
  *      {"cmd":"volume","value":0.3,"muted":false}
- * out  start, widevine, ready, state, problem, denied, fail, selftest
+ * out  start, widevine, ready, state, problem, denied, fail, selftest, and for the visualizations levels (the
+ *      spectrum of what plays, in bands; listen.html reads it) and listen (how the listening goes)
  *
  * What may need updating when a service changes its page is kept together, in "what the page is asked" and,
  * for Spotify, in spotify-preload.js (the hook it puts into Spotify's page before the page's own scripts).
  */
-const { app, BrowserWindow, session, components } = require('electron');
+const { app, BrowserWindow, ipcMain, session, components } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -568,6 +569,7 @@ async function command(msg) {
     } else if (msg.cmd === 'volume') {
       volume = Math.max(0, Math.min(1, Number(msg.value) || 0)); muted = !!msg.muted;
       page.setAudioMuted(muted);
+      if (listener) { listener.webContents.setAudioMuted(muted); listener.webContents.send('listen-volume', volume); }
       if (!waits) await inPage(P.volume, volume);
     } else if (msg.cmd === 'stop') {
       cur = null;
@@ -598,6 +600,47 @@ const summary = (status) => {
   }
   return out;
 };
+
+// ---- the page's sound, for the visualizations ----
+// The listening page (listen.html, a file of the helper's own) captures the sound of the service's page inside
+// Chromium and hands back its spectrum, which goes out in "levels" lines while a song plays. Chromium then plays
+// that sound through the listening page, which is muted with the player. Where the capture cannot start, the
+// service's page plays its sound itself, as it always did, and no levels go out; if the listening page goes away,
+// Chromium gives the sound back to the service's page, at the volume it plays at.
+const LEVEL_BANDS = 384;          // what listen.js hands back each time
+let listener = null;              // the listening page's window
+let listenUntil = 0;              // until when the capture it was asked for may be allowed (once)
+async function listen() {
+  const own = session.fromPartition('ocean-mist-listen');   // in memory only, and nothing of the service's
+  const mine = (contents) => !!listener && contents === listener.webContents;
+  own.setPermissionRequestHandler((contents, permission, callback) => callback(permission === 'media' && mine(contents)));
+  own.setPermissionCheckHandler((contents, permission) => permission === 'media' && mine(contents));
+  const win = listener = new BrowserWindow({
+    show: false, skipTaskbar: true, focusable: false,
+    webPreferences: {
+      session: own, backgroundThrottling: false, contextIsolation: true, nodeIntegration: false, sandbox: true,
+      spellcheck: false, autoplayPolicy: 'no-user-gesture-required', preload: path.join(__dirname, 'listen-preload.js'),
+    },
+  });
+  const sound = win.webContents;
+  sound.setAudioMuted(muted);
+  sound.setWindowOpenHandler(() => ({ action: 'deny' }));
+  sound.on('will-navigate', (event) => event.preventDefault());
+  sound.on('render-process-gone', () => { if (listener === win) listener = null; say('listen', { state: 'gone' }); });
+  await win.loadFile(path.join(__dirname, 'listen.html'));
+  sound.send('listen-volume', volume);
+  listenUntil = Date.now() + 5000;
+  sound.send('listen-source', page.getMediaSourceId(sound));
+}
+ipcMain.on('listen-levels', (event, bands) => {
+  if (!listener || event.sender !== listener.webContents) return;
+  if (!cur || !cur.armed || cur.phase !== 'playing') return;   // only while a song plays
+  const raw = bands instanceof Uint8Array ? Buffer.from(bands) : null;
+  if (raw && raw.length === LEVEL_BANDS) say('levels', { serial: cur.serial, b: raw.toString('base64') });
+});
+ipcMain.on('listen-said', (event, what) => {
+  if (listener && event.sender === listener.webContents) say('listen', { state: String(what).replace(/[^a-z0-9 ]/gi, '').slice(0, 40) });
+});
 
 // ---- the run ----
 async function run() {
@@ -636,6 +679,14 @@ async function run() {
   });
   const denied = new Set();
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
+    // the listening page's capture of this page's sound: Chromium asks it of the captured page's session, from
+    // the listening page's file:// origin. Allowed once, while it is due; the page itself is never given media
+    if (permission === 'media' && contents === page && Date.now() < listenUntil && details
+        && String(details.securityOrigin || '').startsWith('file:///') && Array.isArray(details.mediaTypes) && !details.mediaTypes.length) {
+      listenUntil = 0;
+      callback(true);
+      return;
+    }
     const asked = (details && details.requestingUrl) || contents.getURL();
     if (!PERMITTED.has(permission) && !denied.has(permission)) { denied.add(permission); say('denied', { permission: mask(permission) }); }
     callback(PERMITTED.has(permission) && mayGo(asked));
@@ -715,6 +766,7 @@ async function run() {
     say('ready', { store: /^[a-z]{2}$/.test(account.storefront) ? account.storefront : '' });
   }
 
+  listen().catch((e) => say('listen', { state: 'failed', why: mask(e && e.message) }));
   handle = command;
   while (held.length) command(held.shift());
   setInterval(tick, TICK);

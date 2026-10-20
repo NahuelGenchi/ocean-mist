@@ -79,12 +79,12 @@
   function changed() { apply(); show(); saveSettings(); }
   function show() {
     const gains = values(), open = !!state.settings.eq_open;
-    // Apple's audio is protected: the playback engine plays it, not the player, so these bands never touch it
+    // an Apple Music or Spotify song's audio is protected: the playback engine plays it, not the player, so these bands never touch it
     const apart = state.station === null && Mist.outside(Mist.track(state.cur));
     $('eq').hidden = !open;
     $('stage').classList.toggle('with-eq', open);
     $('eq').classList.toggle('off', !state.settings.eq_on || apart);
-    $('eq').title = apart ? 'The equalizer cannot shape Apple Music songs: their audio is protected' : '';
+    $('eq').title = apart ? 'The equalizer cannot shape Apple Music or Spotify songs: their audio is protected' : '';
     $('eq-on').textContent = state.settings.eq_on ? 'Turn off' : 'Turn on';
     $('eq-preset-name').textContent = state.settings.eq_preset || 'Flat';
     bands.forEach((el, i) => {

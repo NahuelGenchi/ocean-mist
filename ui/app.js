@@ -407,7 +407,8 @@
   // Their audio is protected: it cannot be played in this page, and nothing here can touch it. The
   // playback engine (engine.py) plays it, in a helper that is never shown. This page tells the engine what
   // to do (engine-play, -pause, -resume, -seek, -volume, -stop) and shows what it says back (the "engine"
-  // events): where the song is, how long it is, and when it ends. `ext` is the song it was asked to play:
+  // events): where the song is, how long it is, and when it ends; and, for the visualizations, the levels
+  // of what plays (the "levels" events). `ext` is the song it was asked to play:
   // { t, serial, phase, pos, stamp, dur, started, stalled, want, asked, sought }.
   let extSerial = 0, extTimer = 0, extVolumeTimer = 0;
   const extLevel = () => ({ value: Math.pow(state.settings.volume, 1.6) * fade, muted: !!state.settings.muted });
@@ -500,6 +501,7 @@
       statusTick(true);
     }
     updateTime();
+    levelsCheck();
   }
   function extFailed(e, code, text) {
     if (ext !== e) return;
@@ -563,12 +565,18 @@
     document.title = name ? `${name} - Ocean Mist` : 'Ocean Mist';
     fire('track');
   }
+  // the sound of an Apple Music or Spotify song never reaches the player: the playback engine hands over its
+  // levels while it plays. They are missing when they have not come for a while as the song plays
+  let levelsMissing = false;
+  function levelsCheck() {
+    const missing = !!ext && ext.phase === 'playing' && !Visuals.live && Visuals.since > 2500;
+    if (missing !== levelsMissing) { levelsMissing = missing; showVis(); }
+  }
   function showVis() {
     const preset = Visuals.presets[Visuals.index], t = track(state.cur);
-    // the sound of an Apple Music or Spotify song never reaches the player, so a visualization cannot follow it
-    const loose = !!preset.draw && state.station === null && outside(t);
+    const loose = !!preset.draw && state.station === null && outside(t) && levelsMissing;
     $('vis-name').textContent = preset.name + (loose ? ' · not in time with the music' : '');
-    $('vis-name').title = loose ? `${serviceName(t)}’s audio is protected: the playback engine plays it, so the visualizations and the equalizer cannot work on it` : '';
+    $('vis-name').title = loose ? `The playback engine is not handing over the sound of this ${serviceName(t)} song, so the visualization is not in time with it` : '';
     const useArt = preset.art && t && t.art;
     $('vis-art').hidden = !useArt;
     if (useArt) $('vis-art').src = base + 'art/' + t.id;
@@ -1058,12 +1066,14 @@
       else if (msg.event === 'control') control(msg.action, msg.value);
       else if (msg.event === 'notice') flash(msg.text, 6000);
       else if (msg.event === 'engine') extEvent(msg);
+      else if (msg.event === 'levels') { if (ext && msg.serial === ext.serial) Visuals.feed(msg.b); }
       else if (msg.event === 'radio-title' && msg.id === state.station && msg.title !== state.radioTitle) {
         state.radioTitle = msg.title; showTrack(); flashUntil = 0; statusTick(true); report();
       } else if (msg.event === 'radio-error' && msg.id === state.station) radioError = msg.message;
       fire('event', msg);
     };
     Visuals.init($('vis'));
+    Visuals.onLive(levelsCheck);
     setMode('stopped');
     showTrack();
     refresh().then(layoutChanged);
