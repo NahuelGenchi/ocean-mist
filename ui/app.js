@@ -8,7 +8,7 @@
   const audio = $('audio');
   const probe = new Audio(); probe.preload = 'metadata';
 
-  const LISTS = { local: 'My Music', youtube: 'YouTube Music' };   // the Now Playing lists (the second holds Apple Music's songs too)
+  const LISTS = { local: 'My Music', youtube: 'YouTube Music' };   // the Now Playing lists (the second holds Apple Music's and Spotify's songs too)
   const state = {
     lists: { local: [], youtube: [] },   // the songs of each, in order
     names: { local: '', youtube: '' },   // the saved playlist (or page) each came from
@@ -81,9 +81,11 @@
   // what a list is called: the streaming one after the service its songs come from
   function listName(which) {
     if (which !== 'youtube') return LISTS[which];
-    const songs = state.lists.youtube, apple = songs.filter((t) => t.apple).length;
-    if (!apple) return LISTS.youtube;
-    return apple === songs.length ? 'Apple Music' : 'YouTube Music and Apple Music';
+    const songs = state.lists.youtube;
+    const apple = songs.filter((t) => t.apple).length, spotify = songs.filter((t) => t.spotify).length;
+    // the services its songs come from, and only those (an empty list is YouTube Music's)
+    const names = [apple + spotify < songs.length || !songs.length ? LISTS.youtube : '', apple ? 'Apple Music' : '', spotify ? 'Spotify' : ''].filter(Boolean);
+    return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
   }
   const listLabel = () => state.names[state.show] || listName(state.show);
   // the list playback goes through: the current song's, or else the one in view
@@ -98,8 +100,9 @@
   function esc(text) { const d = document.createElement('span'); d.textContent = text; return d.innerHTML; }
   const sentence = (text) => (text ? text[0].toUpperCase() + text.slice(1) : '');
   const isStream = (t) => !!t && t.source === 'youtube';
-  // an Apple Music song is not played by this page but by the playback engine (engine.py)
-  const outside = (t) => !!t && !!t.apple;
+  // an Apple Music or Spotify song is not played by this page but by the playback engine (engine.py)
+  const outside = (t) => !!t && !!(t.apple || t.spotify);
+  const serviceName = (t) => (t && t.spotify ? 'Spotify' : 'Apple Music');
   const length = () => {   // 0 for a live stream
     const t = state.station === null ? track(state.cur) : null;
     if (outside(t)) return (ext && ext.dur) || t.duration || 0;
@@ -156,7 +159,7 @@
     closeStream();
     leaveOutside(t);
     if (!isStream(t)) audio.src = base + 'media/' + id;   // a YouTube Music song is fed by start()
-    else if (outside(t)) silence();                      // ...and an Apple Music song is played by the engine
+    else if (outside(t)) silence();                      // ...and an Apple Music or Spotify song is played by the engine
     start();
     setMode('playing');
     showTrack();
@@ -400,8 +403,8 @@
     if (f) setTimeout(() => { if (f === feed && f.started && audio.readyState < 3 && !audio.paused) { f.stalled = true; statusTick(); } }, 700);
   });
 
-  // ---- Apple Music songs ----
-  // Apple's audio is protected: it cannot be played in this page, and nothing here can touch it. The
+  // ---- Apple Music and Spotify songs ----
+  // Their audio is protected: it cannot be played in this page, and nothing here can touch it. The
   // playback engine (engine.py) plays it, in a helper that is never shown. This page tells the engine what
   // to do (engine-play, -pause, -resume, -seek, -volume, -stop) and shows what it says back (the "engine"
   // events): where the song is, how long it is, and when it ends. `ext` is the song it was asked to play:
@@ -491,7 +494,7 @@
       if (!settled && e.want === 'playing') return;
       e.phase = 'paused';
       if (!late) { e.pos = m.position; e.stamp = now; }
-      if (state.mode === 'playing') { setMode('paused'); flash('Apple Music paused the song', 6000); }
+      if (state.mode === 'playing') { setMode('paused'); flash(`${serviceName(e.t)} paused the song`, 6000); }
     } else if (m.phase === 'loading' || m.phase === 'starting') {
       e.stalled = e.started; e.phase = m.phase;
       statusTick(true);
@@ -502,11 +505,13 @@
     if (ext !== e) return;
     ext = null;
     clearInterval(extTimer); extTimer = 0;
-    const why = sentence(text || 'Apple Music could not play this song');
+    const unsure = e.t.spotify ? 'Ocean Mist could not confirm that your Spotify account has Premium, so its songs were not played'
+      : 'Ocean Mist could not confirm that your Apple Music account has an active subscription, so its songs were not played';
+    const why = sentence(text || (code === 'no-plan' ? unsure : `${serviceName(e.t)} could not play this song`));
     // the engine itself needs something: the Library page says what
     if (code === 'not-installed' || code === 'sandbox') { stop(); fire('engine-needed', code); flash(why, 12000); return; }
-    // what is wrong for every song: the next one would fail too
-    const general = ['signed-out', 'no-subscription', 'limit', 'offline', 'widevine', 'crash', 'page', 'start'].includes(code);
+    // what is wrong for every song: the next one would fail too (the plan that could not be confirmed, too)
+    const general = ['signed-out', 'no-subscription', 'no-plan', 'limit', 'offline', 'widevine', 'crash', 'page', 'start'].includes(code);
     if (general || ++streamFails >= 3) { streamFails = 0; stop(); flash(why, 30000); return; }
     flash(why, 5000);
     setTimeout(() => { if (state.cur === e.t.id && state.mode === 'playing') step(1, true); }, 2500);
@@ -536,7 +541,7 @@
       api('now', {
         id: state.cur, station: state.station, mode: state.mode, title: state.radioTitle,
         position: state.mode === 'stopped' ? 0 : position(), duration: length(), next: upcoming(),
-        // a YouTube Music or Apple Music song has started once it is heard, so one that cannot play is not announced
+        // a YouTube Music, Apple Music or Spotify song has started once it is heard, so one that cannot play is not announced
         started: outside(track(state.cur)) ? !!(ext && ext.t.id === state.cur && ext.started)
           : !isStream(track(state.cur)) || !!(feed && feed.t.id === state.cur && feed.started),
       });
@@ -560,10 +565,10 @@
   }
   function showVis() {
     const preset = Visuals.presets[Visuals.index], t = track(state.cur);
-    // the sound of an Apple Music song never reaches the player, so a visualization cannot follow it
+    // the sound of an Apple Music or Spotify song never reaches the player, so a visualization cannot follow it
     const loose = !!preset.draw && state.station === null && outside(t);
     $('vis-name').textContent = preset.name + (loose ? ' · not in time with the music' : '');
-    $('vis-name').title = loose ? 'Apple’s audio is protected: the playback engine plays it, so the visualizations and the equalizer cannot work on it' : '';
+    $('vis-name').title = loose ? `${serviceName(t)}’s audio is protected: the playback engine plays it, so the visualizations and the equalizer cannot work on it` : '';
     const useArt = preset.art && t && t.art;
     $('vis-art').hidden = !useArt;
     if (useArt) $('vis-art').src = base + 'art/' + t.id;
@@ -591,7 +596,7 @@
     if (state.mode === 'stopped') text = t || s ? 'Stopped' : 'Ready';
     else if (state.mode === 'paused') text = 'Paused';
     else if (feed && !feed.started) text = 'Connecting to YouTube Music…';
-    else if (ext && !ext.started) text = 'Connecting to Apple Music…';
+    else if (ext && !ext.started) text = `Connecting to ${serviceName(ext.t)}…`;
     else if ((feed && feed.stalled) || (ext && ext.stalled)) text = 'Buffering…';
     else if (s) {
       const lines = ['Station: ' + s.name];

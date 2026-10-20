@@ -4,17 +4,19 @@
 // like files. That list, like what is searched and opened here, is kept in
 // memory only. Signed in through Firefox (firefox.py), the Library shows your
 // playlists and Liked music, and songs can be liked and put in your playlists.
-// Apple Music has a branch of the tree too: the host (apple.py) reads your
-// library there, signed in through Firefox as well, and its songs join the
-// same list. Apple's own audio is protected, so the playback engine (engine.py)
-// plays them: its page here, under Apple Music, installs it and says what it
-// needs.
+// Apple Music and Spotify have branches of the tree too: the hosts (apple.py,
+// spotify.py) read your libraries there, signed in through Firefox as well,
+// and their songs join the same list. Their audio is protected, so the
+// playback engine (engine.py) plays it: its page here, under both branches,
+// installs it and says what it needs.
 (() => {
   const { $, state, api, on, onPlay, esc, clock, menu, base, sentence } = Mist;
   const SEARCHES = [['all', 'Top results'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']];
   const NOUNS = { all: ['result', 'results'], songs: ['song', 'songs'], albums: ['album', 'albums'], artists: ['artist', 'artists'], playlists: ['playlist', 'playlists'], recent: ['item', 'items'] };
   const APPLE = [['recent', 'Recently added'], ['playlists', 'Playlists'], ['albums', 'Albums'], ['artists', 'Artists'], ['songs', 'Songs']];
   const APPLE_PICTURES = /^https:\/\/([a-z0-9-]+\.)*(mzstatic\.com|blobstore\.apple\.com)\//i;   // the pictures the host fetches for Apple Music
+  const SPOTIFY = [['songs', 'Liked Songs'], ['playlists', 'Playlists'], ['albums', 'Albums'], ['artists', 'Artists']];
+  const SPOTIFY_PICTURES = /^https:\/\/([a-z0-9-]+\.)*(scdn\.co|spotifycdn\.com|spotify\.com)\//i;   // ...and for Spotify
   const yt = {
     words: '',                // what was searched for
     kind: 'songs',            // the search the box runs
@@ -32,7 +34,7 @@
     waiting: false,           // signing in: Firefox is open on the sign-in page
     choices: null,            // signing in: the Firefox profiles to choose from, [{ profile, name }]
     note: '',                 // why the last try to sign in did not
-    open: { recent: true, lists: true, library: true, apple: true },   // the tree's branches
+    open: { recent: true, lists: true, library: true, apple: true, spotify: true },   // the tree's branches
     found: null, rows: [], sel: -1, tree: [],
   };
   const ap = {                // Apple Music
@@ -43,19 +45,29 @@
     choices: null,
     note: '',
   };
+  const sp = {                // Spotify, the same way
+    lists: {},
+    profile: '',
+    out: '',
+    waiting: false,
+    choices: null,
+    note: '',
+  };
   const same = (a, b) => a && b && a.kind === b.kind && a.value === b.value;
   const fetchJson = (path, who) => fetch(base + path).then((r) => r.json()).catch(() => ({ error: `the player could not ask ${who}` }));
   const get = (path) => fetchJson('yt/' + path, 'YouTube Music');
   const getApple = (path) => fetchJson('apple/' + path, 'Apple Music');
+  const getSpotify = (path) => fetchJson('spotify/' + path, 'Spotify');
   // an album's, an artist's or a playlist's page, whichever service it is of
-  const fetchPage = (kind, id) => (kind.startsWith('apple-')
-    ? getApple(`page?kind=${kind.slice(6)}&id=${encodeURIComponent(id)}`) : get(`${kind}?id=${encodeURIComponent(id)}`));
-  // a song of Apple Music has no video: the playback engine plays it by its Apple id
-  const playable = (item) => !!item && (item.kind === 'song' || item.kind === 'video') && !!(item.video || item.apple);
-  const song = (item) => ({ video: item.video, apple: item.apple, apple_lib: item.apple_lib, title: item.title, artist: item.artist, album: item.album, year: item.year,
+  const fetchPage = (kind, id) => (kind.startsWith('apple-') ? getApple(`page?kind=${kind.slice(6)}&id=${encodeURIComponent(id)}`)
+    : kind.startsWith('spotify-') ? getSpotify(`page?kind=${kind.slice(8)}&id=${encodeURIComponent(id)}`)
+    : get(`${kind}?id=${encodeURIComponent(id)}`));
+  // a song of Apple Music or Spotify has no video: the playback engine plays it by its own id
+  const playable = (item) => !!item && (item.kind === 'song' || item.kind === 'video') && !!(item.video || item.apple || item.spotify);
+  const song = (item) => ({ video: item.video, apple: item.apple, apple_lib: item.apple_lib, spotify: item.spotify, title: item.title, artist: item.artist, album: item.album, year: item.year,
     duration: item.duration, cover: item.cover, artist_id: item.artist_id, album_id: item.album_id });
-  const songKey = (item) => (item.apple ? 'apple:' + item.apple : item.video);   // the host's name for it, and its row's mark
-  const pictureUrl = (url) => base + (APPLE_PICTURES.test(url) ? 'apple/' : 'yt/') + 'picture?u=' + encodeURIComponent(url);
+  const songKey = (item) => (item.apple ? 'apple:' + item.apple : item.spotify ? 'spotify:' + item.spotify : item.video);   // the host's name for it, and its row's mark
+  const pictureUrl = (url) => base + (APPLE_PICTURES.test(url) ? 'apple/' : SPOTIFY_PICTURES.test(url) ? 'spotify/' : 'yt/') + 'picture?u=' + encodeURIComponent(url);
   // a song of the YouTube Music list or of a saved playlist, as a row like a search result's
   const asItem = (t) => Object.assign(song(t), { kind: 'song', track: t.id });
   const savedName = (path) => (state.playlists.find((p) => p.path === path) || {}).name || '';
@@ -63,9 +75,14 @@
   const shownPage = () => (yt.node.kind === 'page' && yt.found && !yt.found.loading && !yt.found.error ? yt.found : null);
   const signedIn = () => !!state.settings.yt_account;
   const appleReady = () => !!state.settings.apple_account && !ap.out;
-  // your playlists are read signed in; Apple Music's pages have their own host route
-  const keyOf = (item) => (item.service === 'apple' ? 'apple-' + item.kind : item.mine ? 'mine' : item.kind) + ':' + item.id;
+  const spotifyReady = () => !!state.settings.spotify_account && !sp.out;
+  // your playlists are read signed in; Apple Music's and Spotify's pages have their own host routes
+  const keyOf = (item) => (item.service === 'apple' ? 'apple-' + item.kind
+    : item.service === 'spotify' ? 'spotify-' + item.kind
+    : item.mine ? 'mine' : item.kind) + ':' + item.id;
   const learn = (tracks) => { for (const t of tracks || []) if (t.liked !== undefined) yt.liked[t.video] = t.liked; };
+  // which branch asks for the sign-in again when a page of a service says it went away
+  const outFor = (kind) => (kind.startsWith('apple-') ? appleOut : kind.startsWith('spotify-') ? spotifyOut : signedOut);
 
   // ---- getting results and pages ----
   function load(node) {
@@ -75,6 +92,10 @@
     if (node.kind === 'apple') {
       if (node.value === 'engine') loadEngine();
       else if (node.value !== 'sign-in') loadApple(node.value);
+      return;
+    }
+    if (node.kind === 'spotify') {
+      if (node.value !== 'sign-in') loadSpotify(node.value);
       return;
     }
     if (node.kind === 'search') {
@@ -92,7 +113,7 @@
     yt.pages[node.value] = { loading: true };
     fetchPage(kind, id).then((page) => {
       yt.pages[node.value] = page.error ? { error: page.error, signed_out: page.signed_out } : page;
-      if (page.error) { if (page.signed_out) (kind.startsWith('apple-') ? appleOut : signedOut)(page); }
+      if (page.error) { if (page.signed_out) outFor(kind)(page); }
       else if (kind === 'mine') learn(page.tracks);   // the Library lists it already
       else remember(node.value, page.title);
       if (same(yt.node, node)) draw();
@@ -138,6 +159,47 @@
       if (same(yt.node, { kind: 'apple', value: kind })) drawRows(true);
     });
   }
+  // a page of a part of your Spotify library. Spotify's page may send the kinds of the library mixed together, the
+  // host keeping those of the kind asked for, so a page can bring none of them: the next one is asked for then,
+  // until one brings some or the host says there are no more (and after EMPTY_PAGES of them, Show more carries on)
+  const EMPTY_PAGES = 10;
+  async function spotifyPage(kind, offset) {
+    let r = await getSpotify(`library?kind=${kind}` + (offset ? `&offset=${offset}` : ''));
+    for (let empty = 1; !r.error && !(r.items || []).length && r.more != null && r.more > (offset || 0) && empty < EMPTY_PAGES; empty++) {
+      offset = r.more;
+      r = await getSpotify(`library?kind=${kind}&offset=${offset}`);
+    }
+    return r;
+  }
+  // a part of your Spotify library, the same way as Apple Music's
+  function loadSpotify(kind, more) {
+    if (!spotifyReady()) return;
+    const list = sp.lists[kind];
+    if (more) {
+      if (!list || !list.items || list.more == null || list.busy) return;
+      list.busy = true; drawRows(true);
+      spotifyPage(kind, list.more).then((r) => {
+        list.busy = false;
+        if (r.error) { Mist.flash(sentence(r.error), 6000); if (r.signed_out) spotifyOut(r); }
+        else { list.items = list.items.concat(r.items || []); list.more = r.more; list.total = r.total ?? list.total; }
+        if (sp.lists[kind] === list && same(yt.node, { kind: 'spotify', value: kind })) drawRows(true);
+      });
+      return;
+    }
+    if (list && (list.loading || (!list.error && Date.now() - list.at < 10 * 60 * 1000))) return;
+    sp.lists[kind] = { loading: true };
+    spotifyPage(kind, 0).then((r) => {
+      if (r.error) {
+        sp.lists[kind] = { error: r.error, signed_out: r.signed_out };
+        if (r.signed_out) spotifyOut(r);
+      } else {
+        sp.lists[kind] = { items: r.items || [], more: r.more, total: r.total, at: Date.now() };
+        sp.profile = r.profile || sp.profile;
+      }
+      drawTree();
+      if (same(yt.node, { kind: 'spotify', value: kind })) drawRows(true);
+    });
+  }
   const split = (key) => { const at = key.indexOf(':'); return [key.slice(0, at), key.slice(at + 1)]; };
   function loadSaved(path) {   // read again each time, as the file may have changed
     if (!yt.saved[path]) yt.saved[path] = { loading: true };
@@ -157,7 +219,7 @@
     let page = yt.pages[key];
     if (!page || page.error || page.loading) {
       page = await fetchPage(kind, id);
-      if (page.error) { if (!quiet) failed(page, kind.startsWith('apple-')); return null; }
+      if (page.error) { if (!quiet) failed(page, kind); else if (page.signed_out) outFor(kind)(page); return null; }
       yt.pages[key] = page;
       if (kind === 'mine') learn(page.tracks); else if (!quiet) remember(key, page.title);
     }
@@ -188,6 +250,7 @@
       : node.kind === 'list' ? yt.saved[node.value]
       : node.kind === 'account' ? (signedIn() ? yt.library : null)
       : node.kind === 'apple' ? (appleReady() && node.value !== 'sign-in' && node.value !== 'engine' ? ap.lists[node.value] : null)
+      : node.kind === 'spotify' ? (spotifyReady() && node.value !== 'sign-in' ? sp.lists[node.value] : null)
       : { items: state.lists.youtube.map(asItem) };
     const rows = [], found = yt.found;
     if (found && !found.loading && !found.error) {
@@ -217,10 +280,19 @@
     if (node.kind === 'apple' && node.value === 'engine') return engineText();
     if (node.kind === 'account' && (!signedIn() || (found && found.signed_out))) return signInText(found && found.error);
     if (node.kind === 'apple' && (!appleReady() || node.value === 'sign-in' || (found && found.signed_out))) return appleSignInText(found && found.error);
+    if (node.kind === 'spotify' && (!spotifyReady() || node.value === 'sign-in' || (found && found.signed_out))) return spotifySignInText(found && found.error);
     if (node.kind === 'search' && !yt.words) return 'Type what you are looking for in the search box at the top right, then press Enter.';
-    if (!found || found.loading) return node.kind === 'search' ? 'Searching YouTube Music…' : node.kind === 'apple' ? 'Reading your Apple Music library…' : 'Opening…';
+    if (!found || found.loading) return node.kind === 'search' ? 'Searching YouTube Music…'
+      : node.kind === 'apple' ? 'Reading your Apple Music library…'
+      : node.kind === 'spotify' ? 'Reading your Spotify library…' : 'Opening…';
     if (found.error) return esc(sentence(found.error));
     if (node.kind === 'apple') return node.value === 'recent' ? 'Nothing was added to your Apple Music library lately.' : `There are no ${NOUNS[node.value][1]} in your Apple Music library.`;
+    if (node.kind === 'spotify') {
+      const what = (SPOTIFY.find((s) => s[0] === node.value) || ['', NOUNS[node.value][1]])[1].toLowerCase();
+      // the pages read so far held none of the kind, but the library goes on: Show more reads further
+      if (found.more != null) return `No ${what} were found in the first part of your Spotify library. Show more looks further.`;
+      return `There are no ${what} in your Spotify library.`;
+    }
     if (node.kind === 'now') return 'Nothing is in the YouTube Music list. The songs you play or add here go into it.';
     if (node.kind === 'list') return 'This playlist has no songs that can be found.';
     if (node.kind === 'account') return 'There are no playlists in your library yet.';
@@ -262,11 +334,31 @@
       'Playback engine. Playing them needs an active Apple Music subscription, which the engine checks.' +
       '<br><button id="ap-signin">Sign in with Firefox</button></div>';
   }
+  // the Library when Spotify is not signed in: what signing in does, and its button
+  function spotifySignInText(error) {
+    if (sp.waiting) {
+      return '<div class="yt-sign">Sign in to Spotify in the Firefox window that opened. Ocean Mist goes on as soon as you have.' +
+        '<br><button id="sp-cancel">Cancel</button></div>';
+    }
+    if (sp.choices) {
+      return '<div class="yt-sign">Firefox is signed in to Spotify in more than one profile. Which one should Ocean Mist use?<br>' +
+        sp.choices.map((c, i) => `<button class="sp-profile" data-i="${i}">${esc(c.name)}</button>`).join(' ') + '</div>';
+    }
+    const why = sp.note || sp.out || error;
+    return '<div class="yt-sign">' + (why ? `${esc(sentence(why))}<br><br>` : '') +
+      'Sign in to see your Spotify library here: your playlists, albums, artists and Liked Songs.<br><br>' +
+      'You sign in at open.spotify.com in Firefox, on Spotify’s own page. Ocean Mist reads that sign-in from Firefox, uses it ' +
+      'in memory only, and changes nothing in your account.<br><br>' +
+      'Spotify’s songs are protected, so they play through Ocean Mist’s playback engine: a download you accept first, under ' +
+      'Playback engine. Playing them needs an active Spotify Premium subscription, which the engine checks.' +
+      '<br><button id="sp-signin">Sign in with Firefox</button></div>';
+  }
   // the table's three column titles
   function heads(node) {
-    const kind = node.kind === 'search' || node.kind === 'apple' ? node.value : node.kind === 'account' ? 'playlists' : 'page';
+    const service = node.kind === 'apple' || node.kind === 'spotify';
+    const kind = node.kind === 'search' || service ? node.value : node.kind === 'account' ? 'playlists' : 'page';
     return [{ albums: 'Album', artists: 'Artist', playlists: 'Playlist' }[kind] || 'Title',
-      node.kind === 'apple' && kind === 'playlists' ? '' : { artists: '', playlists: 'Made by' }[kind] ?? 'Artist',
+      service && kind === 'playlists' ? '' : { artists: '', playlists: 'Made by' }[kind] ?? 'Artist',
       ['albums', 'artists', 'playlists', 'recent'].includes(kind) ? 'Details' : 'Album'];
   }
   function drawRows(keep) {
@@ -280,11 +372,17 @@
     const total = songs.reduce((sum, t) => sum + (t.duration || 0), 0);
     const library = node.kind === 'account' && signedIn() && !(yt.found && yt.found.signed_out);
     const mine = node.kind === 'apple' && appleReady() && node.value !== 'sign-in' && node.value !== 'engine' && !(yt.found && yt.found.signed_out);
-    $('yt-head').hidden = !page && !library && !mine;
+    const ours = node.kind === 'spotify' && spotifyReady() && node.value !== 'sign-in' && !(yt.found && yt.found.signed_out);
+    $('yt-head').hidden = !page && !library && !mine && !ours;
     if (mine) {
       const profile = ap.profile ? ` profile “${esc(ap.profile)}”` : '';
       $('yt-head').innerHTML = `<b>${esc(APPLE.find((a) => a[0] === node.value)[1])}</b>` +
         `<span>Apple Music, signed in through Firefox${profile} · <a id="ap-signout">Sign out</a></span>`;
+    }
+    if (ours) {
+      const profile = sp.profile ? ` profile “${esc(sp.profile)}”` : '';
+      $('yt-head').innerHTML = `<b>${esc(SPOTIFY.find((a) => a[0] === node.value)[1])}</b>` +
+        `<span>Spotify, signed in through Firefox${profile} · <a id="sp-signout">Sign out</a></span>`;
     }
     if (library) {
       const profile = yt.library && yt.library.profile ? ` profile “${esc(yt.library.profile)}”` : '';
@@ -297,17 +395,19 @@
     }
     // the count, and more results for a search
     const found = yt.found, items = yt.rows.filter((r) => r.item);
-    const listing = !['search', 'account', 'apple'].includes(node.kind);   // the songs of a page, a saved playlist or the list
+    const listing = !['search', 'account', 'apple', 'spotify'].includes(node.kind);   // the songs of a page, a saved playlist or the list
     let text = '';
     if (found && found.loading) text = node.kind === 'search' ? 'Searching…' : 'Opening…';
     else if (items.length) {
       const noun = listing ? NOUNS.songs : NOUNS[node.kind === 'account' ? 'playlists' : node.value], n = listing ? songs.length : items.length;
       text = `${n} ${n === 1 ? noun[0] : noun[1]}` + (listing && total ? `, ${clock(total)}` : '');
       if (node.kind === 'apple' && found.more != null) text = `${n} of ${found.total || 'more'} ${noun[1]}`;
+      if (node.kind === 'spotify' && found.more != null && found.total > n) text = `${n} of ${found.total} ${noun[1]}`;   // (without a total, the count alone)
     }
     $('yt-count').textContent = text;
-    $('yt-more').hidden = !((node.kind === 'search' || node.kind === 'apple') && found && found.more);
-    $('yt-more').textContent = found && found.busy ? 'Getting more…' : node.kind === 'apple' ? 'Show more' : 'More results';
+    const mayMore = node.kind === 'search' || node.kind === 'apple' || node.kind === 'spotify';
+    $('yt-more').hidden = !(mayMore && found && found.more);
+    $('yt-more').textContent = found && found.busy ? 'Getting more…' : node.kind === 'search' ? 'More results' : 'Show more';
     $('yt-back').disabled = !yt.back.length;
     $('yt-queue').hidden = node.kind === 'now';   // already in it
     drawCover();
@@ -352,6 +452,12 @@
       else for (const [value, label] of APPLE) rows.push({ depth: 1, label, node: { kind: 'apple', value } });
       rows.push({ depth: 1, label: 'Playback engine', node: { kind: 'apple', value: 'engine' } });
     }
+    rows.push({ depth: 0, label: 'Spotify', fold: 'spotify' });
+    if (yt.open.spotify) {
+      if (!spotifyReady()) rows.push({ depth: 1, label: 'Sign in…', node: { kind: 'spotify', value: 'sign-in' } });
+      else for (const [value, label] of SPOTIFY) rows.push({ depth: 1, label, node: { kind: 'spotify', value } });
+      rows.push({ depth: 1, label: 'Playback engine', node: { kind: 'apple', value: 'engine' } });
+    }
     yt.tree = rows;
     $('yt-tree').innerHTML = rows.map((r, i) =>
       `<div class="node${same(r.node, yt.node) ? ' sel' : ''}${r.dim ? ' dim' : ''}" data-i="${i}" style="padding-left:${3 + r.depth * 11}px">` +
@@ -383,7 +489,8 @@
     if (yt.node.kind === 'now') { Mist.play(start.track); return; }   // the list itself: play on from there
     const page = shownPage();
     const name = page ? page.title : yt.node.kind === 'list' ? savedName(yt.node.value)
-      : yt.node.kind === 'apple' ? 'Apple Music: ' + APPLE.find((a) => a[0] === yt.node.value)[1] : '';
+      : yt.node.kind === 'apple' ? 'Apple Music: ' + APPLE.find((a) => a[0] === yt.node.value)[1]
+      : yt.node.kind === 'spotify' ? 'Spotify: ' + SPOTIFY.find((a) => a[0] === yt.node.value)[1] : '';
     api('yt-play', { items: songs.map(song), start: songKey(start), name });
   }
   // Recently added is a feed of albums and playlists, and Play on a row of it makes the whole feed the list, as Play
@@ -480,6 +587,9 @@
     if (e.target.id === 'ap-signin') { appleSignIn(); return; }
     if (e.target.classList.contains('ap-profile')) { if (ap.choices) appleSignIn(ap.choices[Number(e.target.dataset.i)].profile); return; }
     if (e.target.id === 'ap-cancel') { ap.waiting = false; drawRows(true); return; }
+    if (e.target.id === 'sp-signin') { spotifySignIn(); return; }
+    if (e.target.classList.contains('sp-profile')) { if (sp.choices) spotifySignIn(sp.choices[Number(e.target.dataset.i)].profile); return; }
+    if (e.target.id === 'sp-cancel') { sp.waiting = false; drawRows(true); return; }
     if (e.target.closest('.en')) { engineClick(e.target); return; }
     const i = rowAt(e); if (i >= 0) select(i);
   });
@@ -491,6 +601,7 @@
   $('yt-head').addEventListener('click', (e) => {
     if (e.target.id === 'yt-signout') signOut();
     else if (e.target.id === 'ap-signout') appleSignOut();
+    else if (e.target.id === 'sp-signout') spotifySignOut();
   });
   $('yt-rows').addEventListener('dblclick', (e) => {
     const i = rowAt(e), item = i >= 0 && yt.rows[i].item;
@@ -503,7 +614,7 @@
     if (!item) return;
     select(i);
     if (yt.node.kind === 'now') { Mist.trackMenu(e, item.track); return; }   // the list's own menu, as in Now Playing
-    if (playable(item) && item.apple) {   // nothing of Apple's is changed from here, and there is no radio for it
+    if (playable(item) && (item.apple || item.spotify)) {   // nothing of the service's is changed from here, and there is no radio for it
       menu(e.clientX, e.clientY, [
         { label: 'Play', run: () => playRows(item) },
         { label: 'Play next', run: () => playNext(item) },
@@ -530,13 +641,16 @@
       ]);
     }
   });
-  $('yt-scroll').addEventListener('scroll', () => {   // Apple Music lists carry on by themselves near their end
-    const el = $('yt-scroll');
-    if (yt.node.kind === 'apple' && yt.node.value !== 'engine' && el.scrollHeight - el.scrollTop - el.clientHeight < 240) loadApple(yt.node.value, true);
+  $('yt-scroll').addEventListener('scroll', () => {   // Apple Music's and Spotify's lists carry on by themselves near their end
+    const el = $('yt-scroll'), near = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
+    if (!near) return;
+    if (yt.node.kind === 'apple' && yt.node.value !== 'engine') loadApple(yt.node.value, true);
+    else if (yt.node.kind === 'spotify') loadSpotify(yt.node.value, true);
   });
   $('yt-more').addEventListener('click', () => {
     const node = yt.node, found = yt.found;
     if (node.kind === 'apple') { loadApple(node.value, true); return; }
+    if (node.kind === 'spotify') { loadSpotify(node.value, true); return; }
     if (node.kind !== 'search' || !found || !found.more || found.busy) return;
     found.busy = true; drawRows(true);
     get(`more?token=${encodeURIComponent(found.more)}&kind=${node.value}`).then((r) => {
@@ -548,9 +662,10 @@
   });
 
   // ---- the playback engine ----
-  // Apple's songs are played by a download (Electron, with Google's Widevine) that the player runs without a
-  // window, only while one plays. This page is where it is accepted, installed, checked and removed; `eng.s` is
-  // what the host last said about it (engine-status, and the "engine-setup" events).
+  // Apple Music's and Spotify's songs are played by a download (Electron, with Google's Widevine) that the
+  // player runs without a window, only while one plays. This page is where it is accepted, installed,
+  // checked and removed; `eng.s` is what the host last said about it (engine-status, and the "engine-setup"
+  // events).
   const eng = { s: null, ticked: false, loading: false, checking: false, copied: '', sure: 0 };
   const megabytes = (bytes) => Math.round(bytes / 1048576);
   function loadEngine() {
@@ -604,8 +719,8 @@
     }
     if (!s.installed) {
       return '<div class="yt-sign en"><b>Playback engine</b>' + warn +
-        '<p>Apple’s songs are protected, so this page cannot play them. Ocean Mist plays them with an engine of its own: a copy of ' +
-        'Chromium that runs in the background, with no window, only while an Apple Music song plays. It opens Apple’s web player and ' +
+        '<p>Apple Music’s and Spotify’s songs are protected, so this page cannot play them. Ocean Mist plays them with an engine of its own: a copy of ' +
+        'Chromium that runs in the background, with no window, only while a song of theirs plays. It opens the service’s web player and ' +
         'nothing else, signed in with the sign-in Ocean Mist reads from Firefox, which it keeps in memory only.</p>' +
         `<p><u>What is downloaded:</u> ${megabytes(s.size)} MB from ${esc(s.source)} (castlabs’s build of Electron ${esc(s.version.split('+')[0])}), ` +
         `checked against the checksum Ocean Mist was made with (SHA-256 ${esc(s.sha256.slice(0, 12))}…) before it is used. The first time the engine ` +
@@ -621,7 +736,7 @@
     }
     if (s.sandbox === 'ok') {
       return '<div class="yt-sign en"><b>Playback engine</b>' + warn +
-        `<p>Installed (Electron ${esc(s.version.split('+')[0])}) and ready: its security sandbox is on. Apple Music songs play through it. ` +
+        `<p>Installed (Electron ${esc(s.version.split('+')[0])}) and ready: its security sandbox is on. Songs of Apple Music and Spotify play through it. ` +
         'It starts when you play one, ends a minute after the music stops (ten if you paused), and never shows a window.</p>' +
         `<button id="en-check"${eng.checking ? ' disabled' : ''}>${eng.checking ? 'Checking…' : 'Check again'}</button>` +
         `<button id="en-remove">${eng.sure > Date.now() ? 'Click again to remove it' : 'Remove the engine'}</button>${profile}</div>`;
@@ -638,13 +753,13 @@
         '(Ubuntu 24.04 and later do this for Chrome and Firefox too). Press Allow it: your system asks for your password, once, ' +
         'in its own window. Ocean Mist never sees the password.</p>' +
         '<button id="en-allow">Allow it</button>' +
-        '<p>The engine keeps Apple’s page in Chromium’s security sandbox, and it never runs without it. The step adds one AppArmor profile ' +
+        '<p>The engine keeps the service’s page in Chromium’s security sandbox, and it never runs without it. The step adds one AppArmor profile ' +
         'that names only the engine’s file and gives it one permission (“userns”). It is the script engine/allow-sandbox.sh in Ocean Mist’s ' +
         'folder; read it first if you like. This page can take the profile away again.</p>' + byHand + '</div>';
     }
     if (s.sandbox === 'blocked' && s.restricted) {
       return '<div class="yt-sign en"><b>One step is needed, once</b>' +
-        '<p>The engine keeps Apple’s page in Chromium’s security sandbox, and it never runs without it. Your system only lets programs ' +
+        '<p>The engine keeps the service’s page in Chromium’s security sandbox, and it never runs without it. Your system only lets programs ' +
         'that AppArmor has a profile for create that sandbox (Ubuntu 24.04 and later do this for Chrome and Firefox too). ' +
         'Ocean Mist cannot add the profile itself: it needs an administrator. Run this in a terminal, then press Check again:</p>' +
         `<code>${esc(s.command)}</code><button id="en-copy">${eng.copied === 'command' ? 'Copied' : 'Copy the command'}</button>${again}` +
@@ -697,7 +812,7 @@
   // ---- your account, signed in through Firefox ----
   // Waits for a sign-in in Firefox, for a service whose state is in `box` (waiting, choices, note) and whose
   // command is `command`; true once it is signed in. Each try has its number: a cancelled one stops, even when another starts.
-  const tries = { yt: 0, apple: 0 };
+  const tries = { yt: 0, apple: 0, spotify: 0 };
   async function waitForSignIn(box, key, command, profile) {
     const turn = ++tries[key], current = () => box.waiting && tries[key] === turn;
     box.waiting = true; box.note = ''; box.choices = null; drawRows(true);
@@ -725,14 +840,15 @@
     }
     draw();
   }
-  // the engine ends with the sign-in it was given: an Apple Music song that is on stops with it
-  function endAppleSong() {
+  // the engine ends with the sign-in it was given: a song of that service that is on stops with it (one of the
+  // other service's plays on, as the engine keeps their sign-ins apart)
+  function endSongOf(service) {
     const t = Mist.track(state.cur);
-    if (t && t.apple && state.station === null) Mist.stop();
+    if (t && (service === 'spotify' ? t.spotify : t.apple) && state.station === null) Mist.stop();
   }
   async function appleSignIn(profile) {
     if (await waitForSignIn(ap, 'apple', 'apple-sign-in', profile)) {
-      endAppleSong();
+      endSongOf('apple');
       state.settings.apple_account = true;
       ap.lists = {}; ap.profile = ''; ap.out = '';
       Mist.flash('Signed in to Apple Music through Firefox');
@@ -741,9 +857,20 @@
     }
     draw();
   }
+  async function spotifySignIn(profile) {
+    if (await waitForSignIn(sp, 'spotify', 'spotify-sign-in', profile)) {
+      endSongOf('spotify');
+      state.settings.spotify_account = true;
+      sp.lists = {}; sp.profile = ''; sp.out = '';
+      Mist.flash('Signed in to Spotify through Firefox');
+      show({ kind: 'spotify', value: 'songs' }, true);
+      return;
+    }
+    draw();
+  }
   function appleSignOut() {
     api('apple-sign-out').then(() => {
-      endAppleSong();
+      endSongOf('apple');
       state.settings.apple_account = false;
       ap.lists = {}; ap.profile = ''; ap.out = ''; ap.note = ''; ap.choices = null;
       const apples = (n) => n.kind === 'apple' || (n.kind === 'page' && n.value.startsWith('apple-'));
@@ -755,8 +882,23 @@
       Mist.flash('Ocean Mist no longer uses your sign-in. Firefox is still signed in to Apple Music.', 6000);
     });
   }
+  function spotifySignOut() {
+    api('spotify-sign-out').then(() => {
+      endSongOf('spotify');
+      state.settings.spotify_account = false;
+      sp.lists = {}; sp.profile = ''; sp.out = ''; sp.note = ''; sp.choices = null;
+      const theirs = (n) => n.kind === 'spotify' || (n.kind === 'page' && n.value.startsWith('spotify-'));
+      for (const key of Object.keys(yt.pages)) if (key.startsWith('spotify-')) delete yt.pages[key];
+      yt.recent = yt.recent.filter((p) => !p.key.startsWith('spotify-'));
+      yt.back = yt.back.filter((n) => !theirs(n));
+      if (theirs(yt.node)) yt.node = { kind: 'spotify', value: 'sign-in' };
+      draw();
+      Mist.flash('Ocean Mist no longer uses your sign-in. Firefox is still signed in to Spotify.', 6000);
+    });
+  }
   // Apple Music no longer accepts the sign-in: the branch asks for it again
   function appleOut(r) { ap.out = r.error || 'Apple Music says you are signed out; sign in again in Firefox'; ap.lists = {}; draw(); }
+  function spotifyOut(r) { sp.out = r.error || 'Spotify says you are signed out; sign in again in Firefox'; sp.lists = {}; draw(); }
   function signOut() {
     api('yt-sign-out').then(() => {
       state.settings.yt_account = false;
@@ -770,9 +912,11 @@
     });
   }
   function signedOut(r) { yt.library = { error: r.error, signed_out: true }; drawTree(); }
-  function failed(r, apple) {
-    Mist.flash(sentence(r.error || (apple ? 'Apple Music did not answer' : 'YouTube Music did not answer')), 6000);
-    if (r.signed_out) (apple ? appleOut : signedOut)(r);
+  // `kind`: what was asked for, which says whose sign-in it was (YouTube Music's when there is none)
+  function failed(r, kind = '') {
+    const who = kind.startsWith('apple-') ? 'Apple Music' : kind.startsWith('spotify-') ? 'Spotify' : 'YouTube Music';
+    Mist.flash(sentence(r.error || `${who} did not answer`), 6000);
+    if (r.signed_out) outFor(kind)(r);
   }
   // a page of yours that changed: read again the next time it is shown
   function stale(key) {
@@ -839,8 +983,8 @@
   // when the list runs out on one, similar songs carry on (a setting); they
   // follow the last one heard, which is another when this one could not play
   Mist.carryOn = (t) => {
-    if (!Mist.isStream(t) || t.apple || state.settings.yt_radio === false) return false;   // Apple Music has no radio here
-    const heard = Mist.track(state.played), seed = heard && !heard.apple ? heard : t;   // an Apple Music song has no video to start from
+    if (!Mist.isStream(t) || t.apple || t.spotify || state.settings.yt_radio === false) return false;   // Apple Music and Spotify have no radio here
+    const heard = Mist.track(state.played), seed = heard && !heard.apple && !heard.spotify ? heard : t;   // a service's song has no video to start from
     Mist.flash('Finding similar songs…', 15000);
     api('yt-similar', { id: seed.id }).then((r) => {
       if (state.cur !== t.id || state.station !== null || state.mode !== 'playing') return;   // something else was chosen meanwhile
@@ -853,7 +997,7 @@
   // the Now Playing list's menu gets what only they can do
   on('track-menu', (id, items) => {
     const t = Mist.track(id);
-    if (!Mist.isStream(t) || t.apple) return;
+    if (!Mist.isStream(t) || t.apple || t.spotify) return;
     items.push(null,
       { label: 'Play similar songs', run: () => similar(t) },
       { label: 'Go to album', disabled: !t.album_id, run: () => goTo('album', t.album_id) },
@@ -883,4 +1027,5 @@
 
   Mist.premium = yt;
   Mist.apple = ap;
+  Mist.spotify = sp;
 })();
