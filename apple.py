@@ -49,6 +49,7 @@ ASKED = 60                       # seconds a request gets
 IDLE = 600                       # seconds without a request after which the page is closed
 CHECK = 60                       # seconds between looks at whether the page has been idle
 PICTURES = 64                    # covers kept in memory
+MEMORY = 256                     # MB WebKit is told the page's process may use (see _open)
 
 OFFLINE = "cannot reach Apple Music; check the internet connection"
 SIGNED_OUT = "Apple Music says you are signed out; sign in again in Firefox"
@@ -173,7 +174,17 @@ class Page:
 
     def _open(self):
         GLib, WebKit2 = self.GLib, self.WebKit2
-        self.context = WebKit2.WebContext.new_ephemeral()   # in memory: no cache, no site data on disk
+        # in memory: no cache, no site data on disk. Past a third of MEMORY, WebKit lets go of what the page's
+        # process holds and no longer needs, and of more past half (its garbage and compiled code too), at most
+        # once a minute while it stays there; it never ends the page for it
+        try:
+            pressure = WebKit2.MemoryPressureSettings.new()
+            pressure.set_memory_limit(MEMORY)
+            pressure.set_poll_interval(60)
+            self.context = WebKit2.WebContext(website_data_manager=WebKit2.WebsiteDataManager.new_ephemeral(),
+                                              memory_pressure_settings=pressure)
+        except (AttributeError, TypeError):   # a WebKitGTK without the setting (before 2.34)
+            self.context = WebKit2.WebContext.new_ephemeral()
         manager = self.context.get_website_data_manager()
         for name in ("set_itp_enabled", "set_resource_load_statistics_enabled"):
             if hasattr(manager, name):
