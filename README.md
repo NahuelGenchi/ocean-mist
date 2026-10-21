@@ -148,10 +148,10 @@ Ocean Mist has no build step and nothing to compile: it is a handful of Python f
 
 ### As a package (Ubuntu 24.04 or later, Debian 13 or later)
 
-Download `ocean-mist_0.2.0_all.deb` from the [latest release](https://github.com/NahuelGenchi/ocean-mist/releases/latest) (its SHA-256 is in the release notes). Open that file with your software installer, or install it from a terminal in the folder you saved it to (apt brings the libraries Ocean Mist needs):
+Download `ocean-mist_0.3.0_all.deb` from the [latest release](https://github.com/NahuelGenchi/ocean-mist/releases/latest) (its SHA-256 is in the release notes). Open that file with your software installer, or install it from a terminal in the folder you saved it to (apt brings the libraries Ocean Mist needs):
 
 ```sh
-sudo apt install ./ocean-mist_0.2.0_all.deb
+sudo apt install ./ocean-mist_0.3.0_all.deb
 ```
 
 To install a newer commit than the release, build the package from a copy of the repository instead. That needs `git` (`sudo apt install git` if you do not have it) and `dpkg-deb` (every Debian-based system has it), and no administrator rights:
@@ -231,17 +231,18 @@ Your music files are only ever read, never changed. Developed on Ubuntu 26.04 wi
 
 <br>
 
-All of the player's processes together, with a visualization on, on Ubuntu 26.04 (WebKitGTK 2.52; the playback engine is Chromium 152). The figure is PSS, which shares out what processes have in common, at its highest while the state lasted:
+All of the player's processes together, with a visualization on, on Ubuntu 26.04 (WebKitGTK 2.52; the playback engine is Chromium 152). The figure is PSS, which shares out what processes have in common, with what of it the system had moved to swap, at its highest while the state lasted; 0.2.0 was measured the same way, in the same session:
 
-| While | Memory |
-| :--- | ---: |
-| Open, nothing playing | 214 MB |
-| One of your songs playing | 239 MB |
-| A YouTube Music song playing | 277 MB |
-| Stopped after playing | 270 MB |
-| A visualization in full screen | 250 MB |
-| An Apple Music song playing | 685 MB |
-| A Spotify song playing | 727 MB |
+| While | Memory | 0.2.0 |
+| :--- | ---: | ---: |
+| Open, nothing playing | 250 MB | 286 MB |
+| One of your songs playing | 279 MB | 332 MB |
+| A YouTube Music song playing | 323 MB | 378 MB |
+| Stopped after playing | 314 MB | 374 MB |
+| A visualization in full screen | some 10 MB more than in the window | |
+| An Apple Music song playing | 691 MB | 871 MB |
+| An Apple Music song playing, with its library read | 695 MB | 1055 MB |
+| A Spotify song playing | 732 MB | 1215 MB |
 | Apple Music's library open (for ten minutes after a list of it) | 262 MB more, 224 after the first minute; nothing more while an Apple Music song plays |
 | Spotify's library open (the same) | 388 MB more, 317 after the first minute |
 
@@ -443,7 +444,7 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 - **YouTube Music** signs in through Firefox only. Library albums, artists, songs and uploads are not there yet, playlists cannot be made or renamed, and live streams do not play.
 - **Apple Music** is read-only. Its songs play in the playback engine, which is a 117 MB download and, on Ubuntu 24.04 and later, needs a permission for its sandbox (the package installs it; without the package it asks once, with administrator rights); the equalizer cannot work on them (the visualizations do), there is a gap of a few seconds between songs, and Apple limits how many devices stream at once. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
 - **Spotify** is read-only, like Apple Music: Liked Songs, playlists, albums and artists from your library, no search of all of Spotify, and its songs need Spotify Premium; they play in the playback engine, with the same limits as Apple Music's (the download, the sandbox step, no equalizer), the first song takes about five seconds to start and the others a second or two, and Spotify plays one stream per account. Now and then Spotify's own page goes on to another track about a second and a half into a song, which the player takes for the song's end and moves on (seen only after hundreds of test plays on one account, and not solved). It signs in through Firefox only. Other streaming services are not started.
-- **Releases**: the Debian package is published with each release on GitHub (0.1.0 was the first; 0.1.1 fixes its AppArmor profile for Ubuntu 24.04 and Debian 13; 0.2.0 adds Spotify) and checked on Ubuntu 26.04 only. There is no apt repository, Flatpak or Snap yet, so a newer release is installed the same way, by downloading its package.
+- **Releases**: the Debian package is published with each release on GitHub (0.1.0 was the first; 0.1.1 fixes its AppArmor profile for Ubuntu 24.04 and Debian 13; 0.2.0 adds Spotify; 0.3.0 takes less memory in every state, most of all while an Apple Music or Spotify song plays) and checked on Ubuntu 26.04 only. There is no apt repository, Flatpak or Snap yet, so a newer release is installed the same way, by downloading its package.
 
 | Milestone | Outcome |
 | :--- | :--- |
