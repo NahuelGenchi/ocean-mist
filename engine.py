@@ -87,6 +87,7 @@ ENV_KEEP = ("HOME", "PATH", "USER", "LOGNAME", "LANG", "LANGUAGE", "XDG_RUNTIME_
             "http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 SAME_SITE = {0: "no_restriction", 1: "lax", 2: "strict"}   # Firefox's number, as Electron names it
 LEVELS = re.compile(r"[A-Za-z0-9+/]{512}")   # a helper's levels line: 384 bytes, as base64
+STORE = re.compile(r"[a-z]{2}")              # an Apple Music store, as the helper names it
 
 # what the page is told, per kind of failure
 WORDS = {
@@ -157,14 +158,17 @@ def spotify_cookie_of(cookie):
             "same_site": SAME_SITE.get(cookie.same_site, "unspecified")}
 
 
-def start_line(service, token, volume, muted):
+def start_line(service, token, volume, muted, store=""):
     """The helper's first line for `service`: the sign-in as that service's helper takes it, and the
-    volume the player is at. Apple's helper gets one cookie, Spotify's its cookies (sp_dc first)."""
+    volume the player is at. Apple's helper gets one cookie, Spotify's its cookies (sp_dc first); Apple's
+    also the store (country) the account was in last time, when one is known, so its page opens there."""
     line = {"cmd": "start", "volume": volume, "muted": muted}
     if service == "spotify":
         line.update(service="spotify", cookies=[spotify_cookie_of(cookie) for cookie in token.cookies])
     else:
         line.update(cookie=cookie_of(token))
+        if STORE.fullmatch(store or ""):
+            line.update(store=store)
     return line
 
 
@@ -378,6 +382,7 @@ class Engine:
         self.asker = None          # ...and the process that waits for it
         self.ask_cancelled = False
         self.ask_failed = False    # whether the last time it was asked for, it did not work
+        self.store = ""            # the Apple Music store the account was in, as the last helper said
 
     # -- what is there --
     def installed(self):
@@ -778,7 +783,7 @@ class Engine:
         words = SPOTIFY_WORDS if service == "spotify" else WORDS
         try:
             token = self.token_source(service)
-            line = start_line(service, token, self.volume, self.muted)
+            line = start_line(service, token, self.volume, self.muted, self.store if service == "apple" else "")
         except EngineError as error:
             self._broken(serial, error.code, str(error))
             return
@@ -846,6 +851,8 @@ class Engine:
                 self.started = True
             elif name == "ready":
                 self.ready, self.sandbox = True, "ok"
+                if self.service == "apple" and STORE.fullmatch(str(event.get("store") or "")):
+                    self.store = event["store"]
                 if song and song["phase"] != "paused":   # what was asked for while it started
                     self._send_play()
                     self.emit("engine", phase="loading", serial=song["serial"])
