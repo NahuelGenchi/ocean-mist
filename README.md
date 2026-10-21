@@ -231,17 +231,18 @@ Your music files are only ever read, never changed. Developed on Ubuntu 26.04 wi
 
 <br>
 
-All of the player's processes together, with a visualization on, on Ubuntu 26.04 (WebKitGTK 2.52; the playback engine is Chromium 152). The figure is PSS, which shares out what processes have in common, at its highest while the state lasted:
+All of the player's processes together, with a visualization on, on Ubuntu 26.04 (WebKitGTK 2.52; the playback engine is Chromium 152). The figure is PSS, which shares out what processes have in common, with what of it the system had moved to swap, at its highest while the state lasted; 0.2.0 was measured the same way, in the same session:
 
-| While | Memory |
-| :--- | ---: |
-| Open, nothing playing | 214 MB |
-| One of your songs playing | 239 MB |
-| A YouTube Music song playing | 277 MB |
-| Stopped after playing | 270 MB |
-| A visualization in full screen | 250 MB |
-| An Apple Music song playing | 685 MB |
-| A Spotify song playing | 727 MB |
+| While | Memory | 0.2.0 |
+| :--- | ---: | ---: |
+| Open, nothing playing | 250 MB | 286 MB |
+| One of your songs playing | 279 MB | 332 MB |
+| A YouTube Music song playing | 323 MB | 378 MB |
+| Stopped after playing | 314 MB | 374 MB |
+| A visualization in full screen | some 10 MB more than in the window | |
+| An Apple Music song playing | 691 MB | 871 MB |
+| An Apple Music song playing, with its library read | 695 MB | 1055 MB |
+| A Spotify song playing | 732 MB | 1215 MB |
 | Apple Music's library open (for ten minutes after a list of it) | 262 MB more, 224 after the first minute; nothing more while an Apple Music song plays |
 | Spotify's library open (the same) | 388 MB more, 317 after the first minute |
 
