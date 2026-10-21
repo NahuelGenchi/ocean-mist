@@ -838,9 +838,12 @@ def run_app(argv):
             if library.settings.get("mini") and size:   # closed in compact mode: open in it
                 self.mini, self.mini_size = True, tuple(size)
                 self.full_size = list(library.settings.get("size", (760, 538)))
-            self.apple = AppleMusic(lambda: apple_sign_in(library), lambda fn: GLib.idle_add(lambda: fn() or False))
-            self.spotify = SpotifyMusic(lambda: spotify_sign_in(library), lambda fn: GLib.idle_add(lambda: fn() or False))
             self.engine = Engine(lambda service: engine_sign_in(library, service), library.emit)
+            # while the engine's helper is up for Apple Music, the library is read in its page, and its own view closes
+            self.apple = AppleMusic(lambda: apple_sign_in(library), lambda fn: GLib.idle_add(lambda: fn() or False),
+                                    engine=self.engine)
+            self.engine.on_ready = lambda service: service == "apple" and self.apple.spare()
+            self.spotify = SpotifyMusic(lambda: spotify_sign_in(library), lambda fn: GLib.idle_add(lambda: fn() or False))
             self.server = start_server(library, self.token, host=Host(self), music=self.music,
                                        apple_music=self.apple, spotify_music=self.spotify, engine=self.engine)
             library.on_now = lambda: GLib.idle_add(self._now_changed)

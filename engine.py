@@ -7,7 +7,8 @@ with the same Firefox sign-in apple.py or spotify.py reads (Apple's one cookie, 
 run by a Chromium-based runtime that has Widevine support (castlabs's Electron build for content
 security). Ocean Mist keeps the lists, the queue and the controls; the helper only makes the sound,
 one song at a time, one service at a time: a helper serving the other service is ended before the
-next song's starts.
+next song's starts. While a helper is up for Apple Music, apple.py reads the library in its page too
+(ask), so that Apple's player is not open twice.
 
 The runtime is not part of Ocean Mist. It is downloaded once, when the user asks for it behind a licence
 screen, from the address and with the checksum written below, and kept under
@@ -74,6 +75,7 @@ ASK_WITHIN = 600            # seconds the password window may stay open before O
 IDLE_STOPPED = 60           # seconds without music after which the helper ends
 IDLE_PAUSED = 600           # ...and while a song is paused
 IDLE_LOOK = 5               # seconds between looks at whether it is time
+LIBRARY_WITHIN = 20         # seconds the helper's page gets to answer a request of the library (then apple.py asks its own view)
 READY_WITHIN = 330          # seconds the helper gets to be ready (Google's module can need the first time)
 CHECK_WITHIN = 60           # ...and to start for the check of its sandbox
 PROGRESS_EVERY = 0.25       # seconds between the download's progress reports
@@ -383,6 +385,9 @@ class Engine:
         self.ask_cancelled = False
         self.ask_failed = False    # whether the last time it was asked for, it did not work
         self.store = ""            # the Apple Music store the account was in, as the last helper said
+        self.asks = {}             # the library's requests out to the helper's page: id -> {"proc", "done", "raw"}
+        self.asked = 0             # ...and the last id given
+        self.on_ready = None       # called with the service when a helper says it is ready (from the thread that reads it)
 
     # -- what is there --
     def installed(self):
@@ -736,6 +741,39 @@ class Engine:
         if proc is not None:
             self._reap(proc, 2)
 
+    # -- the library --
+    def up_for(self, service):
+        """Whether a helper is up for `service` and ready, and not ending."""
+        with self.lock:
+            proc = self.proc
+            return proc is not None and proc.poll() is None and proc is not self.leaving and self.ready and self.service == service
+
+    def ask(self, path, query=None, within=LIBRARY_WITHIN):
+        """A request of the Apple Music library (apple.py's `path` and `query`), sent in the page of the helper
+        while it is up for Apple Music: what the page answered, as text, or None when no helper is ready for it
+        or its page did not answer within `within` seconds. It never starts a helper, nor keeps one going."""
+        with self.lock:
+            proc = self.proc
+            if not self.up_for("apple"):
+                return None
+            self.asked += 1
+            key = self.asked
+            box = self.asks[key] = {"proc": proc, "done": threading.Event(), "raw": None}
+            if not self._send({"cmd": "ask", "id": key, "path": str(path), "query": dict(query or {})}):
+                del self.asks[key]
+                return None
+        box["done"].wait(within)
+        with self.lock:
+            self.asks.pop(key, None)
+        return box["raw"]
+
+    def _unask(self, proc):
+        """The helper has ended: the requests still out to it have no answer (the caller holds the lock)."""
+        for key, box in list(self.asks.items()):
+            if box["proc"] is proc:
+                del self.asks[key]
+                box["done"].set()
+
     # -- the helper --
     def _words(self):
         """What the page is told, in the running helper's service's words."""
@@ -844,6 +882,12 @@ class Engine:
     def _event(self, proc, event):
         name = event.get("event")
         with self.lock:
+            if name == "answer":   # a request of the library: its answer is whoever asked it, even as the helper ends
+                box = self.asks.pop(event.get("id"), None) if isinstance(event.get("id"), int) else None
+                if box is not None and box["proc"] is proc:
+                    box["raw"] = event.get("raw") if isinstance(event.get("raw"), str) else None
+                    box["done"].set()
+                return
             if proc is not self.proc or proc is self.leaving:   # a helper that was asked to end serves no song
                 return
             song = self.song
@@ -858,6 +902,8 @@ class Engine:
                     self.emit("engine", phase="loading", serial=song["serial"])
                 else:
                     self._send({"cmd": "volume", "value": self.volume, "muted": self.muted})
+                if self.on_ready is not None:
+                    self.on_ready(self.service)
             elif name == "state" and song and event.get("serial") == song["serial"]:
                 phase = event.get("state")
                 if phase not in ("loading", "playing", "paused", "ended"):
@@ -885,6 +931,7 @@ class Engine:
         reader.join(1)   # what it said last (a "fail", a sandbox line) may still be in its pipes; a child
         drain.join(1)    # that kept a pipe open is not waited for
         with self.lock:
+            self._unask(proc)
             if proc is not self.proc:
                 return
             service = self.service

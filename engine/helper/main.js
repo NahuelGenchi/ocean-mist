@@ -19,8 +19,11 @@
  *      {"cmd":"play","serial":7,"ids":["i.AbC","1234"],"from":0}    the first id that the service accepts plays
  *      {"cmd":"pause"} {"cmd":"resume"} {"cmd":"seek","to":12.5} {"cmd":"stop"} {"cmd":"quit"}
  *      {"cmd":"volume","value":0.3,"muted":false}
+ *      {"cmd":"ask","id":3,"path":"/v1/me/library/songs","query":{"limit":100,"offset":0}}   Apple's page only
  * out  start, widevine, ready, state, problem, denied, fail, selftest, and for the visualizations levels (the
- *      spectrum of what plays, in bands; listen.html reads it) and listen (how the listening goes)
+ *      spectrum of what plays, in bands; listen.html reads it) and listen (how the listening goes); answer, to an
+ *      ask: Apple's reply as the page gave it (raw, the one line that carries more than codes: apple.py reads
+ *      the library from it while this helper is up), or raw null when the page did not answer
  *
  * What may need updating when a service changes its page is kept together, in "what the page is asked" and,
  * for Spotify, in spotify-preload.js (the hook it puts into Spotify's page before the page's own scripts).
@@ -65,6 +68,7 @@ const PAGE_WITHIN = 10000;        // the page gets this long to answer a look or
 const PLAN_WITHIN = 15000;        // Spotify's page gets this long, once it is up, to have said the account's plan
 const PAGE_DEAD_AFTER = 3;        // looks in a row that were not answered in time: the page is hung, and the helper ends
 const LIGHT_WITHIN = 15000;       // Apple's page on LIGHT gets this long to be up before Browse is opened in its place
+const ASK_WITHIN = 15000;         // ...and this long to answer a request of the library
 const TICK = 500;                 // how often the page is asked how the song is doing
 const BEAT = 1000;                // how often the position is said while a song plays
 
@@ -239,6 +243,23 @@ function pageVolume(value) { MusicKit.getInstance().volume = value; return 'ok';
 async function pageStop() {
   try { const om = window.__om; if (om) om.serial = -1; const mk = MusicKit.getInstance(); await mk.pause(); await mk.stop(); } catch (e) { /* not playing */ }
   return 'ok';
+}
+
+// a request of the library, as apple.py's own view sends it (CALL_JS there): {ok, body} or {ok: false, status}
+async function pageAsk(path, query) {
+  try {
+    const mk = MusicKit.getInstance();
+    if (!mk.isAuthorized) return JSON.stringify({ ok: false, signed_out: true });
+    const reply = await mk.api.music(path, query);
+    const body = reply && reply.data !== undefined ? reply.data : reply;
+    const first = body && Array.isArray(body.errors) ? body.errors[0] : null;
+    if (first) return JSON.stringify({ ok: false, status: Number(first.status) || 0 });
+    return JSON.stringify({ ok: true, body });
+  } catch (e) {
+    const first = e && Array.isArray(e.errors) ? e.errors[0] : null;
+    const status = Number((e && (e.status || e.httpStatus || e.statusCode)) || (first && first.status)) || 0;
+    return JSON.stringify({ ok: false, status, failed: String((e && e.message) || e).slice(0, 100) });
+  }
 }
 
 // ---- Spotify's page ----
@@ -575,8 +596,36 @@ async function tick() {
   } finally { watching = false; }
 }
 
+// ---- the library ----
+// While this helper is up for Apple Music, apple.py reads the library in its page rather than in a second copy of
+// Apple's player (a view of its own, some 250 MB). Only the library's own requests are sent; a reply that would
+// carry the sign-in is not passed on. It runs beside the song: nothing here touches what plays
+const LIBRARY_PATH = /^\/v1\/me\/library\/[a-z-]{1,30}(\/[A-Za-z0-9][A-Za-z0-9._-]{0,59}(\/[a-z-]{1,30})?)?$/;
+const QUERY_KEY = /^[a-z][A-Za-z0-9.[\]]{0,40}$/;
+async function ask(msg) {
+  const id = Number.isSafeInteger(msg.id) ? msg.id : 0;
+  const path = typeof msg.path === 'string' ? msg.path : '';
+  const query = {};
+  const given = msg.query && typeof msg.query === 'object' && !Array.isArray(msg.query) ? Object.entries(msg.query) : [];
+  for (const [key, value] of given.slice(0, 10)) {
+    if (QUERY_KEY.test(key) && (Number.isFinite(value) || (typeof value === 'string' && value.length <= 200))) query[key] = value;
+  }
+  let raw = null;
+  if (service === 'apple' && page && !leaving && LIBRARY_PATH.test(path)) {
+    try {
+      const said = await Promise.race([
+        page.executeJavaScript(`(${pageAsk})(...${JSON.stringify([path, query])})`),
+        delay(ASK_WITHIN).then(() => null),
+      ]);
+      if (typeof said === 'string' && !secrets.some((secret) => secret && said.includes(secret))) raw = said;
+    } catch (e) { /* the page is going, or another document is coming: apple.py asks its own view */ }
+  }
+  say('answer', { id, raw });
+}
+
 // ---- commands ----
 async function command(msg) {
+  if (msg.cmd === 'ask') { await ask(msg).catch(() => null); return; }
   try {
     const song = cur;
     const waits = !!song && !song.placed;   // Spotify's song whose page is loading: its play takes this with it

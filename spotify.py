@@ -273,13 +273,14 @@ class Page:
     nothing runs on the one it is on, and the calls that came for that route
     meanwhile wait for its next turn."""
 
-    def __init__(self, token, site=SITE, folder=None):
+    def __init__(self, token, site=SITE, folder=None, context=None):
         import gi
         gi.require_version("Soup", "3.0")
         gi.require_version("WebKit2", "4.1")
         gi.require_version("Gtk", "3.0")
         from gi.repository import GLib, Gtk, Soup, WebKit2
         self.GLib, self.Gtk, self.Soup, self.WebKit2 = GLib, Gtk, Soup, WebKit2
+        self.context = context or Page.new_context()
         self.site, self.state, self.error, self.route = site, "loading", None, None
         self.queue, self.running = [], {}   # calls not sent yet, in order; calls running
         self.doc = None      # the mark of the document the page was last up in
@@ -303,26 +304,38 @@ class Page:
             self._release()
             raise
 
-    def _open(self):
-        GLib, WebKit2 = self.GLib, self.WebKit2
-        # in memory: no cache, no site data on disk. Past a third of MEMORY, WebKit lets go of what the page's
-        # process holds and no longer needs, and of more past half (its garbage and compiled code too), at most
-        # once a minute while it stays there; it never ends the page for it
+    @staticmethod
+    def new_context():
+        """A WebContext for the views, in memory: no cache, no site data on disk. Past a third of MEMORY, WebKit
+        lets go of what a page's process holds and no longer needs, and of more past half (its garbage and
+        compiled code too), at most once a minute while it stays there; it never ends the page for it.
+
+        WebKit gives each WebContext a network process of its own and ends it only when the player ends (letting
+        go of a WebContext makes WebKitGTK crash), so SpotifyMusic keeps one for all its views: one each would
+        leave another such process behind, some 20 MB, every time a view closed or was opened again."""
+        import gi
+        gi.require_version("WebKit2", "4.1")
+        from gi.repository import WebKit2
         try:
             pressure = WebKit2.MemoryPressureSettings.new()
             pressure.set_memory_limit(MEMORY)
             pressure.set_poll_interval(60)
-            self.context = WebKit2.WebContext(website_data_manager=WebKit2.WebsiteDataManager.new_ephemeral(),
-                                              memory_pressure_settings=pressure)
+            context = WebKit2.WebContext(website_data_manager=WebKit2.WebsiteDataManager.new_ephemeral(),
+                                         memory_pressure_settings=pressure)
         except (AttributeError, TypeError):   # a WebKitGTK without the setting (before 2.34)
-            self.context = WebKit2.WebContext.new_ephemeral()
-        manager = self.context.get_website_data_manager()
+            context = WebKit2.WebContext.new_ephemeral()
+        manager = context.get_website_data_manager()
         for name in ("set_itp_enabled", "set_resource_load_statistics_enabled"):
             if hasattr(manager, name):
                 getattr(manager, name)(False)
                 break
+        manager.get_cookie_manager().set_accept_policy(WebKit2.CookieAcceptPolicy.ALWAYS)
+        return context
+
+    def _open(self):
+        GLib, WebKit2 = self.GLib, self.WebKit2
+        manager = self.context.get_website_data_manager()
         self.cookies = manager.get_cookie_manager()
-        self.cookies.set_accept_policy(WebKit2.CookieAcceptPolicy.ALWAYS)
         settings = WebKit2.Settings()
         settings.set_user_agent(ytmusic.BROWSER)
         # the page is only a source of data: it needs no sound, video, pictures or graphics
@@ -352,9 +365,19 @@ class Page:
         self.view.get_user_content_manager().add_script(WebKit2.UserScript.new(
             HOOK_JS, WebKit2.UserContentInjectedFrames.TOP_FRAME,
             WebKit2.UserScriptInjectionTime.START, None, None))
-        store = WebKit2.UserContentFilterStore.new(self.folder)
-        store.save("sign-out", GLib.Bytes.new(self._rules()), None, self._rules_saved, None)
+        # what the view before this one left in the context (its sign-in above all) goes first
+        manager.clear(WebKit2.WebsiteDataTypes.ALL, 0, None, self._cleared, None)
         self.expiry = GLib.timeout_add_seconds(READY + 2, self._expire)   # whatever stalls, it ends
+
+    def _cleared(self, manager, result, _):
+        if self.state != "loading":
+            return
+        try:
+            manager.clear_finish(result)
+        except Exception:   # an earlier sign-in could still be in it
+            return self._fail(SpotifyError("Ocean Mist could not open Spotify's page"))
+        store = self.WebKit2.UserContentFilterStore.new(self.folder)
+        store.save("sign-out", self.GLib.Bytes.new(self._rules()), None, self._rules_saved, None)
 
     @staticmethod
     def _rules():
@@ -850,6 +873,7 @@ class SpotifyMusic:
         self.token_source, self.schedule = token_source, schedule
         self.site, self.folder = site, folder
         self.page = None          # the Page; touched on the main thread only
+        self.context = None       # ...and the WebContext of every Page it opens (Page.new_context), made with the first
         self.last = 0.0
         self.generation = 0       # changes when you sign out: a request begun before is refused
         self.unfiltered = False   # Spotify refused the library's filter: the mixed list is read from then on
@@ -883,7 +907,8 @@ class SpotifyMusic:
                 self.last = time.monotonic()
                 page = self.page
                 if page is None or page.state == "dead":
-                    page = self.page = Page(token or self.token_source(), self.site, self.folder)
+                    self.context = self.context or Page.new_context()
+                    page = self.page = Page(token or self.token_source(), self.site, self.folder, self.context)
                     self.watch(page)
                 page.call(op, route, variables, finish, optional)
             except SpotifyError as error:
