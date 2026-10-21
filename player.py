@@ -681,9 +681,40 @@ def start_server(library, token, port=0, host=None, music=None, apple_music=None
     return server
 
 
+# -- memory -------------------------------------------------------------------
+# What keeps the player's memory down without changing what it shows or plays (README's "How much memory it
+# uses" has the numbers). The variables go to WebKit's processes, which start after them; one set beforehand wins:
+# - WebKit paints the page's tiles with the processor and the graphics card puts the page together. The card's
+#   own painting kept some 35 MB more in the page's process; the visualizations keep their 60 frames a second,
+#   and the processor is no busier, in the window and in full screen
+# - glibc's memory for all of a process's threads in two arenas, not one for each thread
+LEAN_ENV = {"WEBKIT_SKIA_ENABLE_CPU_RENDERING": "1", "MALLOC_ARENA_MAX": "2"}
+TRIM_EVERY = 60   # seconds between two times the host hands what it freed back to the system
+
+
+def _libc():
+    import ctypes
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        return libc if hasattr(libc, "mallopt") and hasattr(libc, "malloc_trim") else None
+    except OSError:   # not glibc
+        return None
+
+
+def lean():
+    """Set the above for the player and the processes it starts. Returns glibc (None without it)."""
+    for key, value in LEAN_ENV.items():
+        os.environ.setdefault(key, value)
+    libc = _libc()
+    if libc is not None and os.environ.get("MALLOC_ARENA_MAX") == "2":
+        libc.mallopt(-8, 2)   # M_ARENA_MAX: this process read its variables before the line above
+    return libc
+
+
 # -- window -------------------------------------------------------------------
 
 def run_app(argv):
+    libc = lean()
     import gi
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
@@ -822,6 +853,12 @@ def run_app(argv):
                 if os.environ.get("OCEAN_MIST_DEBUG"):
                     print("mpris:", error, file=sys.stderr)
             library.scan()
+            if libc is not None:
+                GLib.timeout_add_seconds(TRIM_EVERY, self._trim)
+
+        def _trim(self):
+            libc.malloc_trim(0)   # what Python and GTK freed goes back to the system, not only to the next allocation
+            return True
 
         def do_activate(self):
             if self.window is None:

@@ -21,6 +21,14 @@ function pageHookSpotify() {
   const om = { ended: 0, error: '', serial: 0, pauseFor: null, outside: false, product: '', song: null, done: 0, length: 0, last: 0, seekAt: 0, seen: [] };
   Object.defineProperty(window, '__om', { value: om });   // not writable: no element of the page can stand in for it
 
+  // ---- no service worker ----
+  // In a session that keeps nothing, the page's worker only fetched a second copy of its files and held it, with
+  // the worker, in the engine's processes: some 120 MB while a song played. The page plays as without one
+  try {
+    if (navigator.serviceWorker) Object.defineProperty(navigator.serviceWorker, 'register', {
+      value: () => Promise.reject(new DOMException('no service worker here', 'SecurityError')) });
+  } catch (e) { /* it registers as before */ }
+
   // ---- the account's plan ----
   const own = (raw) => {   // a request to Spotify's own API (or, in a stand-in, to the stand-in itself)
     try {

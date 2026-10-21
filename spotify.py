@@ -59,6 +59,7 @@ ASKED = 60                       # seconds a request gets
 IDLE = 600                       # seconds without a request after which the page is closed
 CHECK = 60                       # seconds between looks at whether the page has been idle
 PICTURES = 64                    # covers kept in memory
+MEMORY = 256                     # MB WebKit is told the page's process may use (see _open)
 WINDOW = (1600, 1000)            # the size the windowless view lays the page out at
 
 OFFLINE = "cannot reach Spotify; check the internet connection"
@@ -120,10 +121,16 @@ READY_JS = """(() => {
 # requests to Spotify (address, headers, body) and each answer, in memory only,
 # the newest of the sign-in headers the page sent, a mark of the document it is
 # in, and the fetch it replaced, for Ocean Mist's own requests (which are not
-# the page's, so they are not kept)
+# the page's, so they are not kept). It also keeps the page from registering its
+# service worker, which in a view that keeps nothing only fetched and held a
+# second copy of the page's files (some 40 MB): the page works as without one
 HOOK_JS = """
 (() => {
   if (window.__omOps) return;
+  try {
+    if (navigator.serviceWorker) Object.defineProperty(navigator.serviceWorker, 'register', {
+      value: () => Promise.reject(new DOMException('no service worker here', 'SecurityError')) });
+  } catch (e) {}
   const ops = window.__omOps = { requests: {}, responses: {}, latest: {},
                                  doc: Date.now().toString(36) + Math.random().toString(36).slice(2) };
   const api = (url) => /^https:\\/\\/(api\\.spotify\\.com|api-partner\\.spotify\\.com)\\//.test(String(url));
@@ -298,7 +305,17 @@ class Page:
 
     def _open(self):
         GLib, WebKit2 = self.GLib, self.WebKit2
-        self.context = WebKit2.WebContext.new_ephemeral()   # in memory: no cache, no site data on disk
+        # in memory: no cache, no site data on disk. Past a third of MEMORY, WebKit lets go of what the page's
+        # process holds and no longer needs, and of more past half (its garbage and compiled code too), at most
+        # once a minute while it stays there; it never ends the page for it
+        try:
+            pressure = WebKit2.MemoryPressureSettings.new()
+            pressure.set_memory_limit(MEMORY)
+            pressure.set_poll_interval(60)
+            self.context = WebKit2.WebContext(website_data_manager=WebKit2.WebsiteDataManager.new_ephemeral(),
+                                              memory_pressure_settings=pressure)
+        except (AttributeError, TypeError):   # a WebKitGTK without the setting (before 2.34)
+            self.context = WebKit2.WebContext.new_ephemeral()
         manager = self.context.get_website_data_manager()
         for name in ("set_itp_enabled", "set_resource_load_statistics_enabled"):
             if hasattr(manager, name):

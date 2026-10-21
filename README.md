@@ -227,6 +227,34 @@ Your music files are only ever read, never changed. Developed on Ubuntu 26.04 wi
 </details>
 
 <details>
+<summary><strong>How much memory it uses</strong></summary>
+
+<br>
+
+All of the player's processes together, with a visualization on, on Ubuntu 26.04 (WebKitGTK 2.52; the playback engine is Chromium 152). The figure is PSS, which shares out what processes have in common, at its highest while the state lasted:
+
+| While | Memory |
+| :--- | ---: |
+| Open, nothing playing | 214 MB |
+| One of your songs playing | 239 MB |
+| A YouTube Music song playing | 277 MB |
+| Stopped after playing | 270 MB |
+| A visualization in full screen | 250 MB |
+| An Apple Music song playing | 722 MB |
+| A Spotify song playing | 815 MB |
+| Apple Music's library open (for ten minutes after a list of it) | 262 MB more, 224 after the first minute |
+| Spotify's library open (the same) | 388 MB more, 317 after the first minute |
+
+Most of it is what the player stands on: an empty WebKit window takes 160 to 170 MB on the same system, before there is a player in it. Apple Music's and Spotify's songs play only in their own web players, inside Chromium with Google's Widevine module, and that engine takes 450 to 600 MB of its own while a song plays (it ends a minute after the music stops); your libraries come from the same web players, in WebKit. What keeps Ocean Mist's part small, without changing what you see or hear:
+
+- WebKit paints the page with the processor and the graphics card puts it together: the visualizations keep their 60 frames a second, in the window and in full screen, without the 35 MB the card's own painting held.
+- The sound graph rests while nothing plays, and what the player frees goes back to the system once a minute.
+- The engine runs Chromium in its mode for small devices (its window is never shown), and Spotify's page there and in the library view does not install its service worker, which only fetched and held a second copy of the page's files.
+- WebKit looks at the library views once a minute and lets go of what their pages no longer need: 40 to 70 MB after the first minute, and the lists come in as fast as before.
+
+</details>
+
+<details>
 <summary><strong>Signing in to YouTube Music</strong></summary>
 
 <br>

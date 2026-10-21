@@ -209,6 +209,7 @@
       audio.addEventListener('playing', () => { if (cueAt === at) audio.currentTime = at; else { fade = 1; applyVolume(); } }, { once: true });
       audio.addEventListener('seeked', () => { if (cueAt === at) cueAt = 0; fade = 1; applyVolume(); }, { once: true });
     }
+    if (actx && actx.state === 'suspended') actx.resume().catch(() => {});   // it rested since a stop
     audio.play().catch((err) => { if (err && err.name === 'NotAllowedError') setMode('paused'); });
   }
   const playSelection = () => state.mode === 'stopped' && !!selections[state.view] && selections[state.view]();
@@ -233,6 +234,7 @@
     if (forget) { state.cur = null; state.station = null; state.radioTitle = ''; audio.removeAttribute('src'); audio.load(); showTrack(); }
     setMode('stopped');
     updateTime();
+    if (actx && actx.state === 'running') actx.suspend().catch(() => {});   // nothing to hear: the graph rests instead of working on silence
   }
   const position = () => (ext ? extPosition() : cueAt || audio.currentTime || 0);
   function seekTo(seconds) {

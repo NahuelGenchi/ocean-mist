@@ -89,6 +89,8 @@ if (!DATA) {
 app.setPath('userData', DATA);
 app.setPath('sessionData', DATA);
 app.disableHardwareAcceleration();   // it only plays: no graphics card, and no pictures below
+// smaller caches and heaps in the page's process, which is never seen: some 45 MB less while a song plays
+app.commandLine.appendSwitch('enable-low-end-device-mode');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // no second media player on the desktop: Ocean Mist has its own, and the media keys are its
 app.commandLine.appendSwitch('disable-features', 'MediaSessionService,HardwareMediaKeyHandling');
