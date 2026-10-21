@@ -20,8 +20,9 @@ page and plays it as Apple's own audio.
 These are the requests Apple's own page makes, not a published way in for a
 program like this one, so Apple can change them at any time. What may need
 updating then is kept together below: the page's address, what the page is
-asked (READY_JS, CALL_JS), the library requests (LIBRARY) and the rules that
-keep it from signing you out (Page._rules).
+asked (READY_JS, CALL_JS), the library requests (LIBRARY, and FIND for a
+search of the library) and the rules that keep it from signing you out
+(Page._rules).
 
     python3 apple.py      opens Apple's page with the Apple Music sign-in of
                           Firefox and counts what your library holds (no titles)
@@ -45,6 +46,8 @@ from ytmusic import YTError
 
 SITE = "https://music.apple.com/"
 PAGE = 100                       # items Apple sends at a time
+FOUND = 25                       # ...and found by a search of the library, the most it sends at a time
+WORDS = 100                      # characters of a search kept
 LIMIT = ytmusic.PLAYLIST_LIMIT   # songs read from one album or playlist
 READY = 45                       # seconds Apple's page gets to open and sign in
 SETTLE = 10                      # ...to say it is signed in, once its player is up
@@ -72,6 +75,15 @@ LIBRARY = {
     "songs": ("/v1/me/library/songs", PAGE),
 }
 PAGES = {"playlist": "playlists", "album": "albums", "artist": "artists"}
+# a search of the library: where Apple keeps it, and the types of what it finds, by the kind searched
+SEARCH = "/v1/me/library/search"
+FIND = {
+    "all": ("library-songs", "library-albums", "library-artists", "library-playlists"),
+    "songs": ("library-songs",),
+    "albums": ("library-albums",),
+    "artists": ("library-artists",),
+    "playlists": ("library-playlists",),
+}
 TOP = frozenset(path for path, _ in LIBRARY.values())   # the lists of the library itself
 # what a request's address says when it signs you out, in the spellings Apple might use
 SIGN_OUT = ("log.?out", "sign.?out", "log.?off", "sign.?off", "unauthori[sz]e")
@@ -514,6 +526,7 @@ def either(res):
 
 
 SHAPES = {"recent": either, "playlists": playlist, "albums": album, "artists": artist, "songs": song}
+TYPES = {"library-songs": song, "library-albums": album, "library-artists": artist, "library-playlists": playlist}
 
 
 def song_id(link):
@@ -645,6 +658,32 @@ class AppleMusic:
         total = meta.get("total") if isinstance(meta.get("total"), int) else None
         return {"items": [item for item in map(SHAPES[kind], rows) if item],
                 "more": offset + len(rows) if body.get("next") and rows else None, "total": total}
+
+    def search(self, kind, words, offset=0):
+        """What Apple's own search of the library finds for `words`, of one kind (or of every kind, "all": the
+        songs first, then the albums, the artists and the playlists), a page at a time: {"items": [...], "more":
+        offset of the next page or None, "total": None}."""
+        if kind not in FIND:
+            raise AppleError("that is not part of your Apple Music library")
+        words = " ".join(str(words).split())[:WORDS]
+        if not words:
+            return {"items": [], "more": None, "total": None}
+        offset = max(0, min(int(offset), 1_000_000))
+        try:
+            body = self._ask(SEARCH, {"term": words, "types": ",".join(FIND[kind]), "limit": FOUND, "offset": offset})
+        except AppleError as error:
+            if error.status != 404:   # (a search that finds nothing may come back as "not found")
+                raise
+            body = {}
+        results = body.get("results") if isinstance(body.get("results"), dict) else {}
+        items, more = [], None
+        for name in FIND[kind]:
+            part = results.get(name) if isinstance(results.get(name), dict) else {}
+            rows = [row for row in part.get("data") or [] if isinstance(row, dict)]
+            items += [item for item in map(TYPES[name], rows) if item]
+            if part.get("next") and rows:   # each type pages by the same offset
+                more = offset + FOUND
+        return {"items": items, "more": more, "total": None}
 
     def _all(self, path, shape, limit):
         """Every row of a list Apple sends in pages, up to `limit`: a missing list is an empty one."""

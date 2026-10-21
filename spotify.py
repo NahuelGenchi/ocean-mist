@@ -25,6 +25,10 @@ updating then is kept together below: the page's address, what the page is
 asked (READY_JS, CALL_JS), what the hook keeps (HOOK_JS), the library requests
 (LIBRARY) and the rules that keep it from signing you out (Page._rules).
 
+Spotify's page has no search of your library: a search reads the list it is
+made in whole, up to the same 1,000 items as an opened playlist, keeps it in
+memory for a few minutes (KEEP), and finds the words in its rows.
+
     python3 spotify.py      opens Spotify's page with the sign-in of Firefox
                             and counts what your library holds (no titles)
 """
@@ -37,6 +41,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -58,6 +63,8 @@ SETTLE = 10                      # ...to say it is signed in, once its shell is 
 ASKED = 60                       # seconds a request gets
 IDLE = 600                       # seconds without a request after which the page is closed
 CHECK = 60                       # seconds between looks at whether the page has been idle
+KEEP = 300                       # seconds a list read whole for a search is kept, for the next one
+WORDS = 100                      # characters of a search kept
 PICTURES = 64                    # covers kept in memory
 MEMORY = 256                     # MB WebKit is told the page's process may use (see _open)
 WINDOW = (1600, 1000)            # the size the windowless view lays the page out at
@@ -736,6 +743,11 @@ def _profile(res):
     return _text(profile.get("name"))
 
 
+def _fold(text):
+    """`text` the way a search compares it: without case or accents."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)).casefold()
+
+
 def _row(kind, **fields):
     item = {"service": "spotify", "kind": kind, "title": "", "artist": "", "album": "", "year": "",
             "duration": 0, "label": "", "info": "", "cover": ""}
@@ -878,6 +890,7 @@ class SpotifyMusic:
         self.generation = 0       # changes when you sign out: a request begun before is refused
         self.unfiltered = False   # Spotify refused the library's filter: the mixed list is read from then on
         self.pseudo = {}          # per kind: the rows of its first page that are not the kind's own (Liked Songs)
+        self.whole = {}           # per kind, a list read whole for a search: (generation, when, rows, all of it)
 
     # -- the page --
     def _ask(self, op, route, variables=None, optional=None):
@@ -942,6 +955,7 @@ class SpotifyMusic:
     def close(self):
         """Close the page (from any thread): you signed out, or in again. A request begun before is refused."""
         self.generation += 1
+        self.whole = {}
         self.schedule(lambda: self.close_now())
 
     # -- the library --
@@ -1011,6 +1025,40 @@ class SpotifyMusic:
         if own and total is not None:
             total = max(len(rows), total - self.pseudo.get(kind, 0))
         return {"items": rows, "more": more, "total": total if own else None}
+
+    def search(self, kind, words):
+        """The rows of one part of the library that have every one of `words` in their title, artist or album
+        (whatever their case and accents): {"items": [...], "more": None, "total": n, "read": the rows read,
+        "whole": False when the list goes on past them}."""
+        if kind not in LIBRARY:
+            raise SpotifyError("that is not part of your Spotify library")
+        wanted = _fold(" ".join(str(words).split())[:WORDS]).split()
+        if not wanted:
+            return {"items": [], "more": None, "total": 0, "whole": True, "read": 0}
+        rows, whole = self._whole(kind)
+        found = [row for row in rows if all(word in _fold(" ".join((row["title"], row["artist"], row["album"])))
+                                            for word in wanted)]
+        return {"items": found, "more": None, "total": len(found), "whole": whole, "read": len(rows)}
+
+    def _whole(self, kind):
+        """One part of the library, read whole up to LIMIT rows (kept for KEEP seconds), and whether that is
+        all of it."""
+        generation, kept = self.generation, self.whole.get(kind)
+        if kept and kept[0] == generation and time.monotonic() - kept[1] < KEEP:
+            return kept[2], kept[3]
+        rows, offset, more = [], 0, None
+        while len(rows) < LIMIT:
+            page = self.library(kind, offset)
+            rows += page["items"]
+            more = page["more"]
+            if more is None or more <= offset:
+                more = None
+                break
+            offset = more
+        rows, whole = rows[:LIMIT], more is None and len(rows) <= LIMIT
+        if generation == self.generation:   # (read with a sign-in that is still the one in use)
+            self.whole[kind] = (generation, time.monotonic(), rows, whole)
+        return rows, whole
 
     def page_of(self, kind, ident):
         """A playlist, an album or an artist, opened: its title and, for a playlist or an
