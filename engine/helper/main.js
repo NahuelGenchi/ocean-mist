@@ -13,7 +13,7 @@
  *   electron <this folder> --data=<folder>              the helper
  *   electron <this folder> --data=<folder> --selftest   starts, checks that Chromium's sandbox is on, ends
  *
- * in   {"cmd":"start","cookie":{"value","host","expires","secure","http_only","same_site"},"volume":0.5,"muted":false}
+ * in   {"cmd":"start","cookie":{"value","host","expires","secure","http_only","same_site"},"volume":0.5,"muted":false,"store":"us"}
  *        or {"cmd":"start","service":"spotify","cookies":[{"name","value","host","expires","secure","http_only","same_site"},...],...}
  *        always the first line: the sign-in is never in an argument or an environment variable
  *      {"cmd":"play","serial":7,"ids":["i.AbC","1234"],"from":0}    the first id that the service accepts plays
@@ -64,8 +64,26 @@ const LOADING_WITHIN = 40000;     // a song that has not started by then did not
 const PAGE_WITHIN = 10000;        // the page gets this long to answer a look or a command (a song being queued gets LOADING_WITHIN)
 const PLAN_WITHIN = 15000;        // Spotify's page gets this long, once it is up, to have said the account's plan
 const PAGE_DEAD_AFTER = 3;        // looks in a row that were not answered in time: the page is hung, and the helper ends
+const LIGHT_WITHIN = 15000;       // Apple's page on LIGHT gets this long to be up before Browse is opened in its place
 const TICK = 500;                 // how often the page is asked how the song is doing
 const BEAT = 1000;                // how often the position is said while a song plays
+
+// ---- what the page is spared ----
+// The window is never shown, so the page need not be drawn: it is hidden, and nothing in it moves (some 60 MB
+// less for Spotify's page, whose animations had Chromium make new frames all the time). It gets no fonts
+// either, and nothing from the third parties the services' pages send analytics to, nor Spotify's looping video
+// behind the song. What plays, the requests the song is counted with and the sign-in are left as they are, and
+// so are the stylesheets: Spotify's page loads parts of its player with theirs, and without them it plays nothing
+const UNDRAWN = 'html{display:none!important}*,*::before,*::after{animation:none!important;transition:none!important}';
+const UNNEEDED = new Set(['font', 'cspReport']);   // what kinds of request are not sent
+const UNSEEN = /(^|\.)(googletagmanager\.com|google-analytics\.com|analytics\.google\.com|doubleclick\.net|scorecardresearch\.com|fastly-insights\.com|sentry\.io|cookielaw\.org|onetrust\.com|xp\.apple\.com|video-cf\.spotifycdn\.com)$/i;
+const unneeded = (details) => {
+  if (UNNEEDED.has(details.resourceType)) return true;
+  try { return UNSEEN.test(new URL(details.url).hostname); } catch (_) { return false; }
+};
+// a page of Apple's player in the account's store that has next to nothing on it (Apple's own "not found"),
+// where Browse, which the player opened on before, holds thousands of elements: some 30 MB less
+const LIGHT = 'ocean-mist';
 
 const say = (event, data) => process.stdout.write(
   'OMP ' + JSON.stringify({ event, t: Math.round((Date.now() - T0) / 100) / 10, ...(data || {}) }) + '\n');
@@ -92,8 +110,9 @@ app.disableHardwareAcceleration();   // it only plays: no graphics card, and no 
 // smaller caches and heaps in the page's process, which is never seen: some 45 MB less while a song plays
 app.commandLine.appendSwitch('enable-low-end-device-mode');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
-// no second media player on the desktop: Ocean Mist has its own, and the media keys are its
-app.commandLine.appendSwitch('disable-features', 'MediaSessionService,HardwareMediaKeyHandling');
+// no second media player on the desktop: Ocean Mist has its own, and the media keys are its. Chromium's audio
+// service runs in this process, not in one of its own (some 20 MB less): on Linux it has no sandbox either way
+app.commandLine.appendSwitch('disable-features', 'MediaSessionService,HardwareMediaKeyHandling,AudioServiceOutOfProcess');
 
 function finish(code) {
   process.stdout.write('', () => app.exit(code));
@@ -382,10 +401,10 @@ const pageSet = () => service === 'spotify'
   : { ready: pageReady, account: pageAccount, hook: pageHook, play: pagePlay, watch: pageWatch,
       pause: pagePause, resume: pageResume, seek: pageSeek, volume: pageVolume, stop: pageStop, go: false };
 
-// wait for the service's player to be up and to say that it is signed in
-async function waitReady() {
+// wait for the service's player to be up and to say that it is signed in (`within`: how long it gets)
+async function waitReady(within = READY_WITHIN) {
   let up = 0;
-  const until = Date.now() + READY_WITHIN;
+  const until = Date.now() + within;
   while (Date.now() < until) {
     const said = await inPage(P.ready).catch(() => ({}));
     if (said.api && said.signed) return;
@@ -677,7 +696,7 @@ async function run() {
   const ses = session.fromPartition(service === 'spotify' ? 'ocean-mist-spotify' : 'ocean-mist-apple');   // no "persist:": in memory only
   ses.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`);
   ses.webRequest.onBeforeRequest((details, callback) => {
-    callback(SIGN_OUT.test(details.url) ? { cancel: true } : {});
+    callback(SIGN_OUT.test(details.url) || unneeded(details) ? { cancel: true } : {});
   });
   const denied = new Set();
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
@@ -732,9 +751,26 @@ async function run() {
     page.on(kind, (event, url) => { if (!mayGo((event && event.url) || url)) event.preventDefault(); });
   }
   page.on('render-process-gone', () => fatal(new Fail('crash', 'the page\'s process ended')));
+  page.on('dom-ready', () => { page.insertCSS(UNDRAWN).catch(() => null); });   // each document of the page's
 
-  await open(site);
-  await waitReady();
+  // Apple's player opens on LIGHT in the store it was in last time (engine.py keeps it), or in the US one; where
+  // that page does not bring the player up in time, the player opens as it did before
+  const light = async (store) => {
+    try {
+      await open(`${site}${store}/${LIGHT}`);
+      await waitReady(LIGHT_WITHIN);
+    } catch (e) {
+      if (e instanceof Fail && e.code === 'signed-out') throw e;
+      await open(`${site}${store}/browse`);
+      await waitReady();
+    }
+  };
+  const store = /^[a-z]{2}$/.test(first.store || '') ? first.store : 'us';
+  if (service === 'apple' && !STAND_IN) await light(store);
+  else {
+    await open(site);
+    await waitReady();
+  }
 
   if (service === 'spotify') {
     // a song plays only for an account known to have Premium: a plan whose name starts with "premium"
@@ -759,8 +795,10 @@ async function run() {
     let account = await inPage(P.account);
     if (!account.active) throw new Fail('no-subscription', 'the account has no active Apple Music subscription');
     if (account.storefront && account.storefront !== account.current && /^[a-z]{2}$/.test(account.storefront)) {
-      await open(`${site}${account.storefront}/browse`);
-      await waitReady();
+      if (STAND_IN) {
+        await open(`${site}${account.storefront}/browse`);
+        await waitReady();
+      } else await light(account.storefront);
       account = await inPage(P.account);
     }
     await inPage(P.hook);
