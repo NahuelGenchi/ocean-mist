@@ -14,7 +14,7 @@
     names: { local: '', youtube: '', apple: '', spotify: '' },   // the saved playlist (or page) each came from
     show: 'local',      // the list the Now Playing pane shows
     settings: { volume: 0.5, muted: false, vis: 0, shuffle: false, repeat: false, hue: 0, zoom: 1,
-      dark: false, font: 'Tahoma9, Tahoma, "DejaVu Sans", sans-serif', font_size: 1 },
+      dark: false, font: 'tahoma', font_size: 1 },
     stations: [], playlists: [], folders: [],
     cur: null,          // id of the loaded track
     station: null,      // id of the radio station tuned in (then cur is null)
@@ -926,7 +926,7 @@
       { label: 'Player size', items: [1, 1.25, 1.5, 1.75, 2].map((z) => ({ label: `${z * 100}%`, checked: zoom === z, run: () => setZoom(z) })) },
       { label: 'Dark skin', checked: !!state.settings.dark, run: () => setDark(!state.settings.dark) },
       { label: 'Text size', items: SIZES.map(([label, size]) => ({ label, checked: (state.settings.font_size || 1) === size, run: () => setFontSize(size) })) },
-      { label: 'Font', items: FONTS.map(([label, font]) => ({ label, checked: (state.settings.font || FONTS[0][1]) === font, run: () => setFont(font) })) },
+      { label: 'Font', items: FONTS.map(([key, label]) => ({ label, checked: font()[0] === key, run: () => setFont(key) })) },
       { label: 'Sleep timer', checked: !!(sleep.at || sleep.song), items: sleepItems() },
       { label: 'Notify on song change', checked: !!state.settings.notify, run: () => { state.settings.notify = !state.settings.notify; saveSettings(); } },
       { label: 'Compact mode', hint: 'Ctrl+2', run: () => Mist.skins.compact() },
@@ -971,20 +971,43 @@
   }
   function setDark(on) { state.settings.dark = !!on; applyDark(); saveSettings(); }
 
-  // the font and its size: two CSS variables the whole page gets its text from
+  // the font and its size: two CSS variables the whole page gets its text from; the settings keep the font's key
   const FONTS = [
-    ['Tahoma (classic)', 'Tahoma9, Tahoma, "DejaVu Sans", sans-serif'],
-    ['DejaVu Sans', '"DejaVu Sans", sans-serif'],
-    ['Liberation Sans', '"Liberation Sans", "DejaVu Sans", sans-serif'],
-    ['Noto Sans', '"Noto Sans", "DejaVu Sans", sans-serif'],
-    ['Ubuntu', 'Ubuntu, "DejaVu Sans", sans-serif'],
+    ['tahoma', 'Tahoma (classic)', 'Tahoma9, Tahoma, "DejaVu Sans", sans-serif'],
+    ['dejavu', 'DejaVu Sans', '"DejaVu Sans", sans-serif'],
+    ['liberation', 'Liberation Sans', '"Liberation Sans", "DejaVu Sans", sans-serif'],
+    ['noto', 'Noto Sans', '"Noto Sans", "DejaVu Sans", sans-serif'],
+    ['ubuntu', 'Ubuntu', 'Ubuntu, "DejaVu Sans", sans-serif'],
   ];
   const SIZES = [['100%', 1], ['110%', 1.1], ['120%', 1.2], ['130%', 1.3]];
+  const font = () => FONTS.find(([key]) => key === state.settings.font) || FONTS[0];
   function applyFont() {
     const root = document.documentElement.style;
-    root.setProperty('--font-family', state.settings.font || FONTS[0][1]);
+    root.setProperty('--font-family', font()[2]);
     root.setProperty('--fs', String(state.settings.font_size || 1));
-    requestAnimationFrame(() => { updateTime(); setSlider($('volume'), state.settings.volume); regions(); });
+    layoutChanged();
+    document.fonts.ready.then(fitTaskbar);   // the bundled Tahoma may still be loading at start
+  }
+  // the task bar sits in a panel of the painted frame, so past 100% its labels grow only as far as they
+  // stay beside their arrows and above the logo: how far depends on the font and the window's height
+  function fitTaskbar() {
+    const bar = $('taskbar');
+    bar.style.removeProperty('--tfs');
+    let size = state.settings.font_size || 1;
+    if (size <= 1 || !bar.getClientRects().length) return;   // compact and full screen hide it
+    const tasks = [...bar.querySelectorAll('.task')];
+    const edge = $('tb-handle').getBoundingClientRect().left - 1;
+    const floor = $('logo').getBoundingClientRect().top - 4;
+    const over = () => tasks[tasks.length - 1].getBoundingClientRect().bottom > floor || tasks.some((task) => {
+      const arrow = task.querySelector('i');
+      const text = document.createRange();
+      text.selectNodeContents(task.querySelector('span'));
+      return text.getBoundingClientRect().right > (arrow ? arrow.getBoundingClientRect().left - 3 : edge);
+    });
+    while (size > 1 && over()) {
+      size = Math.max(1, Math.round((size - .02) * 100) / 100);
+      bar.style.setProperty('--tfs', String(size));
+    }
   }
   function setFont(font) { state.settings.font = font; applyFont(); saveSettings(); }
   function setFontSize(size) { state.settings.font_size = size; applyFont(); saveSettings(); }
@@ -1012,7 +1035,7 @@
   for (const a of document.querySelectorAll('.task')) a.addEventListener('click', () => show(a.dataset.view, a.dataset.name));
   function layoutChanged() {
     Frame.draw();
-    requestAnimationFrame(() => { updateTime(); setSlider($('volume'), state.settings.volume); regions(); });
+    requestAnimationFrame(() => { fitTaskbar(); updateTime(); setSlider($('volume'), state.settings.volume); regions(); });
   }
 
   // tell the host which parts of the frame move or resize the window
@@ -1150,7 +1173,7 @@
     $, base, audio, state, api, on, fire, onPlay, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream, outside,
     play, playStation, toggle, stop, step, listName, listOf, whereIs, playingList, streamList, setVis, applyVolume, cycleRepeat, repeatMode, control,
     menu, closeMenus, trackMenu, queueNext, queueLast, flash, render, show, layoutChanged, regions, setSleep, setZoom,
-    setDark, applyDark, setFont, setFontSize, applyFont,
+    setDark, setFont, setFontSize,
     probe() {  // handy for debugging
       const data = new Uint8Array(analyserNode ? analyserNode.frequencyBinCount : 1);
       const wave = new Uint8Array(analyserNode ? analyserNode.fftSize : 1).fill(128);

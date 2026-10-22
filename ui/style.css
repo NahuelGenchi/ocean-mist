@@ -68,15 +68,15 @@ body.tinted #yt-none { filter: hue-rotate(calc(var(--hue) * -1)); }
 #w-close:hover { background: #e2674d; color: #fff; box-shadow: none; }
 
 /* ---- task bar ---- */
-#taskbar { position: absolute; left: 3px; top: 46px; width: 82px; }
-.task { position: relative; display: block; height: calc(39px * var(--fs)); padding: calc(6.5px * var(--fs)) 0 0 4px; font-weight: 700; color: var(--ink); }
+#taskbar { position: absolute; left: 3px; top: 46px; width: 82px; --tfs: var(--fs); font-size: calc(11px * var(--tfs)); line-height: calc(13px * var(--tfs)); }   /* app.js lowers --tfs where the labels would leave the panel */
+.task { position: relative; display: block; height: calc(39px * var(--tfs)); padding: calc(6.5px * var(--tfs)) 0 0 4px; font-weight: 700; color: var(--ink); }
 .task span { position: relative; display: block; white-space: nowrap; }
 .task::after { content: ""; position: absolute; left: 1.5px; right: 5px; bottom: 0; height: 1px; background: linear-gradient(90deg, rgba(190, 203, 224, 0), rgba(190, 203, 224, .5) 12%, rgba(190, 203, 224, .5) 80%, rgba(190, 203, 224, 0)); }
 .task:last-child::after { display: none; }
 .task::before { content: ""; position: absolute; left: .5px; top: 1.5px; width: 65.5px; bottom: -1px; }
 .task:hover::before { background: rgba(214, 232, 250, .6); }
 .task.sel::before { background: linear-gradient(#d3e7fa, #c9ddf2); box-shadow: inset -1px -1px 0 rgba(255, 255, 255, .7), inset 0 1px 0 rgba(176, 198, 228, .5); }
-.task i { position: absolute; left: 69px; top: 15px; border: 4px solid transparent; border-left: 4.5px solid #27345c; border-right: 0; }
+.task i { position: absolute; left: 69px; top: calc(19px * var(--tfs) - 4px); border: 4px solid transparent; border-left: 4.5px solid #27345c; border-right: 0; }
 #tb-handle {
   position: absolute; left: 82.5px; top: calc(35px + (100% - 131px) / 2 - 21.5px); width: 5px; height: 43px; border-radius: 2px;
   background: linear-gradient(90deg, #fbfdff, #dfe6f3 60%, #bcc8de); box-shadow: 0 0 0 1px rgba(125, 140, 172, .75);
@@ -127,7 +127,7 @@ body.tinted #yt-none { filter: hue-rotate(calc(var(--hue) * -1)); }
 .row .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .row .d { padding-left: 8px; }
 .row .q { flex: none; min-width: calc(12px * var(--fs)); height: calc(11px * var(--fs)); margin: calc(1.5px * var(--fs)) 0 0 4px; padding: 0 3px; border-radius: 6px; background: var(--green); color: #10210a; font-size: calc(9px * var(--fs)); line-height: calc(11px * var(--fs)); font-weight: 700; text-align: center; letter-spacing: 0; }
-.ahead { height: 13px; line-height: 13px; margin: 1px 5px 1px 2px; border-bottom: 1px solid #4c558a; color: #9aa3cc; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ahead { height: calc(13px * var(--fs)); line-height: calc(13px * var(--fs)); margin: 1px 5px 1px 2px; border-bottom: 1px solid #4c558a; color: #9aa3cc; font-size: calc(10px * var(--fs)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #playlist.dragging, #playlist.dragging .row { cursor: grabbing; }
 #drop-line { position: absolute; left: 5px; right: 12px; height: 2px; background: var(--green); box-shadow: 0 0 2px #000; pointer-events: none; }
 .row.sel { background: #eceadb; color: #14161f; }
@@ -313,7 +313,7 @@ body.no-pane #pane, body.no-pane #totalbar { display: none; }
 }
 .menu > div { position: relative; display: flex; height: calc(18px * var(--fs)); line-height: calc(18px * var(--fs)); padding: 0 18px 0 22px; white-space: nowrap; }
 .menu > div:hover, .menu > div.open { background: #316ac5; color: #fff; }
-.menu > div.check::before { content: ""; position: absolute; left: 8px; top: calc((18px * var(--fs) - 8px) / 2); width: 4px; height: 8px; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(40deg) scale(.9); }
+.menu > div.check::before { content: ""; position: absolute; left: 8px; top: calc((18px * var(--fs) - 10px) / 2); width: 4px; height: 8px; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(40deg) scale(.9); }
 .menu > div.sub::after { content: ""; position: absolute; right: 6px; top: calc((18px * var(--fs) - 8px) / 2); border: 4px solid transparent; border-left-color: currentColor; border-right: 0; }
 .menu > div.off, .menu > div.off:hover { background: none; color: #aca899; }
 .menu > div.sep, .menu > div.sep:hover { height: 1px; margin: 3px 1px; padding: 0; background: #aca899; }

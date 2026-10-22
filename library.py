@@ -227,8 +227,7 @@ class Library:
             "repeat": False, "hue": 0, "eq": [0] * 10, "eq_on": False,
             "eq_preset": "Flat", "eq_open": False, "notify": False,
             "yt_radio": True, "zoom": 1, "mini": False,
-            "dark": False, "font": "Tahoma9, Tahoma, \"DejaVu Sans\", sans-serif",
-            "font_size": 1,
+            "dark": False, "font": "tahoma", "font_size": 1,   # the skin, the interface font (its key in ui/app.js) and text size
             "yt_account": False,   # the Firefox profile you signed in to YouTube Music with (only which one)
             "apple_account": False,   # ...and to Apple Music
             "spotify_account": False,   # ...and to Spotify
