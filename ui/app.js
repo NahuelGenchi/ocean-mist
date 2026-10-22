@@ -50,6 +50,14 @@
   }
   async function refresh() {
     const data = await (await fetch(base + 'api/state')).json();
+    // the host answers each request in a thread of its own, so an answer read before one already applied can come in
+    // after it: its lists are older, and putting them back would stop a song that started since
+    if (data.taken < refresh.taken) {
+      if (data.play) startTarget(data.play);   // ...but what it offers is offered once, to whichever request came first
+      else if (data.resume) resume(data.resume);
+      return;
+    }
+    refresh.taken = data.taken;
     const known = new Map(Object.values(state.lists).flat().map((t) => [t.id, t]));
     const looks = (t) => (t ? [t.title, t.artist, t.album, t.art].join('\n') : '');
     const before = looks(track(state.cur));

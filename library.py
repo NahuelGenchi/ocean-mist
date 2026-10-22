@@ -363,7 +363,10 @@ class Library:
                     "settings": dict(self.settings), "play": pending,
                     "resume": resume, "stations": list(self.stations),
                     "playlists": self.playlist_files(),
-                    "folders": self.folders()}
+                    "folders": self.folders(),
+                    # when it was read, in microseconds of the system's monotonic clock (which goes on
+                    # across a restart of --serve): of answers that cross, the page keeps the newest
+                    "taken": time.monotonic_ns() // 1000}
 
     def library_snapshot(self):
         with self.lock:
