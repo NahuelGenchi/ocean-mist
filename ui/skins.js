@@ -1,11 +1,16 @@
 // Skin Chooser: the compact skin shrinks the player to a small bar with only
 // the status line and the controls (the host resizes the window to match); the
-// dark skin only changes the colours and leaves the size alone.
+// classic and dark skins only change the colors, so compact keeps either.
 (() => {
   const { $, state, api, on, setDark } = Mist;
   const SIZE = Frame.MINI;
   const body = document.body;
   const INFO = {
+    classic: {
+      title: 'Classic',
+      text: 'The blue look the player starts with: the sculpted frame, with light lists and menus.' +
+        '<br>Like Dark, it changes only the colors and leaves the size as it is.',
+    },
     compact: {
       title: 'Compact',
       text: 'Only the status line and the controls, in a small bar that stays out of the way.' +
@@ -13,8 +18,8 @@
     },
     dark: {
       title: 'Dark',
-      text: 'A dark colour scheme for the whole player: the frame, menus and lists use dark surfaces,' +
-        '<br>while the album art and the green accents keep their own colours.',
+      text: 'A dark color scheme for the whole player: the frame, menus and lists use dark surfaces,' +
+        '<br>while the album art and the green accents keep their own colors.',
     },
   };
   let chosen = 'compact';
@@ -56,9 +61,8 @@
   }
 
   function apply() {
-    if (chosen === 'dark') { leave(); setDark(true); return; }
-    setDark(false);
-    compact();
+    if (chosen === 'compact') compact();
+    else setDark(chosen === 'dark');
   }
 
   $('skin-apply').addEventListener('click', apply);
@@ -71,5 +75,5 @@
   select('compact');
   on('settings', () => { if (state.settings.mini) compact(); });
 
-  Mist.skins = { apply, leave, compact, select, dark: () => setDark(true) };
+  Mist.skins = { apply, leave, compact };
 })();

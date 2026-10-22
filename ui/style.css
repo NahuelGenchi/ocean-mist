@@ -345,7 +345,7 @@ body.fullscreen { background: #000; }
 body.fullscreen .view { left: 0; top: 0; right: 0; bottom: 0; }
 body.fullscreen #stage { right: 0; bottom: 0; }
 
-/* ---- dark skin: dark frame and surfaces; the album art keeps its colours ---- */
+/* ---- dark skin: dark frame and surfaces; the album art and the green accents keep their colors ---- */
 body.dark { --ink: #dbe2f2; --pane: #1b2030; --bar: #12151f; }
 body.dark #frame { filter: invert(1) hue-rotate(180deg) saturate(.85); }
 body.dark.tinted #frame { filter: invert(1) hue-rotate(calc(180deg + var(--hue))) saturate(.85); }
@@ -391,4 +391,17 @@ body.dark .lib-tools button:hover, body.dark #radio-form button:hover, body.dark
 body.dark .lib-tools button:active, body.dark #radio-form button:active, body.dark .yt-sign button:active { background: #1c2333; }
 body.dark .lib-tools button:disabled { color: #6b7590; background: linear-gradient(#262d3f, #1d2331); }
 body.dark .lib-table tr.sel td, body.dark .row.sel { background: #2b3f6b; color: #eef2ff; }
+body.dark #pane-head, body.dark .lib-tools { background: #333b63; border-bottom-color: #12151f; }
+body.dark #radio-form, body.dark #yt-head { background: #283052; border-bottom-color: #12151f; }
+body.dark .eq-head { background: #283052; border-top-color: #3f4870; border-bottom-color: #12151f; }
+body.dark .ahead { border-bottom-color: #343c58; }
+
+body.dark .jog { color: #c3cce2; background: linear-gradient(#3d4659, #2c3445 55%, #232a39); box-shadow: inset 0 0 0 1px #10131b, 0 1px 0 rgba(120, 140, 180, .2); }
+body.dark .jog:hover { color: #eef2ff; }
+body.dark .jog:active { background: #1c2230; }
+body.dark #seek { background: linear-gradient(#0d1018, #1f2533 30%, #333a4b 70%, #434a5c); }
+body.dark #volume .wedge { background: linear-gradient(#2a3142, #3d4558 55%, #4d5569); }
+
+body.dark ::-webkit-scrollbar-track, body.dark ::-webkit-scrollbar-corner { background: #141a26; }
+body.dark ::-webkit-scrollbar-thumb { background: linear-gradient(90deg, #56618a, #424c70); border-color: #141a26; }
 body.dark .lib-table tr.cur td, body.dark .row.cur { background: #000; color: var(--green); }
