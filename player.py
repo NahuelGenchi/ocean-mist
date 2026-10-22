@@ -248,7 +248,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found")
 
     def _apple(self, what):
-        """Apple Music for the page: your library as rows and pages, and covers.
+        """Apple Music for the page: your library as rows and pages, a search of it, and covers.
         (The songs are played by the playback engine: see _engine_cmd.)"""
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         ask = lambda key: (query.get(key) or [""])[0]
@@ -263,6 +263,11 @@ class Handler(BaseHTTPRequestHandler):
                 folder = self.library.settings.get("apple_account")
                 found["profile"] = firefox.name_of(folder) if isinstance(folder, str) and folder else ""
                 return self._json(found)
+            if what == "search":
+                offset = ask("offset")
+                return self._json(reader.search(ask("kind"), ask("q"), int(offset) if offset.isascii() and offset.isdigit() else 0))
+            if what == "search":
+                return self._json(reader.search(ask("kind"), ask("q")))
             if what == "page":
                 return self._json(reader.page_of(ask("kind"), ask("id")))
         except YTError as error:
@@ -271,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found")
 
     def _spotify(self, what):
-        """Spotify for the page: your library as rows and pages, and covers.
+        """Spotify for the page: your library as rows and pages, a search of it, and covers.
         (The songs are played by the playback engine: see _engine_cmd.)"""
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         ask = lambda key: (query.get(key) or [""])[0]

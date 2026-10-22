@@ -9,7 +9,8 @@
 // as well, and their songs go into lists of their own, Apple Music's and
 // Spotify's. Their audio is protected, so the playback engine (engine.py)
 // plays it: its page here, under both branches, installs it and says what it
-// needs.
+// needs. The search box searches the service being browsed: YouTube Music, or
+// your Apple Music or Spotify library.
 (() => {
   const { $, state, api, on, onPlay, esc, clock, menu, base, sentence } = Mist;
   const SEARCHES = [['all', 'Top results'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']];
@@ -18,12 +19,15 @@
   const APPLE_PICTURES = /^https:\/\/([a-z0-9-]+\.)*(mzstatic\.com|blobstore\.apple\.com)\//i;   // the pictures the host fetches for Apple Music
   const SPOTIFY = [['songs', 'Liked Songs'], ['playlists', 'Playlists'], ['albums', 'Albums'], ['artists', 'Artists']];
   const SPOTIFY_PICTURES = /^https:\/\/([a-z0-9-]+\.)*(scdn\.co|spotifycdn\.com|spotify\.com)\//i;   // ...and for Spotify
+  const BOXES = { youtube: 'Search YouTube Music', apple: 'Search your Apple Music library', spotify: 'Search your Spotify library' };
   const yt = {
     words: '',                // what was searched for
     kind: 'songs',            // the search the box runs
+    within: 'youtube',        // ...and the service it searches: 'youtube', 'apple' or 'spotify'
     // what the table shows: the streaming list in view ('now'), a search, a page
     // ('album:ID', or 'mine:ID' for one of your playlists), a saved playlist
-    // ('list', its path), your library ('account') or Apple Music's ('apple', a part of it)
+    // ('list', its path), your library ('account'), Apple Music's or Spotify's ('apple',
+    // 'spotify', a part of it) or a search of it ('apple-search', 'spotify-search', a kind)
     node: { kind: 'search', value: 'songs' },
     results: {},              // 'kind\nwords' -> { items, more } or { error } or { loading }
     pages: {},                // 'album:ID' -> the page, or { error } or { loading }
@@ -40,14 +44,18 @@
   };
   const ap = {                // Apple Music
     lists: {},                // 'songs'… -> { items, more, total, at, busy } or { error, signed_out } or { loading }
+    words: '',                // what was searched for in the library
+    found: {},                // 'kind\nwords' -> { items, more, busy } or { error, signed_out } or { loading }
     profile: '',              // the Firefox profile it is read through
     out: '',                  // why Apple Music no longer accepts the sign-in, when it said so
     waiting: false,           // signing in, as for YouTube Music
     choices: null,
     note: '',
   };
-  const sp = {                // Spotify, the same way
-    lists: {},
+  const sp = {                // Spotify, the same way (a search finds the whole list's matches at once:
+    lists: {},                // { items, whole, read }, `whole` false when the list goes on past the `read` rows read)
+    words: '',
+    found: {},
     profile: '',
     out: '',
     waiting: false,
@@ -99,6 +107,7 @@
       if (node.value !== 'sign-in') loadSpotify(node.value);
       return;
     }
+    if (node.kind === 'apple-search' || node.kind === 'spotify-search') { find(node); return; }
     if (node.kind === 'search') {
       const words = yt.words, key = node.value + '\n' + words;
       if (!words || (yt.results[key] && !yt.results[key].error)) return;
@@ -201,6 +210,32 @@
       if (same(yt.node, { kind: 'spotify', value: kind })) drawRows(true);
     });
   }
+  // a search of your Apple Music or Spotify library; `more` carries on from where Apple's results ended (Spotify
+  // sends all of them at once)
+  function find(node, more) {
+    const apple = node.kind === 'apple-search', of = apple ? ap : sp;
+    if (!(apple ? appleReady() : spotifyReady())) return;
+    const words = of.words, key = node.value + '\n' + words, found = of.found[key];
+    const ask = (offset) => (apple ? getApple : getSpotify)(`search?kind=${node.value}&q=${encodeURIComponent(words)}` + (offset ? `&offset=${offset}` : ''));
+    if (more) {
+      if (!apple || !found || !found.items || found.more == null || found.busy) return;
+      found.busy = true; drawRows(true);
+      ask(found.more).then((r) => {
+        found.busy = false;
+        if (r.error) { Mist.flash(sentence(r.error), 6000); if (r.signed_out) appleOut(r); }
+        else { found.items = found.items.concat(r.items || []); found.more = r.more; }
+        if (of.found[key] === found && same(yt.node, node)) drawRows(true);
+      });
+      return;
+    }
+    if (!words || (found && !found.error)) return;
+    of.found[key] = { loading: true };
+    ask(0).then((r) => {
+      of.found[key] = r.error ? { error: r.error, signed_out: r.signed_out } : { items: r.items || [], more: r.more, whole: r.whole !== false, read: r.read };
+      if (r.signed_out) (apple ? appleOut : spotifyOut)(r);
+      else if (same(yt.node, node) && of.words === words) drawRows(true);
+    });
+  }
   const split = (key) => { const at = key.indexOf(':'); return [key.slice(0, at), key.slice(at + 1)]; };
   function loadSaved(path) {   // read again each time, as the file may have changed
     if (!yt.saved[path]) yt.saved[path] = { loading: true };
@@ -235,9 +270,40 @@
     load(node);
     draw();
   }
+  // the service of what the table shows, which the search box searches: none for Now Playing, a saved playlist
+  // or the Playback engine, which keep the last one
+  function serviceOf(node) {
+    if (node.kind === 'apple') return node.value === 'engine' ? null : 'apple';
+    if (node.kind === 'apple-search') return 'apple';
+    if (node.kind === 'spotify' || node.kind === 'spotify-search') return 'spotify';
+    if (node.kind === 'page') return node.value.startsWith('apple-') ? 'apple' : node.value.startsWith('spotify-') ? 'spotify' : 'youtube';
+    return node.kind === 'search' || node.kind === 'account' ? 'youtube' : null;
+  }
+  const wordsOf = (within) => (within === 'apple' ? ap : within === 'spotify' ? sp : yt).words;
+  // the search box says which service it searches, and holds what was last searched there
+  function drawSearch() {
+    const within = serviceOf(yt.node) || yt.within, box = $('yt-search');
+    if (within === yt.within) return;
+    yt.within = within;
+    box.placeholder = BOXES[within];
+    box.value = wordsOf(within);
+  }
   function search(words) {
     words = words.trim().replace(/\s+/g, ' ');
     if (!words) return;
+    const node = yt.node;
+    if (yt.within === 'apple') {   // in the kind of the list in view; every kind from Recently added or a page
+      ap.words = words;
+      const kind = (node.kind === 'apple' || node.kind === 'apple-search') && NOUNS[node.value] && node.value !== 'recent' ? node.value : 'all';
+      show({ kind: 'apple-search', value: kind });
+      return;
+    }
+    if (yt.within === 'spotify') {   // ...and Liked Songs from a page
+      sp.words = words;
+      const kind = (node.kind === 'spotify' || node.kind === 'spotify-search') && SPOTIFY.some((s) => s[0] === node.value) ? node.value : 'songs';
+      show({ kind: 'spotify-search', value: kind });
+      return;
+    }
     yt.words = words;
     show({ kind: 'search', value: yt.kind });
   }
@@ -252,6 +318,8 @@
       : node.kind === 'account' ? (signedIn() ? yt.library : null)
       : node.kind === 'apple' ? (appleReady() && node.value !== 'sign-in' && node.value !== 'engine' ? ap.lists[node.value] : null)
       : node.kind === 'spotify' ? (spotifyReady() && node.value !== 'sign-in' ? sp.lists[node.value] : null)
+      : node.kind === 'apple-search' ? (appleReady() ? ap.found[node.value + '\n' + ap.words] : null)
+      : node.kind === 'spotify-search' ? (spotifyReady() ? sp.found[node.value + '\n' + sp.words] : null)
       : { items: state.lists[Mist.streamList()].map(asItem) };
     const rows = [], found = yt.found;
     if (found && !found.loading && !found.error) {
@@ -280,13 +348,21 @@
     const found = yt.found, node = yt.node;
     if (node.kind === 'apple' && node.value === 'engine') return engineText();
     if (node.kind === 'account' && (!signedIn() || (found && found.signed_out))) return signInText(found && found.error);
-    if (node.kind === 'apple' && (!appleReady() || node.value === 'sign-in' || (found && found.signed_out))) return appleSignInText(found && found.error);
-    if (node.kind === 'spotify' && (!spotifyReady() || node.value === 'sign-in' || (found && found.signed_out))) return spotifySignInText(found && found.error);
+    if ((node.kind === 'apple' || node.kind === 'apple-search') && (!appleReady() || node.value === 'sign-in' || (found && found.signed_out))) return appleSignInText(found && found.error);
+    if ((node.kind === 'spotify' || node.kind === 'spotify-search') && (!spotifyReady() || node.value === 'sign-in' || (found && found.signed_out))) return spotifySignInText(found && found.error);
     if (node.kind === 'search' && !yt.words) return 'Type what you are looking for in the search box at the top right, then press Enter.';
     if (!found || found.loading) return node.kind === 'search' ? 'Searching YouTube Music…'
+      : node.kind === 'apple-search' ? 'Searching your Apple Music library…'
+      : node.kind === 'spotify-search' ? 'Searching your Spotify library…'
       : node.kind === 'apple' ? 'Reading your Apple Music library…'
       : node.kind === 'spotify' ? 'Reading your Spotify library…' : 'Opening…';
     if (found.error) return esc(sentence(found.error));
+    if (node.kind === 'apple-search') return `Nothing in your Apple Music library matches “${esc(ap.words)}”.`;
+    if (node.kind === 'spotify-search') {
+      const what = node.value === 'songs' ? 'Liked Songs' : NOUNS[node.value][1];
+      return found.whole ? `Nothing in your Spotify ${what} matches “${esc(sp.words)}”.`
+        : `Nothing in the first ${found.read} of your Spotify ${what} matches “${esc(sp.words)}”.`;
+    }
     if (node.kind === 'apple') return node.value === 'recent' ? 'Nothing was added to your Apple Music library lately.' : `There are no ${NOUNS[node.value][1]} in your Apple Music library.`;
     if (node.kind === 'spotify') {
       const what = (SPOTIFY.find((s) => s[0] === node.value) || ['', NOUNS[node.value][1]])[1].toLowerCase();
@@ -356,14 +432,21 @@
   }
   // the table's three column titles
   function heads(node) {
-    const service = node.kind === 'apple' || node.kind === 'spotify';
+    const service = ['apple', 'spotify', 'apple-search', 'spotify-search'].includes(node.kind);
     const kind = node.kind === 'search' || service ? node.value : node.kind === 'account' ? 'playlists' : 'page';
     return [{ albums: 'Album', artists: 'Artist', playlists: 'Playlist' }[kind] || 'Title',
       service && kind === 'playlists' ? '' : { artists: '', playlists: 'Made by' }[kind] ?? 'Artist',
       ['albums', 'artists', 'playlists', 'recent'].includes(kind) ? 'Details' : 'Album'];
   }
+  // the title of a search of a library: what it found, of which kind
+  function searched(node, words) {
+    if (node.value === 'all') return `Results for “${words}”`;
+    const kind = node.kind === 'spotify-search' && node.value === 'songs' ? 'Liked Songs' : NOUNS[node.value][1];
+    return `${kind.charAt(0).toUpperCase() + kind.slice(1)} matching “${words}”`;
+  }
   function drawRows(keep) {
     compute();
+    drawSearch();
     const node = yt.node;
     [$('yt-c1').textContent, $('yt-c2').textContent, $('yt-c3').textContent] = heads(node);
     $('yt-rows').innerHTML = yt.rows.length ? yt.rows.map(rowHtml).join('') : `<tr class="lib-empty"><td colspan="4">${emptyText()}</td></tr>`;
@@ -372,17 +455,17 @@
     const page = shownPage(), songs = yt.rows.filter((r) => playable(r.item)).map((r) => r.item);
     const total = songs.reduce((sum, t) => sum + (t.duration || 0), 0);
     const library = node.kind === 'account' && signedIn() && !(yt.found && yt.found.signed_out);
-    const mine = node.kind === 'apple' && appleReady() && node.value !== 'sign-in' && node.value !== 'engine' && !(yt.found && yt.found.signed_out);
-    const ours = node.kind === 'spotify' && spotifyReady() && node.value !== 'sign-in' && !(yt.found && yt.found.signed_out);
+    const mine = (node.kind === 'apple' || node.kind === 'apple-search') && appleReady() && node.value !== 'sign-in' && node.value !== 'engine' && !(yt.found && yt.found.signed_out);
+    const ours = (node.kind === 'spotify' || node.kind === 'spotify-search') && spotifyReady() && node.value !== 'sign-in' && !(yt.found && yt.found.signed_out);
     $('yt-head').hidden = !page && !library && !mine && !ours;
     if (mine) {
       const profile = ap.profile ? ` profile “${esc(ap.profile)}”` : '';
-      $('yt-head').innerHTML = `<b>${esc(APPLE.find((a) => a[0] === node.value)[1])}</b>` +
+      $('yt-head').innerHTML = `<b>${esc(node.kind === 'apple-search' ? searched(node, ap.words) : APPLE.find((a) => a[0] === node.value)[1])}</b>` +
         `<span>Apple Music, signed in through Firefox${profile} · <a id="ap-signout">Sign out</a></span>`;
     }
     if (ours) {
       const profile = sp.profile ? ` profile “${esc(sp.profile)}”` : '';
-      $('yt-head').innerHTML = `<b>${esc(SPOTIFY.find((a) => a[0] === node.value)[1])}</b>` +
+      $('yt-head').innerHTML = `<b>${esc(node.kind === 'spotify-search' ? searched(node, sp.words) : SPOTIFY.find((a) => a[0] === node.value)[1])}</b>` +
         `<span>Spotify, signed in through Firefox${profile} · <a id="sp-signout">Sign out</a></span>`;
     }
     if (library) {
@@ -396,19 +479,20 @@
     }
     // the count, and more results for a search
     const found = yt.found, items = yt.rows.filter((r) => r.item);
-    const listing = !['search', 'account', 'apple', 'spotify'].includes(node.kind);   // the songs of a page, a saved playlist or the list
+    const listing = !['search', 'account', 'apple', 'spotify', 'apple-search', 'spotify-search'].includes(node.kind);   // the songs of a page, a saved playlist or the list
     let text = '';
-    if (found && found.loading) text = node.kind === 'search' ? 'Searching…' : 'Opening…';
+    if (found && found.loading) text = ['search', 'apple-search', 'spotify-search'].includes(node.kind) ? 'Searching…' : 'Opening…';
     else if (items.length) {
       const noun = listing ? NOUNS.songs : NOUNS[node.kind === 'account' ? 'playlists' : node.value], n = listing ? songs.length : items.length;
       text = `${n} ${n === 1 ? noun[0] : noun[1]}` + (listing && total ? `, ${clock(total)}` : '');
       if (node.kind === 'apple' && found.more != null) text = `${n} of ${found.total || 'more'} ${noun[1]}`;
       if (node.kind === 'spotify' && found.more != null && found.total > n) text = `${n} of ${found.total} ${noun[1]}`;   // (without a total, the count alone)
+      if (node.kind === 'spotify-search' && !found.whole) text += ` among the first ${found.read} of your ${node.value === 'songs' ? 'Liked Songs' : noun[1]}`;
     }
     $('yt-count').textContent = text;
-    const mayMore = node.kind === 'search' || node.kind === 'apple' || node.kind === 'spotify';
+    const mayMore = ['search', 'apple', 'spotify', 'apple-search'].includes(node.kind);
     $('yt-more').hidden = !(mayMore && found && found.more);
-    $('yt-more').textContent = found && found.busy ? 'Getting more…' : node.kind === 'search' ? 'More results' : 'Show more';
+    $('yt-more').textContent = found && found.busy ? 'Getting more…' : node.kind === 'search' || node.kind === 'apple-search' ? 'More results' : 'Show more';
     $('yt-back').disabled = !yt.back.length;
     $('yt-queue').hidden = node.kind === 'now';   // already in it
     drawCover();
@@ -491,7 +575,9 @@
     const page = shownPage();
     const name = page ? page.title : yt.node.kind === 'list' ? savedName(yt.node.value)
       : yt.node.kind === 'apple' ? 'Apple Music: ' + APPLE.find((a) => a[0] === yt.node.value)[1]
-      : yt.node.kind === 'spotify' ? 'Spotify: ' + SPOTIFY.find((a) => a[0] === yt.node.value)[1] : '';
+      : yt.node.kind === 'spotify' ? 'Spotify: ' + SPOTIFY.find((a) => a[0] === yt.node.value)[1]
+      : yt.node.kind === 'apple-search' ? `Apple Music: “${ap.words}”`
+      : yt.node.kind === 'spotify-search' ? `Spotify: “${sp.words}”` : '';
     api('yt-play', { items: songs.map(song), start: songKey(start), name });
   }
   // Recently added is a feed of albums and playlists, and Play on a row of it makes the whole feed the list, as Play
@@ -647,11 +733,13 @@
     if (!near) return;
     if (yt.node.kind === 'apple' && yt.node.value !== 'engine') loadApple(yt.node.value, true);
     else if (yt.node.kind === 'spotify') loadSpotify(yt.node.value, true);
+    else if (yt.node.kind === 'apple-search') find(yt.node, true);
   });
   $('yt-more').addEventListener('click', () => {
     const node = yt.node, found = yt.found;
     if (node.kind === 'apple') { loadApple(node.value, true); return; }
     if (node.kind === 'spotify') { loadSpotify(node.value, true); return; }
+    if (node.kind === 'apple-search') { find(node, true); return; }
     if (node.kind !== 'search' || !found || !found.more || found.busy) return;
     found.busy = true; drawRows(true);
     get(`more?token=${encodeURIComponent(found.more)}&kind=${node.value}`).then((r) => {
@@ -851,7 +939,7 @@
     if (await waitForSignIn(ap, 'apple', 'apple-sign-in', profile)) {
       endSongOf('apple');
       state.settings.apple_account = true;
-      ap.lists = {}; ap.profile = ''; ap.out = '';
+      ap.lists = {}; ap.found = {}; ap.profile = ''; ap.out = '';
       Mist.flash('Signed in to Apple Music through Firefox');
       show({ kind: 'apple', value: 'recent' }, true);
       return;
@@ -862,7 +950,7 @@
     if (await waitForSignIn(sp, 'spotify', 'spotify-sign-in', profile)) {
       endSongOf('spotify');
       state.settings.spotify_account = true;
-      sp.lists = {}; sp.profile = ''; sp.out = '';
+      sp.lists = {}; sp.found = {}; sp.profile = ''; sp.out = '';
       Mist.flash('Signed in to Spotify through Firefox');
       show({ kind: 'spotify', value: 'songs' }, true);
       return;
@@ -873,8 +961,8 @@
     api('apple-sign-out').then(() => {
       endSongOf('apple');
       state.settings.apple_account = false;
-      ap.lists = {}; ap.profile = ''; ap.out = ''; ap.note = ''; ap.choices = null;
-      const apples = (n) => n.kind === 'apple' || (n.kind === 'page' && n.value.startsWith('apple-'));
+      ap.lists = {}; ap.found = {}; ap.profile = ''; ap.out = ''; ap.note = ''; ap.choices = null;
+      const apples = (n) => n.kind === 'apple' || n.kind === 'apple-search' || (n.kind === 'page' && n.value.startsWith('apple-'));
       for (const key of Object.keys(yt.pages)) if (key.startsWith('apple-')) delete yt.pages[key];
       yt.recent = yt.recent.filter((p) => !p.key.startsWith('apple-'));
       yt.back = yt.back.filter((n) => !apples(n));
@@ -887,8 +975,8 @@
     api('spotify-sign-out').then(() => {
       endSongOf('spotify');
       state.settings.spotify_account = false;
-      sp.lists = {}; sp.profile = ''; sp.out = ''; sp.note = ''; sp.choices = null;
-      const theirs = (n) => n.kind === 'spotify' || (n.kind === 'page' && n.value.startsWith('spotify-'));
+      sp.lists = {}; sp.found = {}; sp.profile = ''; sp.out = ''; sp.note = ''; sp.choices = null;
+      const theirs = (n) => n.kind === 'spotify' || n.kind === 'spotify-search' || (n.kind === 'page' && n.value.startsWith('spotify-'));
       for (const key of Object.keys(yt.pages)) if (key.startsWith('spotify-')) delete yt.pages[key];
       yt.recent = yt.recent.filter((p) => !p.key.startsWith('spotify-'));
       yt.back = yt.back.filter((n) => !theirs(n));
@@ -898,8 +986,8 @@
     });
   }
   // Apple Music no longer accepts the sign-in: the branch asks for it again
-  function appleOut(r) { ap.out = r.error || 'Apple Music says you are signed out; sign in again in Firefox'; ap.lists = {}; draw(); }
-  function spotifyOut(r) { sp.out = r.error || 'Spotify says you are signed out; sign in again in Firefox'; sp.lists = {}; draw(); }
+  function appleOut(r) { ap.out = r.error || 'Apple Music says you are signed out; sign in again in Firefox'; ap.lists = {}; ap.found = {}; draw(); }
+  function spotifyOut(r) { sp.out = r.error || 'Spotify says you are signed out; sign in again in Firefox'; sp.lists = {}; sp.found = {}; draw(); }
   function signOut() {
     api('yt-sign-out').then(() => {
       state.settings.yt_account = false;
@@ -1009,7 +1097,7 @@
     if (view !== 'premium') return;
     loadLibrary();
     draw();
-    if (!yt.words) $('yt-search').focus();
+    if (!wordsOf(yt.within)) $('yt-search').focus();
   });
   on('state', () => {
     if (state.view !== 'premium') return;
