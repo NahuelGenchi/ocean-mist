@@ -370,7 +370,7 @@
       if (found.more != null) return `No ${what} were found in the first part of your Spotify library. Show more looks further.`;
       return `There are no ${what} in your Spotify library.`;
     }
-    if (node.kind === 'now') return `Nothing is in the ${Mist.listName(Mist.streamList())} list. The songs you play or add here go into their service's list.`;
+    if (node.kind === 'now') return `Nothing is in the ${Mist.listName(Mist.streamList())} list. The songs you play here go into their service's list, and the songs you add join the list that is playing.`;
     if (node.kind === 'list') return 'This playlist has no songs that can be found.';
     if (node.kind === 'account') return 'There are no playlists in your library yet.';
     return node.kind === 'search' ? `YouTube Music found nothing for “${esc(yt.words)}”.` : 'There is nothing to play here.';
@@ -627,14 +627,27 @@
       count += Math.min(songs.length, QUEUE_LIMIT - count);
     }
   }
+  // songs added from here join the list that is playing when that is a streaming one, whatever their service; while
+  // a song of My Music is on (it keeps no streaming songs), they go into their service's list and into the queue, so
+  // that they play after it. `next`: the one song plays next (in a streaming list, it goes right after the current
+  // one too). Answers what the host said
+  function addSongs(items, next) {
+    const into = Mist.playingList(), streaming = into && into !== 'local';
+    return api('yt-add', { items, into: streaming ? into : undefined, after: streaming && next ? state.cur : undefined }).then((r) => {
+      const ids = r.ids || [];
+      if (next) { if (ids.length) Mist.queueNext(ids[0]); }
+      else if (into === 'local') for (const id of ids) Mist.queueLast(id);
+      return r;
+    });
+  }
   async function playItem(item, add) {   // an album or a playlist, from its row
     if (!add) queueTurn++;
     const page = await pageOf(item);
     if (!page || !(page.tracks || []).length) return;
-    if (add) api('yt-add', { items: page.tracks.map(song) });
+    if (add) addSongs(page.tracks.map(song));
     else api('yt-play', { items: page.tracks.map(song), start: songKey(page.tracks[0]), name: page.title });
   }
-  function playNext(item) { api('yt-add', { items: [song(item)] }).then((r) => { if (r.ids && r.ids.length) Mist.queueNext(r.ids[0]); }); }
+  function playNext(item) { addSongs([song(item)], true); }
   function similar(item) {
     queueTurn++;
     Mist.flash('Finding similar songs…', 10000);
@@ -642,11 +655,11 @@
       .then((r) => { if (r.notice) Mist.flash(sentence(r.notice), 6000); });
   }
   function add(item) {
-    if (playable(item)) api('yt-add', { items: [song(item)] });
+    if (playable(item)) addSongs([song(item)]);
     else if (item && (item.kind === 'album' || item.kind === 'playlist')) playItem(item, true);
     else if (!item) {
       const songs = yt.rows.map((r) => r.item).filter(playable);
-      if (songs.length) api('yt-add', { items: songs.map(song) }).then((r) => { if (r.limit) Mist.flash(`Only the first ${r.limit} songs were added`, 6000); });
+      if (songs.length) addSongs(songs.map(song)).then((r) => { if (r.limit) Mist.flash(`Only the first ${r.limit} songs were added`, 6000); });
     }
   }
   function choose(item) {   // Play in the tool bar, or in a row's menu
@@ -1075,7 +1088,7 @@
     if (!Mist.isStream(t) || t.apple || t.spotify || state.settings.yt_radio === false) return false;   // Apple Music and Spotify have no radio here
     const heard = Mist.track(state.played), seed = heard && !heard.apple && !heard.spotify ? heard : t;   // a service's song has no video to start from
     Mist.flash('Finding similar songs…', 15000);
-    api('yt-similar', { id: seed.id }).then((r) => {
+    api('yt-similar', { id: seed.id, into: Mist.whereIs(t.id) }).then((r) => {
       if (state.cur !== t.id || state.station !== null || state.mode !== 'playing') return;   // something else was chosen meanwhile
       if (r.ok && r.first != null) { Mist.refresh().then(() => Mist.play(r.first)); return; }
       Mist.stop();

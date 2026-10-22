@@ -25,6 +25,8 @@
     played: null,       // the last YouTube Music song that was heard
     queue: [],          // ids picked with "Play next", played before the list goes on
   };
+  let resumeAfter = null;   // the song the list that played goes on after, once the "Play next" songs have played
+  const early = new Set();  // songs that played from the queue: the list passes over them when it gets to them
   let ext = null;       // the Apple Music song the playback engine plays (see "Apple Music songs" below)
   const hooks = {};
   const on = (name, fn) => { (hooks[name] = hooks[name] || []).push(fn); };
@@ -77,6 +79,10 @@
   const station = (id) => state.stations.find((s) => s.id === id);
   // the list a song belongs in: its service's, or My Music
   const listOf = (t) => (!isStream(t) ? 'local' : t.apple ? 'apple' : t.spotify ? 'spotify' : 'youtube');
+  // ...and the list it is in: a streaming list also holds the songs of other services added while it played
+  const whereIs = (id) => Object.keys(LISTS).find((which) => state.lists[which].some((t) => t.id === id)) || null;
+  // the list the current song is in, which songs added from Premium Services join (null: none is loaded)
+  const playingList = () => (state.station === null && state.cur !== null ? whereIs(state.cur) : null);
   const shown = () => state.lists[state.show];
   const inView = (id) => shown().find((t) => t.id === id);
   const listName = (which) => LISTS[which];
@@ -85,12 +91,12 @@
   // the streaming list Premium Services shows as Now Playing: the one in view, or else the current song's
   function streamList() {
     if (state.show !== 'local') return state.show;
-    const t = track(state.cur);
-    return t && listOf(t) !== 'local' ? listOf(t) : 'youtube';
+    const which = whereIs(state.cur);
+    return which && which !== 'local' ? which : 'youtube';
   }
   const listLabel = () => state.names[state.show] || listName(state.show);
   // the list playback goes through: the current song's, or else the one in view
-  const playing = () => { const t = track(state.cur); return t ? state.lists[listOf(t)] : shown(); };
+  const playing = () => { const which = whereIs(state.cur); return which ? state.lists[which] : shown(); };
   function clock(seconds, pad) {
     if (!isFinite(seconds) || seconds < 0) seconds = 0;
     const s = Math.floor(seconds % 60), m = Math.floor(seconds / 60) % 60, h = Math.floor(seconds / 3600);
@@ -148,10 +154,14 @@
 
   // ---- transport ----
   let cueAt = 0;   // where a song restored from the last session should continue
-  function play(id) {
-    const t = track(id), was = track(state.cur);
+  // `how`: 'queued', a "Play next" song, after which the list that played goes on (see step); 'onward', the list going
+  // on by itself; or nothing, a song you chose, from which the list goes on as it is
+  function play(id, how) {
+    const t = track(id), from = whereIs(state.cur), to = whereIs(id);
     if (!t) return;
-    if (!was || listOf(was) !== listOf(t)) state.show = listOf(t);   // the pane follows the music to its list
+    if (how !== 'queued') resumeAfter = null;
+    if (!how) early.clear();
+    if (from !== to) state.show = to;   // the pane follows the music to its list
     if (state.cur !== null && state.cur !== id) state.history.push(state.cur);
     state.queue = state.queue.filter((q) => q !== id);
     state.station = null; state.radioTitle = ''; cueAt = 0;
@@ -248,13 +258,21 @@
       if (n > 1) playStation(state.stations[(i + dir + n) % n].id);
       return;
     }
-    while (dir > 0 && state.queue.length) {   // "Play next" songs first, from either list
+    while (dir > 0 && state.queue.length) {   // "Play next" songs first, from any list
       const id = state.queue.shift();
-      if (track(id)) { play(id); return; }
+      if (track(id)) {
+        if (resumeAfter === null && state.cur !== null) resumeAfter = state.cur;   // where the list goes on afterwards
+        early.add(id);
+        play(id, 'queued');
+        return;
+      }
     }
-    const tracks = playing();
+    // the list goes on from the song it played before the "Play next" ones, if they came in between
+    const after = dir > 0 && resumeAfter !== null && track(resumeAfter) ? resumeAfter : state.cur;
+    resumeAfter = null;
+    const which = whereIs(after), tracks = which ? state.lists[which] : shown();
     if (!tracks.length) return;
-    let i = tracks.findIndex((t) => t.id === state.cur);
+    let i = tracks.findIndex((t) => t.id === after);
     if (dir < 0) {
       if (!auto && (ext ? extPosition() : audio.currentTime) > 3) { if (ext) extSeek(0); else audio.currentTime = 0; return; }
       if (state.settings.shuffle && state.history.length) { const back = state.history.pop(); const keep = state.history.slice(); play(back); state.history = keep; return; }
@@ -270,12 +288,13 @@
       i = tracks.indexOf(left[Math.floor(Math.random() * left.length)]);
     } else {
       i += 1;
+      while (i < tracks.length && early.has(tracks[i].id)) early.delete(tracks[i++].id);   // it played already, from the queue
       if (i >= tracks.length) {
         if (auto && repeatMode() === 'off') { if (carryOn()) return; stop(); state.sel = tracks[0].id; render(); return; }
-        i = 0;
+        i = 0; early.clear();
       }
     }
-    play(tracks[i].id);
+    play(tracks[i].id, dir > 0 ? 'onward' : undefined);
   }
   // the list ran out by itself: premium.js may carry on with similar songs
   const carryOn = () => !!(Mist.carryOn && Mist.carryOn(track(state.cur)));
@@ -283,9 +302,12 @@
   function upcoming() {
     const queued = state.queue.find((id) => track(id));
     if (queued !== undefined) return queued;
-    const tracks = playing(), i = tracks.findIndex((t) => t.id === state.cur);
+    const after = resumeAfter !== null && track(resumeAfter) ? resumeAfter : state.cur;
+    const which = whereIs(after), tracks = which ? state.lists[which] : shown(), i = tracks.findIndex((t) => t.id === after);
     if (state.settings.shuffle || state.station !== null || i < 0) return null;
-    if (i + 1 < tracks.length) return tracks[i + 1].id;
+    let next = i + 1;
+    while (next < tracks.length && early.has(tracks[next].id)) next++;
+    if (next < tracks.length) return tracks[next].id;
     return repeatMode() === 'all' ? tracks[0].id : null;
   }
   function setMode(mode) {
@@ -588,7 +610,7 @@
   }
   // "No music loaded", while nothing is on and the list in view is empty
   function emptyHint() {
-    $('empty-hint').hidden = state.cur !== null || state.station !== null || shown().length > 0;
+    $('empty-hint').hidden = state.cur !== null || state.station !== null || shown().length > 0 || state.queue.some((id) => track(id));
     $('hint-list').textContent = listLabel();
     $('hint-local').hidden = state.show !== 'local';   // files go to My Music only
     $('hint-youtube').hidden = state.show === 'local';   // a streaming service's list fills from Premium Services
@@ -639,12 +661,16 @@
   const list = $('playlist');
   function render() {
     const tracks = shown();
-    list.innerHTML = tracks.map((t) => {
+    // "Play next" songs of another list come first, so that what plays next is always on show
+    const ahead = state.queue.filter((id) => !inView(id)).map(track).filter(Boolean);
+    const row = (t, next) => {
       const queued = state.queue.indexOf(t.id);
-      return `<div class="row${t.id === state.cur ? ' cur' : ''}${t.id === state.sel ? ' sel' : ''}" data-id="${t.id}">` +
+      return `<div class="row${next ? ' next' : ''}${t.id === state.cur ? ' cur' : ''}${t.id === state.sel ? ' sel' : ''}" data-id="${t.id}">` +
         `<span class="t">${esc(t.title)}</span>${queued >= 0 ? `<span class="q" title="Plays next">${queued + 1}</span>` : ''}` +
         `<span class="d">${t.duration ? clock(t.duration) : ''}</span></div>`;
-    }).join('');
+    };
+    list.innerHTML = (ahead.length ? `<div class="ahead">Plays next</div>${ahead.map((t) => row(t, true)).join('')}` +
+      `<div class="ahead">${esc(listLabel())}</div>` : '') + tracks.map((t) => row(t, false)).join('');
     const total = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     $('total-time').textContent = 'Total Time: ' + clock(total);
     $('np-label').textContent = listLabel();
@@ -682,8 +708,8 @@
   // drag a row to another place in the list
   let drag = null;
   list.addEventListener('pointerdown', (e) => {
-    const id = rowId(e);
-    if (e.button === 0 && id !== null) drag = { id, y: e.clientY, pointer: e.pointerId, active: false, before: null };
+    const id = rowId(e);   // (a song of another list, shown as playing next, stays where it is)
+    if (e.button === 0 && id !== null && !e.target.closest('.next')) drag = { id, y: e.clientY, pointer: e.pointerId, active: false, before: null };
   });
   list.addEventListener('pointermove', (e) => {
     if (!drag) return;
@@ -695,7 +721,7 @@
     }
     const box = list.getBoundingClientRect();
     if (e.clientY < box.top + 14) list.scrollTop -= 7; else if (e.clientY > box.bottom - 14) list.scrollTop += 7;
-    const rows = [...list.querySelectorAll('.row')];
+    const rows = [...list.querySelectorAll('.row:not(.next)')];
     const under = rows.find((row) => { const r = row.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
     drag.before = under ? Number(under.dataset.id) : null;
     const edge = under ? under.getBoundingClientRect().top : rows[rows.length - 1].getBoundingClientRect().bottom;
@@ -1086,7 +1112,7 @@
 
   window.Mist = {
     $, base, audio, state, api, on, fire, onPlay, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream, outside,
-    play, playStation, toggle, stop, step, listName, listOf, streamList, setVis, applyVolume, cycleRepeat, repeatMode, control,
+    play, playStation, toggle, stop, step, listName, listOf, whereIs, playingList, streamList, setVis, applyVolume, cycleRepeat, repeatMode, control,
     menu, closeMenus, trackMenu, queueNext, queueLast, flash, render, show, layoutChanged, regions, setSleep, setZoom,
     probe() {  // handy for debugging
       const data = new Uint8Array(analyserNode ? analyserNode.frequencyBinCount : 1);
