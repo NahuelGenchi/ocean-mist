@@ -33,7 +33,7 @@ from apple import AppleError, AppleMusic
 from engine import Engine, EngineError
 from spotify import SpotifyError, SpotifyMusic
 from library import (APP_ID, AUDIO_EXTENSIONS, PAGE_SETTINGS, PLAYLIST_EXTENSIONS,
-                     Library, is_playlist, music_dir, stream_key)
+                     STREAMING, Library, is_playlist, music_dir, stream_key)
 from ytmusic import PLAYLIST_LIMIT, YTError, YTMusic
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -552,7 +552,10 @@ class Handler(BaseHTTPRequestHandler):
                 except YTError as error:
                     result["notice"] = str(error)
             named = msg.get("named") if cmd == "yt-add" and isinstance(msg.get("named"), str) else None
-            chosen = library.add_streams(items, replace=cmd == "yt-play", name=msg.get("name"), named=named)
+            into = msg.get("into") if cmd == "yt-add" else None   # the streaming list that plays, which added songs join
+            after = msg.get("after") if isinstance(msg.get("after"), int) else None   # ...right after that song ("Play next")
+            chosen = library.add_streams(items, replace=cmd == "yt-play", name=msg.get("name"), named=named,
+                                         into=into if isinstance(into, str) else None, after=after)
             result["ids"] = [t["id"] for t in chosen]
             if cmd == "yt-play" and chosen:   # asked for from Premium Services: the page stays there
                 start = next((t["id"] for t in chosen if stream_key(t) == msg.get("start")),
@@ -564,9 +567,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"ok": False, "error": "that is not a YouTube Music song"}
             else:
                 try:
+                    into = msg.get("into") if msg.get("into") in STREAMING else "youtube"   # the list that ran out
                     with library.lock:
-                        listed = {t.get("video") for t in library.lists["youtube"]}
-                    chosen = library.add_streams(self._similar(track["video"], listed))
+                        listed = {t.get("video") for t in library.lists[into]}
+                    chosen = library.add_streams(self._similar(track["video"], listed), into=into)
                     result["first"] = chosen[0]["id"] if chosen else None
                 except YTError as error:
                     result = {"ok": False, "error": str(error), "general": error.general}

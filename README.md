@@ -99,7 +99,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Now Playing list</strong></td>
-    <td>A list for each source, one player: My Music for your files, and one each for what you play from YouTube Music, Apple Music and Spotify in Premium Services, kept apart and switched at the window's top right (Apple Music and Spotify are offered while you are signed in to them). Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
+    <td>A list for each source, one player: My Music for your files, and one each for what you play from YouTube Music, Apple Music and Spotify in Premium Services, switched at the window's top right (Apple Music and Spotify are offered while you are signed in to them). What you <em>add</em> in Premium Services joins the list that is playing, whatever its service, and <em>Play next</em> puts a song right after the current one; while a song of My Music plays (My Music keeps your files only), the songs you add wait under <em>Plays next</em> at the top of the list and play after it. Drag songs to reorder them, queue a song to play next (after the queued songs, the list goes on from where it was), shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Playlists</strong></td>

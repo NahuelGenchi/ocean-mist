@@ -125,6 +125,7 @@ body.tinted #yt-none { filter: hue-rotate(calc(var(--hue) * -1)); }
 .row .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .row .d { padding-left: 8px; }
 .row .q { flex: none; min-width: 12px; height: 11px; margin: 1.5px 0 0 4px; padding: 0 3px; border-radius: 6px; background: var(--green); color: #10210a; font-size: 9px; line-height: 11px; font-weight: 700; text-align: center; letter-spacing: 0; }
+.ahead { height: 13px; line-height: 13px; margin: 1px 5px 1px 2px; border-bottom: 1px solid #4c558a; color: #9aa3cc; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #playlist.dragging, #playlist.dragging .row { cursor: grabbing; }
 #drop-line { position: absolute; left: 5px; right: 12px; height: 2px; background: var(--green); box-shadow: 0 0 2px #000; pointer-events: none; }
 .row.sel { background: #eceadb; color: #14161f; }

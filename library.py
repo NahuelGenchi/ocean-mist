@@ -10,6 +10,10 @@ Apple Music address, and "video" stays empty, as the playback engine
 in the user's own library, when that differs); Spotify's holds the songs of
 Spotify (spotify.py): their "path" is a Spotify address, and "video" stays empty
 too, as the engine plays them from Spotify by their "spotify" id.
+A song is played into its service's list, but one that is added while
+another streaming list plays joins that one, so the three can hold each
+other's songs; a song is in one list at a time. My Music never holds a
+streamed song.
 Those lists live in memory only: nothing from streaming is written to disk. So
 they start empty each time, a song in them is never the resume point, and their
 covers wait in the runtime folder, which is not on disk, until the player
@@ -44,6 +48,7 @@ TAG_CACHE = os.path.join(CACHE_DIR, "tags.json")
 # the app id, so a test instance never clears the covers of the real player
 STREAM_COVERS = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), APP_ID)
 LISTS = ("local", "youtube", "apple", "spotify")   # the Now Playing lists: My Music, and one for each streaming service
+STREAMING = LISTS[1:]                               # ...the streaming ones, which can hold each other's songs
 AUDIO_EXTENSIONS = {
     ".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wav", ".wma",
 }
@@ -86,7 +91,9 @@ def is_playlist(name):
 
 
 def list_for(track):
-    """The Now Playing list a track belongs in: its service's, or My Music."""
+    """The Now Playing list a track belongs in: its service's, or My Music.
+    (A streamed song added while another streaming list plays is in that one:
+    Library.list_of says where a track is.)"""
     if not track.get("source"):
         return "local"
     return "apple" if track.get("apple") else ("spotify" if track.get("spotify") else "youtube")
@@ -450,12 +457,16 @@ class Library:
         track["art"] = bool(track["cover"])
         return track
 
-    def add_streams(self, items, replace=False, name="", named=None):
+    def add_streams(self, items, replace=False, name="", named=None, into=None, after=None):
         """Put YouTube Music, Apple Music and Spotify songs in their service's
-        list: after what is there, or as the whole list (named `name`). Returns
+        list: after what is there, or as the whole list (named `name`); or, with
+        `into` (a streaming list, the one that plays), after what is in that one,
+        whatever their service, or right after the song `after` when it is there.
+        A song is in one list at a time: it leaves any other it was in. Returns
         their tracks.
         `named`: only while the list is still the one with that name, so that a job that fills
         a list in the background adds nothing once something else was chosen."""
+        into = into if into in STREAMING and not replace else None
         with self.lock:
             chosen, listed = [], set()
             for item in items[:ytmusic.PLAYLIST_LIMIT]:
@@ -465,18 +476,28 @@ class Library:
                     chosen.append(track)
             if not chosen:
                 return []
-            if named is not None and self.names[list_for(chosen[0])] != str(named)[:200]:
+            if named is not None and self.names[into or list_for(chosen[0])] != str(named)[:200]:
                 return []
             parts = {}   # a request holds one service's songs, but each goes to its own list
             for track in chosen:
-                parts.setdefault(list_for(track), []).append(track)
+                parts.setdefault(into or list_for(track), []).append(track)
+            touched = set(parts)
             for which, part in parts.items():
+                ids = {t["id"] for t in part}
+                for other in STREAMING:   # ...and only that one
+                    if other != which and any(t["id"] in ids for t in self.lists[other]):
+                        self.lists[other] = [t for t in self.lists[other] if t["id"] not in ids]
+                        touched.add(other)
                 if replace:
                     self.lists[which], self.names[which] = part, str(name or "")[:200]
+                elif into and any(t["id"] == after for t in self.lists[which]):   # (moved there if already in it)
+                    rest = [t for t in self.lists[which] if t["id"] not in ids or t["id"] == after]
+                    at = next(n for n, t in enumerate(rest) if t["id"] == after) + 1
+                    self.lists[which] = rest[:at] + [t for t in part if t["id"] != after] + rest[at:]
                 else:
                     listed = {t["id"] for t in self.lists[which]}
                     self.lists[which] += [t for t in part if t["id"] not in listed]
-        self._changed(*parts)
+        self._changed(*touched)
         return chosen
 
     def stream_found(self, video, details):
@@ -925,9 +946,10 @@ class Library:
 
     def open_playlist(self, path):
         """Load a saved playlist: its files become My Music, its streamed
-        songs their service's list (a playlist holds one kind, but earlier
-        versions could mix them). A playlist that only names a
-        stream becomes a radio station. Returns what to play."""
+        songs the list of the first one's service, whatever theirs (a list
+        that played may have held songs of several, and earlier versions could
+        also mix files in). A playlist that only names a stream becomes a radio
+        station. Returns what to play."""
         path = os.path.abspath(path)
         chosen = self.playlist_tracks(path)
         name = os.path.splitext(os.path.basename(path))[0]
@@ -937,10 +959,17 @@ class Library:
                 return None
             return {"station": self.save_station(None, name, stream)}
         with self.lock:
-            for which in LISTS:
-                part = [t for t in chosen if list_for(t) == which]
-                if part:
-                    self.lists[which], self.names[which] = part, name
+            files = [t for t in chosen if list_for(t) == "local"]
+            streamed = [t for t in chosen if list_for(t) != "local"]
+            parts = [("local", files)] + ([(list_for(streamed[0]), streamed)] if streamed else [])
+            for which, part in parts:
+                if not part:
+                    continue
+                ids = {t["id"] for t in part}
+                for other in STREAMING:   # a song is in one list at a time
+                    if other != which:
+                        self.lists[other] = [t for t in self.lists[other] if t["id"] not in ids]
+                self.lists[which], self.names[which] = part, name
         self._remember(path)
         self._tag(chosen[0]["id"])
         self.save()
