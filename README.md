@@ -99,7 +99,7 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Now Playing list</strong></td>
-    <td>Two lists, one player: My Music for your files and a second list for what you play from Premium Services, which takes its name from the service its songs come from (YouTube Music, Apple Music, or both), kept apart and switched at the list's top right. Drag songs to reorder them, queue a song to play next, shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
+    <td>A list for each source, one player: My Music for your files, and one each for what you play from YouTube Music, Apple Music and Spotify in Premium Services, switched at the window's top right (Apple Music and Spotify are offered while you are signed in to them). What you <em>add</em> in Premium Services joins the list that is playing, whatever its service, and <em>Play next</em> puts a song right after the current one; while a song of My Music plays (My Music keeps your files only), the songs you add wait under <em>Plays next</em> at the top of the list and play after it. Drag songs to reorder them, queue a song to play next (after the queued songs, the list goes on from where it was), shuffle, repeat the list or a single song. Open a song from your file manager and its folder comes along as My Music.</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Playlists</strong></td>
@@ -115,7 +115,11 @@ When the music matters more than the window, the player shrinks to a small bar t
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Apple Music</strong></td>
-    <td>In Premium Services: sign in through Firefox and browse your Apple Music library the way the website shows it: Recently added, Playlists, Albums, Artists and Songs, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. Play puts the songs in the second Now Playing list; on a row of Recently added it puts the whole feed there, in the order shown, starting at the row you chose. Apple's own audio is protected, so the songs play in Apple's own web player, which Ocean Mist runs without a window in a <em>playback engine</em> that you download once, after a licence screen, and that runs only while an Apple song plays. It needs an active Apple Music subscription, which the engine checks, and the equalizer and the visualizations cannot work on Apple's songs. Nothing is changed in your account, and nothing of Apple's is kept on disk (see <em>Signing in to Apple Music</em> below).</td>
+    <td>In Premium Services: sign in through Firefox and browse your Apple Music library the way the website shows it: Recently added, Playlists, Albums, Artists and Songs, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. While you browse it, the search box searches your library, through Apple's own search of it: the kind of the list you are in, or every kind from Recently added or a page. Play puts the songs in the Apple Music list, a Now Playing list of its own, which the list chooser at the top right offers while you are signed in; on a row of Recently added it puts the whole feed there, in the order shown, starting at the row you chose. Apple's own audio is protected, so the songs play in Apple's own web player, which Ocean Mist runs without a window in a <em>playback engine</em> that you download once, after a licence screen, and that runs only while a song of a service plays. It needs an active Apple Music subscription, which the engine checks, and the equalizer and the visualizations cannot work on Apple's songs. Nothing is changed in your account, and nothing of Apple's is kept on disk (see <em>Signing in to Apple Music</em> below).</td>
+  </tr>
+  <tr>
+    <td width="170" valign="top"><strong>Spotify</strong></td>
+    <td>In Premium Services: sign in through Firefox and browse your Spotify library the way the web player shows it: Liked Songs, Playlists, Albums and Artists, with covers; albums, playlists and artists open as pages, and long lists load a page at a time. While you browse it, the search box finds songs, playlists, albums or artists in the list you are in (Liked Songs from a page): Spotify's page has no search of your library, so the list is read whole, up to its first 1,000, and kept in memory for five minutes. Play puts the songs in the Spotify list, a Now Playing list of its own, which the list chooser at the top right offers while you are signed in. Spotify's own audio is protected, so the songs play in Spotify's own web player, which the same <em>playback engine</em> as Apple Music runs without a window, only while a song of a service plays. It needs an active Spotify Premium subscription, which the engine checks, and the equalizer and the visualizations cannot work on Spotify's songs. Nothing is changed in your account, and nothing of Spotify's is kept on disk (see <em>Signing in to Spotify</em> below).</td>
   </tr>
   <tr>
     <td width="170" valign="top"><strong>Formats</strong></td>
@@ -140,7 +144,7 @@ When the music matters more than the window, the player shrinks to a small bar t
 </table>
 
 > [!NOTE]
-> YouTube Music and Apple Music support is unofficial. Ocean Mist is not affiliated with or endorsed by Google, YouTube or Apple, and it talks to YouTube Music, and to Apple Music's own web player, the way their websites do rather than through a published API, so a change on their side can break it until the player is updated. Their terms of service apply to what you play. YouTube and YouTube Music are trademarks of Google LLC. Apple and Apple Music are trademarks of Apple Inc.
+> YouTube Music, Apple Music and Spotify support is unofficial. Ocean Mist is not affiliated with or endorsed by Google, YouTube, Apple or Spotify, and it talks to YouTube Music, and to Apple Music's and Spotify's own web players, the way their websites do rather than through a published API, so a change on their side can break it until the player is updated. Their terms of service apply to what you play. YouTube and YouTube Music are trademarks of Google LLC. Apple and Apple Music are trademarks of Apple Inc. Spotify is a trademark of Spotify AB.
 
 ## Get started
 
@@ -148,10 +152,10 @@ Ocean Mist has no build step and nothing to compile: it is a handful of Python f
 
 ### As a package (Ubuntu 24.04 or later, Debian 13 or later)
 
-Download `ocean-mist_0.1.0_all.deb` from the [latest release](https://github.com/NahuelGenchi/ocean-mist/releases/latest) (its SHA-256 is in the release notes). Open that file with your software installer, or install it from a terminal in the folder you saved it to (apt brings the libraries Ocean Mist needs):
+Download `ocean-mist_0.3.0_all.deb` from the [latest release](https://github.com/NahuelGenchi/ocean-mist/releases/latest) (its SHA-256 is in the release notes). Open that file with your software installer, or install it from a terminal in the folder you saved it to (apt brings the libraries Ocean Mist needs):
 
 ```sh
-sudo apt install ./ocean-mist_0.1.0_all.deb
+sudo apt install ./ocean-mist_0.3.0_all.deb
 ```
 
 To install a newer commit than the release, build the package from a copy of the repository instead. That needs `git` (`sudo apt install git` if you do not have it) and `dpkg-deb` (every Debian-based system has it), and no administrator rights:
@@ -163,9 +167,9 @@ packaging/build-deb.sh
 sudo apt install ./dist/ocean-mist_*.deb
 ```
 
-`packaging/build-deb.sh` writes `dist/ocean-mist_<version>_all.deb` from the last commit (what you have not committed does not go in). A build of a commit after a release is a snapshot, named after the next release with `~git` and the commit (for example `0.2.0~git20261017120000.abc1234`), so it installs over the release, and the next release installs over it.
+`packaging/build-deb.sh` writes `dist/ocean-mist_<version>_all.deb` from the last commit (what you have not committed does not go in). A build of a commit after a release is a snapshot, named after the next release with `~git` and the commit (for example `0.4.0~git20261021120000.abc1234`), so it installs over the release, and the next release installs over it.
 
-Ocean Mist then appears in the app menu and in the "Open with" list for music files, and `ocean-mist` starts it from a terminal. The program lives in `/usr/lib/ocean-mist`, which only the administrator can change; your settings and the playback engine stay in your own folders (see "Where it keeps things" below). The package also installs one AppArmor profile, `/etc/apparmor.d/ocean-mist-engine`, which is what lets Apple Music's playback engine start on Ubuntu 24.04 and later without asking for your password (see "Signing in to Apple Music" below). That profile needs AppArmor 4.0 or later, so the package depends on it, and apt (and `dpkg -i`) refuse to install it on a system with an older one (Debian 12 has 3.0): run Ocean Mist from a copy of the repository there. It has been built and checked on Ubuntu 26.04 only; on the other releases it relies on what its dependencies say.
+Ocean Mist then appears in the app menu and in the "Open with" list for music files, and `ocean-mist` starts it from a terminal. The program lives in `/usr/lib/ocean-mist`, which only the administrator can change; your settings and the playback engine stay in your own folders (see "Where it keeps things" below). The package also installs one AppArmor profile, `/etc/apparmor.d/ocean-mist-engine`, which is what lets Apple Music's playback engine start on Ubuntu 24.04 and later without asking for your password (see "Signing in to Apple Music" below). That profile needs AppArmor 4.0 or later, so the package depends on it, and apt (and `dpkg -i`) refuse to install it on a system with an older one (Debian 12 has 3.0): run Ocean Mist from a copy of the repository there. It has been built and checked on Ubuntu 26.04 only, and its profile is also parsed with Ubuntu 24.04's AppArmor (4.0.1); on the other releases it relies on what its dependencies say. Use 0.1.1 or later on Ubuntu 24.04 and Debian 13: their AppArmor does not accept the profile in 0.1.0 (its install says AppArmor did not load it), so Apple Music cannot play there. Installing 0.1.1 over it replaces the profile, unless you changed that file yourself (then apt asks).
 
 If you added a menu entry by hand earlier (step 3 of the other route), delete `~/.local/share/applications/io.github.nahuelgenchi.OceanMist.desktop`: an entry in your own folder wins over the package's and keeps starting the copy it points to.
 
@@ -217,12 +221,44 @@ After that, Ocean Mist appears in the app menu and in the "Open with" list for m
 | :--- | :--- |
 | Settings, My Music, stations, where you left off | `~/.config/ocean-mist/state.json` |
 | Tag cache and your files' covers | `~/.cache/ocean-mist/` |
-| The playback engine, if you install it (Apple Music) | `~/.local/share/ocean-mist/engine/` |
+| The playback engine, if you install it (Apple Music and Spotify) | `~/.local/share/ocean-mist/engine/` |
 | The program, if you installed the package | `/usr/lib/ocean-mist/`, and the engine's permission in `/etc/apparmor.d/ocean-mist-engine` |
 
-Nothing from YouTube Music or Apple Music is kept in those folders, or anywhere else on disk unless you save a playlist: the list, searches and covers stay in memory, and so do your libraries when you sign in. The pages keep no web cache or site data. The covers they hand to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes, and so does a small folder of rules that keeps Apple's page from signing you out. Of a sign-in, `state.json` only notes which Firefox profile you chose for each service. The engine's folder holds the runtime you downloaded and what Chromium and Google's Widevine module keep for it, never your sign-in or your library; the engine's page in Premium Services removes all of it.
+Nothing from YouTube Music, Apple Music or Spotify is kept in those folders, or anywhere else on disk unless you save a playlist: the list, searches and covers stay in memory, and so do your libraries when you sign in. The pages keep no web cache or site data. The covers they hand to the desktop's media controls wait in the runtime folder (`$XDG_RUNTIME_DIR`, which lives in memory) until the player closes, and so does a small folder of rules that keeps the services' pages from signing you out. Of a sign-in, `state.json` only notes which Firefox profile you chose for each service. The engine's folder holds the runtime you downloaded and what Chromium and Google's Widevine module keep for it, never your sign-in or your library; the engine's page in Premium Services removes all of it.
 
 Your music files are only ever read, never changed. Developed on Ubuntu 26.04 with GNOME on Wayland and Python 3.14; other setups have not been tried yet.
+
+</details>
+
+<details>
+<summary><strong>How much memory it uses</strong></summary>
+
+<br>
+
+All of the player's processes together, with a visualization on, on Ubuntu 26.04 (WebKitGTK 2.52; the playback engine is Chromium 152). The figure is PSS, which shares out what processes have in common, with what of it the system had moved to swap, at its highest while the state lasted; 0.2.0 was measured the same way, in the same session:
+
+| While | Memory | 0.2.0 |
+| :--- | ---: | ---: |
+| Open, nothing playing | 250 MB | 286 MB |
+| One of your songs playing | 279 MB | 332 MB |
+| A YouTube Music song playing | 323 MB | 378 MB |
+| Stopped after playing | 314 MB | 374 MB |
+| A visualization in full screen | some 10 MB more than in the window | |
+| An Apple Music song playing | 691 MB | 871 MB |
+| An Apple Music song playing, with its library read | 695 MB | 1055 MB |
+| A Spotify song playing | 732 MB | 1215 MB |
+| Apple Music's library open (for ten minutes after a list of it) | 262 MB more, 224 after the first minute; nothing more while an Apple Music song plays |
+| Spotify's library open (the same) | 388 MB more, 317 after the first minute |
+
+Most of it is what the player stands on: an empty WebKit window takes 160 to 170 MB on the same system, before there is a player in it. Apple Music's and Spotify's songs play only in their own web players, inside Chromium with Google's Widevine module, and that engine takes some 430 to 470 MB of its own while a song plays, a hundred of them Widevine's (it ends a minute after the music stops); your libraries come from the same web players, in WebKit (Apple Music's from the engine's, while it runs). What keeps Ocean Mist's part small, without changing what you see or hear:
+
+- WebKit paints the page with the processor and the graphics card puts it together: the visualizations keep their 60 frames a second, in the window and in full screen, without the 35 MB the card's own painting held.
+- The sound graph rests while nothing plays, and what the player frees goes back to the system once a minute.
+- The engine runs Chromium in its mode for small devices, and its window is never shown, so the service's page in it is not drawn either. It gets no fonts, and nothing from the analytics and tracking sites the services' pages send to, nor Spotify's looping video behind the song; Apple's page opens on one with next to nothing on it, in your store. Chromium's audio service runs in the engine's own process, not in one more.
+- While the engine is up for Apple Music, your Apple Music library is read in its page, and the library's own view closes: Apple's player is not open twice. With the library open while a song plays, that is some 200 MB less (705 MB in place of 880), and a tenth of a core.
+- The library views of a service share one WebKit network process for as long as the player runs; before, every view that closed left its own behind, some 20 MB each time.
+- Spotify's page, in the engine and in the library view, does not install its service worker, which only fetched and held a second copy of the page's files.
+- WebKit looks at the library views once a minute and lets go of what their pages no longer need: 40 to 70 MB after the first minute, and the lists come in as fast as before.
 
 </details>
 
@@ -243,7 +279,7 @@ What Ocean Mist reads, and when:
 
 - It reads the sign-in only while you are signed in (or signing in), and only when it asks for something of your account: your library, a playlist of yours, a like, a change to a playlist.
 - It reads it from the cookie file of the Firefox profile you chose, read-only and straight into memory: no copy goes to disk, and the file is never written to. It takes only the YouTube cookies, not those of containers, and lets them go once the request is made. While you sign in, it reads every profile's cookie file this way, to see which ones are signed in. It also reads the profiles' names, to tell them apart.
-- It never asks Google for your name, email address or photo. Your library, likes and playlists stay in memory, like the YouTube Music list. The only thing remembered is which Firefox profile you chose.
+- It never asks Google for your name, email address or photo. Your library, likes and playlists stay in memory, like the streaming services' lists. The only thing remembered is which Firefox profile you chose.
 - Searches, albums, artists, similar songs and the music itself are still asked for anonymously, so they do not show in your YouTube history.
 
 **Sign out**, at the top of Library, only stops Ocean Mist from using the sign-in: Firefox stays signed in. To sign out of YouTube itself, do it in Firefox. If you sign out there, or clear Firefox's cookies, Ocean Mist is signed out too.
@@ -268,11 +304,13 @@ Apple lets only developers who pay Apple use its music API, and Ocean Mist asks 
 
 Recently added, Playlists, Albums, Artists and Songs then show under Apple Music in the order Apple gives them. Albums, playlists and artists open as pages, with their covers, and the long lists (Songs, mostly) load a page at a time as you scroll or press **Show more**.
 
-**How a song plays.** Apple's own audio is protected by DRM, which Ocean Mist does not unlock or capture: Apple's own web player plays it, as it does in a browser tab, and Google's Widevine module decrypts it inside Chromium. The player has no such thing of its own, so Apple Music songs need a **playback engine**, which you download once from **Apple Music, Playback engine** in Premium Services. A licence screen comes first: it says what is downloaded (castlabs's build of Electron, 117 MB, from its GitHub releases, checked against the checksum Ocean Mist was made with; the first time it starts it also gets Google's Widevine module, about 45 MB, from Google), where it goes (`~/.local/share/ocean-mist/engine`, about 330 MB) and which licences come with it. Nothing is downloaded before you accept, and **Remove** deletes all of it.
+**How a song plays.** Apple's own audio is protected by DRM, which Ocean Mist does not unlock or record: Apple's own web player plays it, as it does in a browser tab, and Google's Widevine module decrypts it inside Chromium. The player has no such thing of its own, so Apple Music songs need a **playback engine**, which you download once from **Apple Music, Playback engine** in Premium Services. A licence screen comes first: it says what is downloaded (castlabs's build of Electron, 117 MB, from its GitHub releases, checked against the checksum Ocean Mist was made with; the first time it starts it also gets Google's Widevine module, about 45 MB, from Google), where it goes (`~/.local/share/ocean-mist/engine`, about 330 MB) and which licences come with it. Nothing is downloaded before you accept, and **Remove** deletes all of it.
 
 When you play an Apple song, Ocean Mist starts the engine, which opens Apple's web player with no window (so no window or taskbar entry of its own appears) and plays the song there; Ocean Mist's own controls drive it: pause, seek, volume, next and previous, repeat, the sleep timer and the desktop's media keys. The engine ends a minute after the music stops (ten minutes after a pause) and when Ocean Mist closes. It needs an Apple Music account with an active subscription, which it checks each time it starts. Apple limits how many devices stream at once (one, on an individual plan), so a song started here can stop one playing on another device, and the other way round. There is a gap of a few seconds between songs, because each one is loaded when its turn comes. Firefox does not have to stay open: Ocean Mist reads the sign-in from Firefox's cookie file, which is still there when Firefox is closed.
 
-Because the sound never passes through the player, **the equalizer and the visualizations cannot work on Apple songs**: the equalizer shows as off, and the visualization keeps moving on its own and says that it is not in time with the music. Songs from your files and from YouTube Music are not affected.
+**The visualizations follow Apple songs too.** The engine hands the player the loudness of each band of the song, about 30 times a second, and the visualizations move with those. To hear them, the engine plays the song through a second page of its own with no window, which listens to Apple's page the way Chromium shares a tab's sound; it is not a recording of the computer's sound, so GNOME's microphone icon does not come on. Only the band levels leave that page: the sound is not kept, saved or sent anywhere. If the levels stop coming, the visualization keeps moving on its own and says that it is not in time with the music. At volume zero the engine's visualization rests (muting does not stop it).
+
+Because the sound itself never passes through the player, **the equalizer cannot work on Apple songs**, and shows as off. Songs from your files and from YouTube Music are not affected.
 
 On Ubuntu 24.04 and later the engine needs a permission for its security sandbox: Chromium keeps Apple's page in a sandbox that needs user namespaces, and Ubuntu gives those only to programs that AppArmor has a profile for.
 
@@ -296,6 +334,41 @@ Ocean Mist looks for your Firefox profiles in the same places as for YouTube Mus
 
 </details>
 
+<details>
+<summary><strong>Signing in to Spotify</strong></summary>
+
+<br>
+
+Spotify's Web API needs a client id and a sign-in flow of its own, which Ocean Mist does not keep. It does what a browser tab does instead, and the sign-in is again Firefox's, on Spotify's own page: Ocean Mist has no sign-in form of its own and never sees your password.
+
+1. In Premium Services, open **Spotify** and choose **Sign in…**, then **Sign in with Firefox**.
+2. If Firefox is signed in to Spotify at open.spotify.com already, that is all. If not, Firefox opens on Spotify's page: sign in there, and Ocean Mist carries on by itself.
+3. If more than one of your Firefox profiles is signed in, choose the one Ocean Mist should use. Ocean Mist keeps to the one you chose.
+
+Liked Songs, Playlists, Albums and Artists then show under Spotify in the order Spotify gives them. Albums, playlists and artists open as pages, with their covers, and the long lists (Liked Songs, mostly) load a page at a time as you scroll or press **Show more**.
+
+**How a song plays.** Spotify's own audio is protected by DRM, which Ocean Mist does not unlock or record: Spotify's own web player plays it, as it does in a browser tab, and Google's Widevine module decrypts it inside Chromium. Spotify's songs use the same **playback engine** as Apple Music's, downloaded once (see *Signing in to Apple Music* above for what it is, where it goes and the one-time sandbox step on Ubuntu 24.04 and later).
+
+When you play a Spotify song, Ocean Mist starts the engine, which opens Spotify's web player with no window and plays the song there; Ocean Mist's own controls drive it: pause, seek, volume, next and previous, repeat, the sleep timer and the desktop's media keys. The engine ends a minute after the music stops (ten minutes after a pause) and when Ocean Mist closes. It needs a Spotify account with an active Premium subscription, which the engine checks when it starts; without one, or when Spotify's page does not say the plan in time, the songs do not play. Spotify plays one stream per account, so a song started here can stop one playing on another device, and the other way round. The first song takes about five seconds to start, while the web player loads; after it, a song starts in a second or two, as the web player stays open and only goes to the song's page (a song picked while another is still starting takes about four seconds). Firefox does not have to stay open: Ocean Mist reads the sign-in from Firefox's cookie file, which is still there when Firefox is closed.
+
+The visualizations follow Spotify songs as they follow Apple Music's, from the band levels the engine hands over; **the equalizer cannot work on Spotify songs**, as on Apple Music's.
+
+What Ocean Mist reads, and when:
+
+- It reads the sign-in only while you are signed in (or signing in): the cookies Spotify's web player signs in with (`sp_dc` and the ones that come along), from the cookie file of the Firefox profile you chose, read-only and straight into memory. No copy goes to disk, and the file is never written to. While you sign in, it reads every profile's cookie file this way, to see which ones are signed in, and the profiles' names, to tell them apart. Only the cookies of the normal browsing window count, not those of containers or private windows.
+- It hands them to a view of open.spotify.com that has no window: Spotify's web player, starting up as it does in any browser tab. The view keeps everything in memory (no cache, no site data) and closes after ten minutes without a request. Its requests are the page's own, kept in memory so a page of your library can be asked for again with a different offset. The playback engine gets the same cookies on its standard input, never on a command line or in its environment, keeps them in an in-memory session, and keeps to Spotify's own addresses over https: it refuses to go to any other site, by a link, a redirect or a frame.
+- It asks the page for your library with read-only requests, and never itself for your name, email address or photo. **Nothing in your Spotify account is changed**, and Ocean Mist has no way to change it: it does not add, remove, like or reorder anything. Before the page loads, every request that would sign you out is blocked, because a sign-out there would end the one in Firefox too; if that block cannot be put in place, the page is not opened.
+- Playing a Spotify song asks Spotify's page to play it, as the website does, and nothing else: Ocean Mist adds nothing to your library or your play history on purpose (Spotify's page may record that you played the song, as it does when you play it in a browser).
+
+**Sign out**, at the top of any Spotify list, only stops Ocean Mist from using the sign-in: Firefox stays signed in. To sign out of Spotify itself, do it in Firefox. If you sign out there, or clear Firefox's cookies, Ocean Mist is signed out too.
+
+Ocean Mist looks for your Firefox profiles in the same places as for YouTube Music, and Firefox is the only browser it can read. Whether a song plays depends on your subscription and on Spotify having it for your account.
+
+> [!CAUTION]
+> These are Spotify's own web-player requests, not a published API, and signed in they are tied to your account. Spotify's User Guidelines do not allow reaching the service by automated means, so Spotify could change the page, sign the session out, or restrict the account. Ocean Mist makes them only for what you ask, at a person's pace, and reads only.
+
+</details>
+
 ## Keyboard
 
 | Keys | Action |
@@ -316,11 +389,13 @@ The keyboard's media keys reach the player through the desktop's media controls 
 
 ## How it works
 
-The window has no title bar and no borders of its own: it is a transparent, frameless GTK window showing a local web page, and the page draws the whole player: the frame in SVG, the visualizations on a canvas. `player.py` owns the window and runs a small server on `127.0.0.1` that hands the page its files, your songs, the radio streams, YouTube Music and Apple Music. Nothing is served outside your computer. The only network traffic is the radio station you tune to, and what you search for, play and, signed in, open or change in Premium Services.
+The window has no title bar and no borders of its own: it is a transparent, frameless GTK window showing a local web page, and the page draws the whole player: the frame in SVG, the visualizations on a canvas. `player.py` owns the window and runs a small server on `127.0.0.1` that hands the page its files, your songs, the radio streams, YouTube Music, Apple Music and Spotify. Nothing is served outside your computer. The only network traffic is the radio station you tune to, and what you search for, play and, signed in, open or change in Premium Services.
 
 YouTube Music has no public API for a player like this one, so `ytmusic.py` makes the same requests the YouTube Music apps make: searches, albums, artists, playlists and similar songs, then each song's audio. That audio arrives as AAC in pieces a few seconds long; `ytmusic.py` repacks each piece as MP4 and the page plays them through Media Source, so no YouTube code, player or app runs. When you have signed in, the requests for your library and its changes carry the sign-in that `firefox.py` reads from Firefox, signed the way the website signs its own; all the others stay anonymous.
 
 Apple Music has no public API for a program like this one either, and its audio is protected, so `apple.py` takes a different road: it opens music.apple.com, Apple's web player, in a view of its own that has no window, signed in with the one cookie `firefox.py` reads from Firefox, and asks the page's own MusicKit for your library. The view blocks every request that would sign you out, changes nothing in your account and closes when it is not used. The songs are another matter: Apple's audio is protected, so `engine.py` plays them in a playback engine, a copy of Chromium with Google's Widevine module (castlabs's build of Electron, downloaded once with your consent) that runs `engine/helper/main.js`. The helper opens Apple's web player in a window that is never shown, signed in with the same cookie, and the page drives it through `engine.py`: play, pause, seek, volume, and a report of where the song is.
+
+Spotify has no public API for a program like this one either, and its audio is protected, so `spotify.py` takes the same road as `apple.py`: it opens open.spotify.com, Spotify's web player, in a view of its own that has no window, signed in with the cookies `firefox.py` reads from Firefox, keeps the page's own requests in memory and asks them again for each page of your Liked Songs, playlists, albums and artists. The view blocks every request that would sign you out, changes nothing in your account and closes when it is not used. The songs play in the same playback engine: the helper opens Spotify's web player in a window that is never shown, signed in with the same cookies, and the page drives it through `engine.py` the same way.
 
 ```mermaid
 flowchart LR
@@ -333,6 +408,7 @@ flowchart LR
     tags["<b>tags.py</b><br/>titles, covers, lengths"]
     ytmusic["<b>ytmusic.py</b><br/>YouTube Music"]
     apple["<b>apple.py</b><br/>Apple Music"]
+    spotify["<b>spotify.py</b><br/>Spotify"]
     engine["<b>engine.py</b><br/>playback engine"]
     firefox["<b>firefox.py</b><br/>your sign-ins"]
     mpris["<b>mpris.py</b><br/>media keys"]
@@ -341,6 +417,7 @@ flowchart LR
     host --> library --> tags
     host --> ytmusic
     host --> apple
+    host --> spotify
     host --> engine
     host --> firefox
     host --> mpris
@@ -349,15 +426,16 @@ flowchart LR
 | Path | What is in it |
 | :--- | :--- |
 | `player.py` | The host: window, input shape, local server, file dialogs, sizes, notifications |
-| `library.py` | The two Now Playing lists (My Music is saved, YouTube Music, with the Apple Music songs in it, stays in memory), the library scan, playlists, stations, settings |
+| `library.py` | The Now Playing lists (My Music is saved; YouTube Music's, Apple Music's and Spotify's stay in memory), the library scan, playlists, stations, settings |
 | `tags.py` | Tag, cover and length reader for six formats, standard library only |
 | `radio.py` | Relays a station to the page and reads its song titles |
 | `ytmusic.py` | YouTube Music: searches, albums, artists, playlists, similar songs and covers, and each song's audio repacked for the page; signed in, your library, likes and playlist changes. Standard library only |
 | `apple.py` | Apple Music: your library, read through Apple's own web page in a windowless view |
-| `engine.py`, `engine/` | The playback engine for Apple Music songs: the download, its checks and the one-time sandbox step (`allow-sandbox.sh`), and the helper (`helper/main.js`) that plays the songs in a window that is never shown |
-| `firefox.py` | Reads the YouTube and Apple Music sign-ins of the Firefox profile you chose into memory when a request needs them, read-only, standard library only |
+| `spotify.py` | Spotify: your Liked Songs, playlists, albums and artists, read through Spotify's own web player in a windowless view |
+| `engine.py`, `engine/` | The playback engine for Apple Music and Spotify songs: the download, its checks and the one-time sandbox step (`allow-sandbox.sh`), and the helper (`helper/main.js`) that plays the songs in a window that is never shown |
+| `firefox.py` | Reads the YouTube, Apple Music and Spotify sign-ins of the Firefox profile you chose into memory when a request needs them, read-only, standard library only |
 | `mpris.py` | The desktop's media controls |
-| `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations, `premium.js` is Premium Services (YouTube Music and Apple Music) |
+| `ui/` | The page: `frame.js` draws the frame, `app.js` plays the music, `visuals.js` draws the visualizations, `premium.js` is Premium Services (YouTube Music, Apple Music and Spotify) |
 | `data/` | Application icon and menu entry |
 | `packaging/` | `build-deb.sh`, which builds the Debian package from the last commit, and the files that go into it: the control file, the maintainer scripts, the engine's AppArmor profile and the copyright notice |
 
@@ -368,9 +446,9 @@ Ocean Mist is young. What is on this page works today; these parts of the origin
 - **Media Guide, Copy from CD and Copy to CD or Device** are in the task bar because the original had them, and open a short note instead.
 - **Gapless playback** between songs is not built yet.
 - **YouTube Music** signs in through Firefox only. Library albums, artists, songs and uploads are not there yet, playlists cannot be made or renamed, and live streams do not play.
-- **Apple Music** is read-only. Its songs play in the playback engine, which is a 117 MB download and, on Ubuntu 24.04 and later, needs a permission for its sandbox (the package installs it; without the package it asks once, with administrator rights); the equalizer and the visualizations cannot work on them, there is a gap of a few seconds between songs, and Apple limits how many devices stream at once. It signs in through Firefox only, and searching all of Apple Music (beyond your library) is not there.
-- **Spotify** and other streaming services are not started.
-- **Releases**: the Debian package is published with each release on GitHub (0.1.0 is the first) and checked on Ubuntu 26.04 only. There is no apt repository, Flatpak or Snap yet, so a newer release is installed the same way, by downloading its package.
+- **Apple Music** is read-only. Its songs play in the playback engine, which is a 117 MB download and, on Ubuntu 24.04 and later, needs a permission for its sandbox (the package installs it; without the package it asks once, with administrator rights); the equalizer cannot work on them (the visualizations do), there is a gap of a few seconds between songs, and Apple limits how many devices stream at once. It signs in through Firefox only, and the search box searches your library only, not all of Apple Music.
+- **Spotify** is read-only, like Apple Music: Liked Songs, playlists, albums and artists from your library, a search of only the first 1,000 of each and no search of all of Spotify, and its songs need Spotify Premium; they play in the playback engine, with the same limits as Apple Music's (the download, the sandbox step, no equalizer), the first song takes about five seconds to start and the others a second or two, and Spotify plays one stream per account. Now and then Spotify's own page goes on to another track about a second and a half into a song, which the player takes for the song's end and moves on (seen only after hundreds of test plays on one account, and not solved). It signs in through Firefox only. Other streaming services are not started.
+- **Releases**: the Debian package is published with each release on GitHub (0.1.0 was the first; 0.1.1 fixes its AppArmor profile for Ubuntu 24.04 and Debian 13; 0.2.0 adds Spotify; 0.3.0 takes less memory in every state, most of all while an Apple Music or Spotify song plays) and checked on Ubuntu 26.04 only. There is no apt repository, Flatpak or Snap yet, so a newer release is installed the same way, by downloading its package.
 
 | Milestone | Outcome |
 | :--- | :--- |

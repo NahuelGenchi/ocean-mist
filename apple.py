@@ -6,8 +6,11 @@ music.apple.com, Apple's web player, in a view of its own that has no window,
 signed in with the one cookie (media-user-token) of the Firefox profile you
 chose (firefox.py reads it), and asks the page's own MusicKit for your
 library. The view keeps everything in memory, blocks every request that would
-sign you out, and is closed after ten minutes without a request. Nothing is
-written anywhere, and nothing in your Apple Music account is changed.
+sign you out, and is closed after ten minutes without a request. While the
+playback engine's helper is up for Apple Music (a song plays, or did a moment
+ago), the same requests go to the page it has open, and this view is closed:
+Apple's player is not kept open twice. Nothing is written anywhere, and
+nothing in your Apple Music account is changed.
 
 This view only reads. Apple's audio is protected by DRM, which this view
 cannot play and Ocean Mist does not unlock: a song is played by the playback
@@ -17,8 +20,9 @@ page and plays it as Apple's own audio.
 These are the requests Apple's own page makes, not a published way in for a
 program like this one, so Apple can change them at any time. What may need
 updating then is kept together below: the page's address, what the page is
-asked (READY_JS, CALL_JS), the library requests (LIBRARY) and the rules that
-keep it from signing you out (Page._rules).
+asked (READY_JS, CALL_JS), the library requests (LIBRARY, and FIND for a
+search of the library) and the rules that keep it from signing you out
+(Page._rules).
 
     python3 apple.py      opens Apple's page with the Apple Music sign-in of
                           Firefox and counts what your library holds (no titles)
@@ -42,6 +46,8 @@ from ytmusic import YTError
 
 SITE = "https://music.apple.com/"
 PAGE = 100                       # items Apple sends at a time
+FOUND = 25                       # ...and found by a search of the library, the most it sends at a time
+WORDS = 100                      # characters of a search kept
 LIMIT = ytmusic.PLAYLIST_LIMIT   # songs read from one album or playlist
 READY = 45                       # seconds Apple's page gets to open and sign in
 SETTLE = 10                      # ...to say it is signed in, once its player is up
@@ -49,6 +55,7 @@ ASKED = 60                       # seconds a request gets
 IDLE = 600                       # seconds without a request after which the page is closed
 CHECK = 60                       # seconds between looks at whether the page has been idle
 PICTURES = 64                    # covers kept in memory
+MEMORY = 256                     # MB WebKit is told the page's process may use (see _open)
 
 OFFLINE = "cannot reach Apple Music; check the internet connection"
 SIGNED_OUT = "Apple Music says you are signed out; sign in again in Firefox"
@@ -68,6 +75,15 @@ LIBRARY = {
     "songs": ("/v1/me/library/songs", PAGE),
 }
 PAGES = {"playlist": "playlists", "album": "albums", "artist": "artists"}
+# a search of the library: where Apple keeps it, and the types of what it finds, by the kind searched
+SEARCH = "/v1/me/library/search"
+FIND = {
+    "all": ("library-songs", "library-albums", "library-artists", "library-playlists"),
+    "songs": ("library-songs",),
+    "albums": ("library-albums",),
+    "artists": ("library-artists",),
+    "playlists": ("library-playlists",),
+}
 TOP = frozenset(path for path, _ in LIBRARY.values())   # the lists of the library itself
 # what a request's address says when it signs you out, in the spellings Apple might use
 SIGN_OUT = ("log.?out", "sign.?out", "log.?off", "sign.?off", "unauthori[sz]e")
@@ -146,12 +162,13 @@ class Page:
     (firefox.AppleToken). Only the GTK main thread touches it; `call` answers
     through a function, once the page is up."""
 
-    def __init__(self, token, site=SITE, folder=None):
+    def __init__(self, token, site=SITE, folder=None, context=None):
         import gi
         gi.require_version("Soup", "3.0")
         gi.require_version("WebKit2", "4.1")
         from gi.repository import GLib, Soup, WebKit2
         self.GLib, self.Soup, self.WebKit2 = GLib, Soup, WebKit2
+        self.context = context or Page.new_context()
         self.site, self.state, self.error = site, "loading", None
         self.waiting, self.running = [], {}
         self.released = False
@@ -171,16 +188,38 @@ class Page:
             self._release()
             raise
 
-    def _open(self):
-        GLib, WebKit2 = self.GLib, self.WebKit2
-        self.context = WebKit2.WebContext.new_ephemeral()   # in memory: no cache, no site data on disk
-        manager = self.context.get_website_data_manager()
+    @staticmethod
+    def new_context():
+        """A WebContext for the views, in memory: no cache, no site data on disk. Past a third of MEMORY, WebKit
+        lets go of what a page's process holds and no longer needs, and of more past half (its garbage and
+        compiled code too), at most once a minute while it stays there; it never ends the page for it.
+
+        WebKit gives each WebContext a network process of its own and ends it only when the player ends (letting
+        go of a WebContext makes WebKitGTK crash), so AppleMusic keeps one for all its views: one each would leave
+        another such process behind, some 20 MB, every time a view closed."""
+        import gi
+        gi.require_version("WebKit2", "4.1")
+        from gi.repository import WebKit2
+        try:
+            pressure = WebKit2.MemoryPressureSettings.new()
+            pressure.set_memory_limit(MEMORY)
+            pressure.set_poll_interval(60)
+            context = WebKit2.WebContext(website_data_manager=WebKit2.WebsiteDataManager.new_ephemeral(),
+                                         memory_pressure_settings=pressure)
+        except (AttributeError, TypeError):   # a WebKitGTK without the setting (before 2.34)
+            context = WebKit2.WebContext.new_ephemeral()
+        manager = context.get_website_data_manager()
         for name in ("set_itp_enabled", "set_resource_load_statistics_enabled"):
             if hasattr(manager, name):
                 getattr(manager, name)(False)
                 break
+        manager.get_cookie_manager().set_accept_policy(WebKit2.CookieAcceptPolicy.ALWAYS)
+        return context
+
+    def _open(self):
+        GLib, WebKit2 = self.GLib, self.WebKit2
+        manager = self.context.get_website_data_manager()
         self.cookies = manager.get_cookie_manager()
-        self.cookies.set_accept_policy(WebKit2.CookieAcceptPolicy.ALWAYS)
         settings = WebKit2.Settings()
         settings.set_user_agent(ytmusic.BROWSER)
         # the page is only a source of data: it needs no sound, video, pictures or graphics
@@ -201,9 +240,19 @@ class Page:
         self.view.connect("load-failed", self._load_failed)
         self.view.connect("decide-policy", self._decide)
         self.view.connect("create", lambda *_: None)   # no windows of its own
-        store = WebKit2.UserContentFilterStore.new(self.folder)
-        store.save("sign-out", GLib.Bytes.new(self._rules()), None, self._rules_saved, None)
+        # what the view before this one left in the context (its sign-in above all) goes first
+        manager.clear(WebKit2.WebsiteDataTypes.ALL, 0, None, self._cleared, None)
         self.expiry = GLib.timeout_add_seconds(READY + 2, self._expire)   # whatever stalls, it ends
+
+    def _cleared(self, manager, result, _):
+        if self.state != "loading":
+            return
+        try:
+            manager.clear_finish(result)
+        except Exception:   # an earlier sign-in could still be in it
+            return self._fail(AppleError("Ocean Mist could not open Apple's page"))
+        store = self.WebKit2.UserContentFilterStore.new(self.folder)
+        store.save("sign-out", self.GLib.Bytes.new(self._rules()), None, self._rules_saved, None)
 
     @staticmethod
     def _rules():
@@ -477,6 +526,7 @@ def either(res):
 
 
 SHAPES = {"recent": either, "playlists": playlist, "albums": album, "artists": artist, "songs": song}
+TYPES = {"library-songs": song, "library-albums": album, "library-artists": artist, "library-playlists": playlist}
 
 
 def song_id(link):
@@ -494,17 +544,23 @@ class AppleMusic:
 
     `token_source()` gives the Apple Music sign-in as firefox.AppleToken, or
     raises AppleError; it is called when the page has to be opened.
-    `schedule(fn)` runs `fn` on the GTK main thread."""
+    `schedule(fn)` runs `fn` on the GTK main thread. `engine`, the playback
+    engine (engine.Engine), is asked first: while its helper is up for Apple
+    Music, the library is read in its page."""
 
-    def __init__(self, token_source, schedule, site=SITE, folder=None):
+    def __init__(self, token_source, schedule, site=SITE, folder=None, engine=None):
         self.token_source, self.schedule = token_source, schedule
-        self.site, self.folder = site, folder
+        self.site, self.folder, self.engine = site, folder, engine
         self.page = None          # the Page; touched on the main thread only
+        self.context = None       # ...and the WebContext of every Page it opens (Page.new_context), made with the first
         self.last = 0.0
         self.generation = 0       # changes when you sign out: a request begun before is refused
 
     # -- the page --
     def _ask(self, path, query=None):
+        answer = self._by_engine(path, query)
+        if answer is not None:
+            return answer
         done, box = threading.Event(), {}
         generation = self.generation
         token = None if self.page is not None and self.page.state != "dead" else self.token_source()
@@ -520,7 +576,8 @@ class AppleMusic:
                 self.last = time.monotonic()
                 page = self.page
                 if page is None or page.state == "dead":
-                    page = self.page = Page(token or self.token_source(), self.site, self.folder)
+                    self.context = self.context or Page.new_context()
+                    page = self.page = Page(token or self.token_source(), self.site, self.folder, self.context)
                     self.watch(page)
                 page.call(path, query, finish)
             except AppleError as error:
@@ -534,12 +591,45 @@ class AppleMusic:
             return box["value"]
         raise box["value"]
 
+    def _by_engine(self, path, query):
+        """Apple's answer from the playback engine's page, while its helper is up for Apple Music; None when
+        no helper is, or it did not answer, or its page failed in a way the library's own view may not."""
+        engine = self.engine
+        if engine is None:
+            return None
+        generation = self.generation
+        raw = engine.ask(path, query or {})
+        if raw is None:
+            return None
+        if generation != self.generation:   # you signed out meanwhile: what the earlier sign-in read is not shown
+            raise AppleError(SIGNED_OUT, signed_out=True)
+        try:
+            answer = _answer(raw, path in TOP)
+        except AppleError as error:
+            if error.signed_out or error.status in (403, 404, 429):   # Apple's own answer, which the view would get too
+                raise
+            return None
+        self.spare()
+        return answer
+
+    def spare(self):
+        """The playback engine's helper is up for Apple Music: the library's own view is closed once it has
+        nothing to do (from any thread)."""
+        def close():
+            page = self.page
+            if page is not None and page.state == "ready" and not page.running and not page.waiting:
+                self.close_now()
+        self.schedule(close)
+
     def watch(self, page):
-        """Close the page once it has had no request for IDLE seconds."""
+        """Close the page once it has had no request for IDLE seconds, or has nothing to do while the playback
+        engine's helper is up for Apple Music."""
         def check():
             if self.page is not page or page.state == "dead":
                 return False
-            if time.monotonic() - self.last > IDLE:
+            spared = self.engine is not None and page.state == "ready" and not page.running and not page.waiting \
+                and self.engine.up_for("apple")
+            if spared or time.monotonic() - self.last > IDLE:
                 self.close_now()
                 return False
             return True
@@ -568,6 +658,32 @@ class AppleMusic:
         total = meta.get("total") if isinstance(meta.get("total"), int) else None
         return {"items": [item for item in map(SHAPES[kind], rows) if item],
                 "more": offset + len(rows) if body.get("next") and rows else None, "total": total}
+
+    def search(self, kind, words, offset=0):
+        """What Apple's own search of the library finds for `words`, of one kind (or of every kind, "all": the
+        songs first, then the albums, the artists and the playlists), a page at a time: {"items": [...], "more":
+        offset of the next page or None, "total": None}."""
+        if kind not in FIND:
+            raise AppleError("that is not part of your Apple Music library")
+        words = " ".join(str(words).split())[:WORDS]
+        if not words:
+            return {"items": [], "more": None, "total": None}
+        offset = max(0, min(int(offset), 1_000_000))
+        try:
+            body = self._ask(SEARCH, {"term": words, "types": ",".join(FIND[kind]), "limit": FOUND, "offset": offset})
+        except AppleError as error:
+            if error.status != 404:   # (a search that finds nothing may come back as "not found")
+                raise
+            body = {}
+        results = body.get("results") if isinstance(body.get("results"), dict) else {}
+        items, more = [], None
+        for name in FIND[kind]:
+            part = results.get(name) if isinstance(results.get(name), dict) else {}
+            rows = [row for row in part.get("data") or [] if isinstance(row, dict)]
+            items += [item for item in map(TYPES[name], rows) if item]
+            if part.get("next") and rows:   # each type pages by the same offset
+                more = offset + FOUND
+        return {"items": items, "more": more, "total": None}
 
     def _all(self, path, shape, limit):
         """Every row of a list Apple sends in pages, up to `limit`: a missing list is an empty one."""

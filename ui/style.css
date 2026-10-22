@@ -58,6 +58,7 @@ body.tinted #yt-none { filter: hue-rotate(calc(var(--hue) * -1)); }
 }
 #np-select:hover { background: linear-gradient(#fbfdff, #f1f5fb 50%, #e4eaf5); }
 .np-ico { position: absolute; left: 4px; top: 3.5px; width: 13px; height: 13px; }
+#np-label { display: inline-block; max-width: 111px; vertical-align: top; overflow: hidden; text-overflow: ellipsis; }   /* a long name ends before the arrow */
 .np-chev { position: absolute; left: 136px; top: 6.5px; width: 10px; height: 7px; }
 .wbtn { position: absolute; top: 10px; width: 16px; height: 16px; color: #33416f; border-radius: 3px; }
 .wbtn svg { width: 12px; height: 12px; }
@@ -126,6 +127,7 @@ body.tinted #yt-none { filter: hue-rotate(calc(var(--hue) * -1)); }
 .row .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .row .d { padding-left: 8px; }
 .row .q { flex: none; min-width: calc(12px * var(--fs)); height: calc(11px * var(--fs)); margin: calc(1.5px * var(--fs)) 0 0 4px; padding: 0 3px; border-radius: 6px; background: var(--green); color: #10210a; font-size: calc(9px * var(--fs)); line-height: calc(11px * var(--fs)); font-weight: 700; text-align: center; letter-spacing: 0; }
+.ahead { height: 13px; line-height: 13px; margin: 1px 5px 1px 2px; border-bottom: 1px solid #4c558a; color: #9aa3cc; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #playlist.dragging, #playlist.dragging .row { cursor: grabbing; }
 #drop-line { position: absolute; left: 5px; right: 12px; height: 2px; background: var(--green); box-shadow: 0 0 2px #000; pointer-events: none; }
 .row.sel { background: #eceadb; color: #14161f; }

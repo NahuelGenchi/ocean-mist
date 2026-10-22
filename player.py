@@ -5,10 +5,10 @@ The interface is a local web page (ui/) shown in a frameless WebKit window.
 This file is the host: it owns the window and a small HTTP server bound to
 127.0.0.1 that feeds the page its files. library.py keeps the lists, tags.py
 reads titles and covers, radio.py relays stations, ytmusic.py talks to
-YouTube Music, apple.py reads your Apple Music library, engine.py plays its
-songs (a helper that opens Apple's web player in a window that is never shown),
-firefox.py reads your sign-ins from Firefox, mpris.py talks to the desktop's
-media controls.
+YouTube Music, apple.py and spotify.py read your Apple Music and Spotify
+libraries, engine.py plays their songs (a helper that opens the service's web
+player in a window that is never shown), firefox.py reads your sign-ins from
+Firefox, mpris.py talks to the desktop's media controls.
 
     player.py [FILES OR FOLDERS...]     open the player and play them; a single
                                         song brings its folder along as the queue,
@@ -28,10 +28,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import apple
 import firefox
 import radio
+import spotify
 from apple import AppleError, AppleMusic
 from engine import Engine, EngineError
+from spotify import SpotifyError, SpotifyMusic
 from library import (APP_ID, AUDIO_EXTENSIONS, PAGE_SETTINGS, PLAYLIST_EXTENSIONS,
-                     Library, is_playlist, music_dir, stream_key)
+                     STREAMING, Library, is_playlist, music_dir, stream_key)
 from ytmusic import PLAYLIST_LIMIT, YTError, YTMusic
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +50,7 @@ class Handler(BaseHTTPRequestHandler):
     library = None
     music = None  # YTMusic
     apple = None  # AppleMusic, or None without a window (--serve)
+    spotify = None  # SpotifyMusic, or None without a window (--serve)
     engine = None  # Engine, the playback engine
     token = ""
     host = None  # object with window/dialog methods, or None in --serve mode
@@ -165,6 +168,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._youtube(route[3:])
         if route.startswith("apple/"):
             return self._apple(route[6:])
+        if route.startswith("spotify/"):
+            return self._spotify(route[8:])
         if route == "api/state":
             return self._json(self.library.snapshot())
         if route == "api/library":
@@ -243,7 +248,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found")
 
     def _apple(self, what):
-        """Apple Music for the page: your library as rows and pages, and covers.
+        """Apple Music for the page: your library as rows and pages, a search of it, and covers.
         (The songs are played by the playback engine: see _engine_cmd.)"""
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         ask = lambda key: (query.get(key) or [""])[0]
@@ -256,6 +261,34 @@ class Handler(BaseHTTPRequestHandler):
                 offset = ask("offset")
                 found = reader.library(ask("kind"), int(offset) if offset.isascii() and offset.isdigit() else 0)
                 folder = self.library.settings.get("apple_account")
+                found["profile"] = firefox.name_of(folder) if isinstance(folder, str) and folder else ""
+                return self._json(found)
+            if what == "search":
+                offset = ask("offset")
+                return self._json(reader.search(ask("kind"), ask("q"), int(offset) if offset.isascii() and offset.isdigit() else 0))
+            if what == "search":
+                return self._json(reader.search(ask("kind"), ask("q")))
+            if what == "page":
+                return self._json(reader.page_of(ask("kind"), ask("id")))
+        except YTError as error:
+            return self._json({"error": str(error), "general": error.general,
+                               "signed_out": error.signed_out}, 502)
+        self._send(404, b"not found")
+
+    def _spotify(self, what):
+        """Spotify for the page: your library as rows and pages, a search of it, and covers.
+        (The songs are played by the playback engine: see _engine_cmd.)"""
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        ask = lambda key: (query.get(key) or [""])[0]
+        try:
+            if what == "picture":
+                kind, data = spotify.picture(ask("u"))
+                return self._send(200, data, kind, {"Cache-Control": "max-age=86400"})
+            reader = self._spotify_reader()
+            if what == "library":
+                offset = ask("offset")
+                found = reader.library(ask("kind"), int(offset) if offset.isascii() and offset.isdigit() else 0)
+                folder = self.library.settings.get("spotify_account")
                 found["profile"] = firefox.name_of(folder) if isinstance(folder, str) and folder else ""
                 return self._json(found)
             if what == "page":
@@ -274,9 +307,19 @@ class Handler(BaseHTTPRequestHandler):
             raise AppleError("sign in to Apple Music first, under Library", signed_out=True)
         return self.apple
 
+    def _spotify_reader(self):
+        """What reads the Spotify library, once you have signed in to it."""
+        if self.spotify is None:
+            raise SpotifyError("Spotify needs the player's window, which this mode has none of", general=True)
+        folder = self.library.settings.get("spotify_account")
+        if not isinstance(folder, str) or not folder:
+            raise SpotifyError("sign in to Spotify first, under Library", signed_out=True)
+        return self.spotify
+
     def _ahead(self, track):
         """Get the song that plays next ready: a YouTube Music song's first piece of
-        audio. (An Apple Music song is played by the engine, which has nothing to get ready.)"""
+        audio. (An Apple Music or Spotify song is played by the engine, which has
+        nothing to get ready.)"""
         if track.get("video"):
             self.music.prefetch(track["video"])
 
@@ -307,10 +350,15 @@ class Handler(BaseHTTPRequestHandler):
                 engine.cancel_ask()
             elif cmd == "engine-play":
                 track = self.library.track(msg.get("id"))
-                if not track or not track.get("apple"):
-                    return {"ok": False, "error": "that is not an Apple Music song"}
-                ids = [i for i in (track.get("apple_lib"), track["apple"]) if i]
-                engine.play(int(msg.get("serial") or 0), ids, float(msg.get("from") or 0), msg.get("volume"), msg.get("muted"))
+                if not track or not (track.get("apple") or track.get("spotify")):
+                    return {"ok": False, "error": "that is not a song of a service the engine plays"}
+                service = "spotify" if track.get("spotify") else "apple"
+                if service == "spotify":
+                    ids = [track["spotify"]]
+                else:
+                    ids = [i for i in (track.get("apple_lib"), track["apple"]) if i]
+                engine.play(int(msg.get("serial") or 0), ids, float(msg.get("from") or 0),
+                            msg.get("volume"), msg.get("muted"), service)
             elif cmd == "engine-pause":
                 engine.pause()
             elif cmd == "engine-resume":
@@ -383,6 +431,19 @@ class Handler(BaseHTTPRequestHandler):
                                             "and Firefox was not found"}
         result["signed_in"] = bool(chosen)
         return result
+
+    def _end_engine(self, service):
+        """The sign-in of `service` changed: the song of that service, playing or on its way, stops and
+        its helper ends, as it holds the earlier sign-in. A song of the other service plays on, even
+        while the helper of this one is still ending to make way for it."""
+        engine = self.engine
+        if engine is None:
+            return
+        with engine.lock:
+            song = engine.song
+            ours = song.get("service", "apple") == service if song else engine.service == service
+            if ours:
+                engine.stop(final=True)
 
     def _similar(self, video, skip):
         """Songs like this one that are not in `skip` (video ids), for the
@@ -491,7 +552,10 @@ class Handler(BaseHTTPRequestHandler):
                 except YTError as error:
                     result["notice"] = str(error)
             named = msg.get("named") if cmd == "yt-add" and isinstance(msg.get("named"), str) else None
-            chosen = library.add_streams(items, replace=cmd == "yt-play", name=msg.get("name"), named=named)
+            into = msg.get("into") if cmd == "yt-add" else None   # the streaming list that plays, which added songs join
+            after = msg.get("after") if isinstance(msg.get("after"), int) else None   # ...right after that song ("Play next")
+            chosen = library.add_streams(items, replace=cmd == "yt-play", name=msg.get("name"), named=named,
+                                         into=into if isinstance(into, str) else None, after=after)
             result["ids"] = [t["id"] for t in chosen]
             if cmd == "yt-play" and chosen:   # asked for from Premium Services: the page stays there
                 start = next((t["id"] for t in chosen if stream_key(t) == msg.get("start")),
@@ -503,9 +567,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"ok": False, "error": "that is not a YouTube Music song"}
             else:
                 try:
+                    into = msg.get("into") if msg.get("into") in STREAMING else "youtube"   # the list that ran out
                     with library.lock:
-                        listed = {t.get("video") for t in library.lists["youtube"]}
-                    chosen = library.add_streams(self._similar(track["video"], listed))
+                        listed = {t.get("video") for t in library.lists[into]}
+                    chosen = library.add_streams(self._similar(track["video"], listed), into=into)
                     result["first"] = chosen[0]["id"] if chosen else None
                 except YTError as error:
                     result = {"ok": False, "error": str(error), "general": error.general}
@@ -518,16 +583,22 @@ class Handler(BaseHTTPRequestHandler):
             if result.get("signed_in"):   # a page or a helper opened with an earlier sign-in is not used for this one
                 if self.apple is not None:
                     self.apple.close()
-                if self.engine is not None:
-                    self.engine.stop(final=True)
-        elif cmd in ("yt-sign-out", "apple-sign-out"):   # Ocean Mist stops using the sign-in; Firefox stays signed in
-            library.settings["yt_account" if cmd == "yt-sign-out" else "apple_account"] = False
+                self._end_engine("apple")
+        elif cmd == "spotify-sign-in":
+            result = self._sign_in(msg, "spotify_account", firefox.spotify_signed_in, firefox.SPOTIFY_SIGN_IN)
+            if result.get("signed_in"):
+                if self.spotify is not None:
+                    self.spotify.close()
+                self._end_engine("spotify")
+        elif cmd in ("yt-sign-out", "apple-sign-out", "spotify-sign-out"):   # Ocean Mist stops using the sign-in; Firefox stays signed in
+            which = {"yt-sign-out": "yt_account", "spotify-sign-out": "spotify_account"}.get(cmd, "apple_account")
+            library.settings[which] = False
             library.save()
-            if cmd == "apple-sign-out":
-                if self.apple is not None:
-                    self.apple.close()
-                if self.engine is not None:
-                    self.engine.stop(final=True)
+            if cmd in ("apple-sign-out", "spotify-sign-out"):
+                reader = self.spotify if cmd == "spotify-sign-out" else self.apple
+                if reader is not None:
+                    reader.close()
+                self._end_engine("spotify" if cmd == "spotify-sign-out" else "apple")
         elif cmd in ("yt-like", "yt-playlist-add", "yt-playlist-remove"):
             music, video = self.music, str(msg.get("video"))
             try:
@@ -556,8 +627,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def cover_of(music, url):
-    """A cover's (type, bytes), from Apple's picture servers or YouTube's."""
-    return apple.picture(url) if apple.PICTURE_HOSTS.match(str(url)) else music.picture(url)
+    """A cover's (type, bytes), from Apple's or Spotify's picture servers or YouTube's."""
+    if apple.PICTURE_HOSTS.match(str(url)):
+        return apple.picture(url)
+    if spotify.PICTURE_HOSTS.match(str(url)):
+        return spotify.picture(url)
+    return music.picture(url)
 
 
 def apple_sign_in(library):
@@ -579,26 +654,76 @@ def apple_sign_in(library):
     return found
 
 
-def engine_sign_in(library):
-    """The same sign-in for the playback engine; EngineError when there is none."""
+def spotify_sign_in(library):
+    """The Spotify sign-in of the Firefox profile you chose, as Firefox has it
+    now, for opening Spotify's page. SpotifyError when you have not chosen one,
+    or when that profile has no sign-in any more."""
+    folder = library.settings.get("spotify_account")
+    if not isinstance(folder, str) or not folder:
+        raise SpotifyError("sign in to Spotify first, under Library", signed_out=True)
     try:
-        return apple_sign_in(library)
-    except AppleError as error:
+        found = firefox.spotify_token(folder)
+    except RuntimeError as error:   # an older Python
+        raise SpotifyError(str(error), signed_out=True) from None
+    except OSError:
+        raise SpotifyError("Ocean Mist could not read the sign-in from Firefox", signed_out=True) from None
+    if found is None:
+        raise SpotifyError("Firefox is not signed in to Spotify any more; sign in there again",
+                           signed_out=True)
+    return found
+
+
+def engine_sign_in(library, service):
+    """The sign-in of `service` for the playback engine; EngineError when there is none."""
+    try:
+        return spotify_sign_in(library) if service == "spotify" else apple_sign_in(library)
+    except (AppleError, SpotifyError) as error:
         raise EngineError(str(error), "signed-out") from None
 
 
-def start_server(library, token, port=0, host=None, music=None, apple_music=None, engine=None):
+def start_server(library, token, port=0, host=None, music=None, apple_music=None, spotify_music=None, engine=None):
     Handler.library, Handler.token, Handler.host = library, token, host
-    Handler.music, Handler.apple, Handler.engine = music or YTMusic(), apple_music, engine
+    Handler.music, Handler.apple, Handler.spotify, Handler.engine = music or YTMusic(), apple_music, spotify_music, engine
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
 
+# -- memory -------------------------------------------------------------------
+# What keeps the player's memory down without changing what it shows or plays (README's "How much memory it
+# uses" has the numbers). The variables go to WebKit's processes, which start after them; one set beforehand wins:
+# - WebKit paints the page's tiles with the processor and the graphics card puts the page together. The card's
+#   own painting kept some 35 MB more in the page's process; the visualizations keep their 60 frames a second,
+#   and the processor is no busier, in the window and in full screen
+# - glibc's memory for all of a process's threads in two arenas, not one for each thread
+LEAN_ENV = {"WEBKIT_SKIA_ENABLE_CPU_RENDERING": "1", "MALLOC_ARENA_MAX": "2"}
+TRIM_EVERY = 60   # seconds between two times the host hands what it freed back to the system
+
+
+def _libc():
+    import ctypes
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        return libc if hasattr(libc, "mallopt") and hasattr(libc, "malloc_trim") else None
+    except OSError:   # not glibc
+        return None
+
+
+def lean():
+    """Set the above for the player and the processes it starts. Returns glibc (None without it)."""
+    for key, value in LEAN_ENV.items():
+        os.environ.setdefault(key, value)
+    libc = _libc()
+    if libc is not None and os.environ.get("MALLOC_ARENA_MAX") == "2":
+        libc.mallopt(-8, 2)   # M_ARENA_MAX: this process read its variables before the line above
+    return libc
+
+
 # -- window -------------------------------------------------------------------
 
 def run_app(argv):
+    libc = lean()
     import gi
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
@@ -707,6 +832,7 @@ def run_app(argv):
             self.full_size = None     # the window's size outside compact mode
             self.music = YTMusic()
             self.apple = None         # AppleMusic, made at startup
+            self.spotify = None       # SpotifyMusic, too
             self.engine = None        # the playback engine, too
             self._announced = None
             self._covers = set()      # streamed songs whose cover was asked for
@@ -721,10 +847,14 @@ def run_app(argv):
             if library.settings.get("mini") and size:   # closed in compact mode: open in it
                 self.mini, self.mini_size = True, tuple(size)
                 self.full_size = list(library.settings.get("size", (760, 538)))
-            self.apple = AppleMusic(lambda: apple_sign_in(library), lambda fn: GLib.idle_add(lambda: fn() or False))
-            self.engine = Engine(lambda: engine_sign_in(library), library.emit)
+            self.engine = Engine(lambda service: engine_sign_in(library, service), library.emit)
+            # while the engine's helper is up for Apple Music, the library is read in its page, and its own view closes
+            self.apple = AppleMusic(lambda: apple_sign_in(library), lambda fn: GLib.idle_add(lambda: fn() or False),
+                                    engine=self.engine)
+            self.engine.on_ready = lambda service: service == "apple" and self.apple.spare()
+            self.spotify = SpotifyMusic(lambda: spotify_sign_in(library), lambda fn: GLib.idle_add(lambda: fn() or False))
             self.server = start_server(library, self.token, host=Host(self), music=self.music,
-                                       apple_music=self.apple, engine=self.engine)
+                                       apple_music=self.apple, spotify_music=self.spotify, engine=self.engine)
             library.on_now = lambda: GLib.idle_add(self._now_changed)
             try:
                 self.mpris = Mpris(
@@ -735,6 +865,12 @@ def run_app(argv):
                 if os.environ.get("OCEAN_MIST_DEBUG"):
                     print("mpris:", error, file=sys.stderr)
             library.scan()
+            if libc is not None:
+                GLib.timeout_add_seconds(TRIM_EVERY, self._trim)
+
+        def _trim(self):
+            libc.malloc_trim(0)   # what Python and GTK freed goes back to the system, not only to the next allocation
+            return True
 
         def do_activate(self):
             if self.window is None:
@@ -953,6 +1089,7 @@ def run_app(argv):
             library.save()
             library.forget_stream_covers()
             self.apple.close_now(now=True)   # Apple's page: its view, and the folder of its rules
+            self.spotify.close_now(now=True)   # Spotify's view
             self.engine.close()              # ...and the playback helper
             self.withdraw_notification("song")
             self.window = None
@@ -1161,7 +1298,7 @@ def main():
         library.add_paths(sys.argv[3:])
         library.scan()
         server = start_server(library, "dev", port=int(sys.argv[2]), music=YTMusic(),
-                              engine=Engine(lambda: engine_sign_in(library), library.emit))
+                              engine=Engine(lambda service: engine_sign_in(library, service), library.emit))
         print(f"http://127.0.0.1:{server.server_address[1]}/dev/", flush=True)
         threading.Event().wait()
         return 0

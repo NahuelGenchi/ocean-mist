@@ -8,10 +8,10 @@
   const audio = $('audio');
   const probe = new Audio(); probe.preload = 'metadata';
 
-  const LISTS = { local: 'My Music', youtube: 'YouTube Music' };   // the Now Playing lists (the second holds Apple Music's songs too)
+  const LISTS = { local: 'My Music', youtube: 'YouTube Music', apple: 'Apple Music', spotify: 'Spotify' };   // the Now Playing lists: My Music, and one for each streaming service
   const state = {
-    lists: { local: [], youtube: [] },   // the songs of each, in order
-    names: { local: '', youtube: '' },   // the saved playlist (or page) each came from
+    lists: { local: [], youtube: [], apple: [], spotify: [] },   // the songs of each, in order
+    names: { local: '', youtube: '', apple: '', spotify: '' },   // the saved playlist (or page) each came from
     show: 'local',      // the list the Now Playing pane shows
     settings: { volume: 0.5, muted: false, vis: 0, shuffle: false, repeat: false, hue: 0, zoom: 1,
       dark: false, font: 'Tahoma9, Tahoma, "DejaVu Sans", sans-serif', font_size: 1 },
@@ -26,6 +26,8 @@
     played: null,       // the last YouTube Music song that was heard
     queue: [],          // ids picked with "Play next", played before the list goes on
   };
+  let resumeAfter = null;   // the song the list that played goes on after, once the "Play next" songs have played
+  const early = new Set();  // songs that played from the queue: the list passes over them when it gets to them
   let ext = null;       // the Apple Music song the playback engine plays (see "Apple Music songs" below)
   const hooks = {};
   const on = (name, fn) => { (hooks[name] = hooks[name] || []).push(fn); };
@@ -49,7 +51,15 @@
   }
   async function refresh() {
     const data = await (await fetch(base + 'api/state')).json();
-    const known = new Map([...state.lists.local, ...state.lists.youtube].map((t) => [t.id, t]));
+    // the host answers each request in a thread of its own, so an answer read before one already applied can come in
+    // after it: its lists are older, and putting them back would stop a song that started since
+    if (data.taken < refresh.taken) {
+      if (data.play) startTarget(data.play);   // ...but what it offers is offered once, to whichever request came first
+      else if (data.resume) resume(data.resume);
+      return;
+    }
+    refresh.taken = data.taken;
+    const known = new Map(Object.values(state.lists).flat().map((t) => [t.id, t]));
     const looks = (t) => (t ? [t.title, t.artist, t.album, t.art].join('\n') : '');
     const before = looks(track(state.cur));
     for (const which of Object.keys(LISTS)) {
@@ -74,21 +84,28 @@
   }
 
   // ---- helpers ----
-  const track = (id) => state.lists.local.find((t) => t.id === id) || state.lists.youtube.find((t) => t.id === id);
+  const track = (id) => { for (const which of Object.keys(LISTS)) { const t = state.lists[which].find((x) => x.id === id); if (t) return t; } return undefined; };
   const station = (id) => state.stations.find((s) => s.id === id);
-  const listOf = (t) => (isStream(t) ? 'youtube' : 'local');   // the list a song belongs in
+  // the list a song belongs in: its service's, or My Music
+  const listOf = (t) => (!isStream(t) ? 'local' : t.apple ? 'apple' : t.spotify ? 'spotify' : 'youtube');
+  // ...and the list it is in: a streaming list also holds the songs of other services added while it played
+  const whereIs = (id) => Object.keys(LISTS).find((which) => state.lists[which].some((t) => t.id === id)) || null;
+  // the list the current song is in, which songs added from Premium Services join (null: none is loaded)
+  const playingList = () => (state.station === null && state.cur !== null ? whereIs(state.cur) : null);
   const shown = () => state.lists[state.show];
   const inView = (id) => shown().find((t) => t.id === id);
-  // what a list is called: the streaming one after the service its songs come from
-  function listName(which) {
-    if (which !== 'youtube') return LISTS[which];
-    const songs = state.lists.youtube, apple = songs.filter((t) => t.apple).length;
-    if (!apple) return LISTS.youtube;
-    return apple === songs.length ? 'Apple Music' : 'YouTube Music and Apple Music';
+  const listName = (which) => LISTS[which];
+  // the lists the chooser offers: Apple Music's and Spotify's while signed in to them, or while theirs has songs or is in view
+  const offered = (which) => !['apple', 'spotify'].includes(which) || !!state.settings[which + '_account'] || state.lists[which].length > 0 || state.show === which;
+  // the streaming list Premium Services shows as Now Playing: the one in view, or else the current song's
+  function streamList() {
+    if (state.show !== 'local') return state.show;
+    const which = whereIs(state.cur);
+    return which && which !== 'local' ? which : 'youtube';
   }
   const listLabel = () => state.names[state.show] || listName(state.show);
   // the list playback goes through: the current song's, or else the one in view
-  const playing = () => { const t = track(state.cur); return t ? state.lists[listOf(t)] : shown(); };
+  const playing = () => { const which = whereIs(state.cur); return which ? state.lists[which] : shown(); };
   function clock(seconds, pad) {
     if (!isFinite(seconds) || seconds < 0) seconds = 0;
     const s = Math.floor(seconds % 60), m = Math.floor(seconds / 60) % 60, h = Math.floor(seconds / 3600);
@@ -99,8 +116,9 @@
   function esc(text) { const d = document.createElement('span'); d.textContent = text; return d.innerHTML; }
   const sentence = (text) => (text ? text[0].toUpperCase() + text.slice(1) : '');
   const isStream = (t) => !!t && t.source === 'youtube';
-  // an Apple Music song is not played by this page but by the playback engine (engine.py)
-  const outside = (t) => !!t && !!t.apple;
+  // an Apple Music or Spotify song is not played by this page but by the playback engine (engine.py)
+  const outside = (t) => !!t && !!(t.apple || t.spotify);
+  const serviceName = (t) => (t && t.spotify ? 'Spotify' : 'Apple Music');
   const length = () => {   // 0 for a live stream
     const t = state.station === null ? track(state.cur) : null;
     if (outside(t)) return (ext && ext.dur) || t.duration || 0;
@@ -145,10 +163,14 @@
 
   // ---- transport ----
   let cueAt = 0;   // where a song restored from the last session should continue
-  function play(id) {
-    const t = track(id), was = track(state.cur);
+  // `how`: 'queued', a "Play next" song, after which the list that played goes on (see step); 'onward', the list going
+  // on by itself; or nothing, a song you chose, from which the list goes on as it is
+  function play(id, how) {
+    const t = track(id), from = whereIs(state.cur), to = whereIs(id);
     if (!t) return;
-    if (!was || listOf(was) !== listOf(t)) state.show = listOf(t);   // the pane follows the music to its list
+    if (how !== 'queued') resumeAfter = null;
+    if (!how) early.clear();
+    if (from !== to) state.show = to;   // the pane follows the music to its list
     if (state.cur !== null && state.cur !== id) state.history.push(state.cur);
     state.queue = state.queue.filter((q) => q !== id);
     state.station = null; state.radioTitle = ''; cueAt = 0;
@@ -157,7 +179,7 @@
     closeStream();
     leaveOutside(t);
     if (!isStream(t)) audio.src = base + 'media/' + id;   // a YouTube Music song is fed by start()
-    else if (outside(t)) silence();                      // ...and an Apple Music song is played by the engine
+    else if (outside(t)) silence();                      // ...and an Apple Music or Spotify song is played by the engine
     start();
     setMode('playing');
     showTrack();
@@ -206,6 +228,7 @@
       audio.addEventListener('playing', () => { if (cueAt === at) audio.currentTime = at; else { fade = 1; applyVolume(); } }, { once: true });
       audio.addEventListener('seeked', () => { if (cueAt === at) cueAt = 0; fade = 1; applyVolume(); }, { once: true });
     }
+    if (actx && actx.state === 'suspended') actx.resume().catch(() => {});   // it rested since a stop
     audio.play().catch((err) => { if (err && err.name === 'NotAllowedError') setMode('paused'); });
   }
   const playSelection = () => state.mode === 'stopped' && !!selections[state.view] && selections[state.view]();
@@ -230,6 +253,7 @@
     if (forget) { state.cur = null; state.station = null; state.radioTitle = ''; audio.removeAttribute('src'); audio.load(); showTrack(); }
     setMode('stopped');
     updateTime();
+    if (actx && actx.state === 'running') actx.suspend().catch(() => {});   // nothing to hear: the graph rests instead of working on silence
   }
   const position = () => (ext ? extPosition() : cueAt || audio.currentTime || 0);
   function seekTo(seconds) {
@@ -243,13 +267,21 @@
       if (n > 1) playStation(state.stations[(i + dir + n) % n].id);
       return;
     }
-    while (dir > 0 && state.queue.length) {   // "Play next" songs first, from either list
+    while (dir > 0 && state.queue.length) {   // "Play next" songs first, from any list
       const id = state.queue.shift();
-      if (track(id)) { play(id); return; }
+      if (track(id)) {
+        if (resumeAfter === null && state.cur !== null) resumeAfter = state.cur;   // where the list goes on afterwards
+        early.add(id);
+        play(id, 'queued');
+        return;
+      }
     }
-    const tracks = playing();
+    // the list goes on from the song it played before the "Play next" ones, if they came in between
+    const after = dir > 0 && resumeAfter !== null && track(resumeAfter) ? resumeAfter : state.cur;
+    resumeAfter = null;
+    const which = whereIs(after), tracks = which ? state.lists[which] : shown();
     if (!tracks.length) return;
-    let i = tracks.findIndex((t) => t.id === state.cur);
+    let i = tracks.findIndex((t) => t.id === after);
     if (dir < 0) {
       if (!auto && (ext ? extPosition() : audio.currentTime) > 3) { if (ext) extSeek(0); else audio.currentTime = 0; return; }
       if (state.settings.shuffle && state.history.length) { const back = state.history.pop(); const keep = state.history.slice(); play(back); state.history = keep; return; }
@@ -265,12 +297,13 @@
       i = tracks.indexOf(left[Math.floor(Math.random() * left.length)]);
     } else {
       i += 1;
+      while (i < tracks.length && early.has(tracks[i].id)) early.delete(tracks[i++].id);   // it played already, from the queue
       if (i >= tracks.length) {
         if (auto && repeatMode() === 'off') { if (carryOn()) return; stop(); state.sel = tracks[0].id; render(); return; }
-        i = 0;
+        i = 0; early.clear();
       }
     }
-    play(tracks[i].id);
+    play(tracks[i].id, dir > 0 ? 'onward' : undefined);
   }
   // the list ran out by itself: premium.js may carry on with similar songs
   const carryOn = () => !!(Mist.carryOn && Mist.carryOn(track(state.cur)));
@@ -278,9 +311,12 @@
   function upcoming() {
     const queued = state.queue.find((id) => track(id));
     if (queued !== undefined) return queued;
-    const tracks = playing(), i = tracks.findIndex((t) => t.id === state.cur);
+    const after = resumeAfter !== null && track(resumeAfter) ? resumeAfter : state.cur;
+    const which = whereIs(after), tracks = which ? state.lists[which] : shown(), i = tracks.findIndex((t) => t.id === after);
     if (state.settings.shuffle || state.station !== null || i < 0) return null;
-    if (i + 1 < tracks.length) return tracks[i + 1].id;
+    let next = i + 1;
+    while (next < tracks.length && early.has(tracks[next].id)) next++;
+    if (next < tracks.length) return tracks[next].id;
     return repeatMode() === 'all' ? tracks[0].id : null;
   }
   function setMode(mode) {
@@ -401,11 +437,12 @@
     if (f) setTimeout(() => { if (f === feed && f.started && audio.readyState < 3 && !audio.paused) { f.stalled = true; statusTick(); } }, 700);
   });
 
-  // ---- Apple Music songs ----
-  // Apple's audio is protected: it cannot be played in this page, and nothing here can touch it. The
+  // ---- Apple Music and Spotify songs ----
+  // Their audio is protected: it cannot be played in this page, and nothing here can touch it. The
   // playback engine (engine.py) plays it, in a helper that is never shown. This page tells the engine what
   // to do (engine-play, -pause, -resume, -seek, -volume, -stop) and shows what it says back (the "engine"
-  // events): where the song is, how long it is, and when it ends. `ext` is the song it was asked to play:
+  // events): where the song is, how long it is, and when it ends; and, for the visualizations, the levels
+  // of what plays (the "levels" events). `ext` is the song it was asked to play:
   // { t, serial, phase, pos, stamp, dur, started, stalled, want, asked, sought }.
   let extSerial = 0, extTimer = 0, extVolumeTimer = 0;
   const extLevel = () => ({ value: Math.pow(state.settings.volume, 1.6) * fade, muted: !!state.settings.muted });
@@ -492,22 +529,25 @@
       if (!settled && e.want === 'playing') return;
       e.phase = 'paused';
       if (!late) { e.pos = m.position; e.stamp = now; }
-      if (state.mode === 'playing') { setMode('paused'); flash('Apple Music paused the song', 6000); }
+      if (state.mode === 'playing') { setMode('paused'); flash(`${serviceName(e.t)} paused the song`, 6000); }
     } else if (m.phase === 'loading' || m.phase === 'starting') {
       e.stalled = e.started; e.phase = m.phase;
       statusTick(true);
     }
     updateTime();
+    levelsCheck();
   }
   function extFailed(e, code, text) {
     if (ext !== e) return;
     ext = null;
     clearInterval(extTimer); extTimer = 0;
-    const why = sentence(text || 'Apple Music could not play this song');
+    const unsure = e.t.spotify ? 'Ocean Mist could not confirm that your Spotify account has Premium, so its songs were not played'
+      : 'Ocean Mist could not confirm that your Apple Music account has an active subscription, so its songs were not played';
+    const why = sentence(text || (code === 'no-plan' ? unsure : `${serviceName(e.t)} could not play this song`));
     // the engine itself needs something: the Library page says what
     if (code === 'not-installed' || code === 'sandbox') { stop(); fire('engine-needed', code); flash(why, 12000); return; }
-    // what is wrong for every song: the next one would fail too
-    const general = ['signed-out', 'no-subscription', 'limit', 'offline', 'widevine', 'crash', 'page', 'start'].includes(code);
+    // what is wrong for every song: the next one would fail too (the plan that could not be confirmed, too)
+    const general = ['signed-out', 'no-subscription', 'no-plan', 'limit', 'offline', 'widevine', 'crash', 'page', 'start'].includes(code);
     if (general || ++streamFails >= 3) { streamFails = 0; stop(); flash(why, 30000); return; }
     flash(why, 5000);
     setTimeout(() => { if (state.cur === e.t.id && state.mode === 'playing') step(1, true); }, 2500);
@@ -515,7 +555,7 @@
 
   // what the host passes on from the keyboard's media keys and the desktop's controls
   function control(action, value) {
-    const loaded = state.cur !== null || state.station !== null || state.lists.local.length > 0 || state.lists.youtube.length > 0;
+    const loaded = state.cur !== null || state.station !== null || Object.values(state.lists).some((l) => l.length > 0);
     if (action === 'playpause') { if (loaded) toggle(); else playSelection(); }   // never the file dialog
     else if (action === 'play') { if (state.mode !== 'playing') { if (loaded) toggle(); else playSelection(); } }
     else if (action === 'pause') { if (state.mode === 'playing') toggle(); }
@@ -537,7 +577,7 @@
       api('now', {
         id: state.cur, station: state.station, mode: state.mode, title: state.radioTitle,
         position: state.mode === 'stopped' ? 0 : position(), duration: length(), next: upcoming(),
-        // a YouTube Music or Apple Music song has started once it is heard, so one that cannot play is not announced
+        // a YouTube Music, Apple Music or Spotify song has started once it is heard, so one that cannot play is not announced
         started: outside(track(state.cur)) ? !!(ext && ext.t.id === state.cur && ext.started)
           : !isStream(track(state.cur)) || !!(feed && feed.t.id === state.cur && feed.started),
       });
@@ -559,12 +599,18 @@
     document.title = name ? `${name} - Ocean Mist` : 'Ocean Mist';
     fire('track');
   }
+  // the sound of an Apple Music or Spotify song never reaches the player: the playback engine hands over its
+  // levels while it plays. They are missing when they have not come for a while as the song plays
+  let levelsMissing = false;
+  function levelsCheck() {
+    const missing = !!ext && ext.phase === 'playing' && !Visuals.live && Visuals.since > 2500;
+    if (missing !== levelsMissing) { levelsMissing = missing; showVis(); }
+  }
   function showVis() {
     const preset = Visuals.presets[Visuals.index], t = track(state.cur);
-    // the sound of an Apple Music song never reaches the player, so a visualization cannot follow it
-    const loose = !!preset.draw && state.station === null && outside(t);
+    const loose = !!preset.draw && state.station === null && outside(t) && levelsMissing;
     $('vis-name').textContent = preset.name + (loose ? ' · not in time with the music' : '');
-    $('vis-name').title = loose ? 'Apple’s audio is protected: the playback engine plays it, so the visualizations and the equalizer cannot work on it' : '';
+    $('vis-name').title = loose ? `The playback engine is not handing over the sound of this ${serviceName(t)} song, so the visualization is not in time with it` : '';
     const useArt = preset.art && t && t.art;
     $('vis-art').hidden = !useArt;
     if (useArt) $('vis-art').src = base + 'art/' + t.id;
@@ -573,10 +619,10 @@
   }
   // "No music loaded", while nothing is on and the list in view is empty
   function emptyHint() {
-    $('empty-hint').hidden = state.cur !== null || state.station !== null || shown().length > 0;
+    $('empty-hint').hidden = state.cur !== null || state.station !== null || shown().length > 0 || state.queue.some((id) => track(id));
     $('hint-list').textContent = listLabel();
     $('hint-local').hidden = state.show !== 'local';   // files go to My Music only
-    $('hint-youtube').hidden = state.show !== 'youtube';
+    $('hint-youtube').hidden = state.show === 'local';   // a streaming service's list fills from Premium Services
   }
   function setVis(i) {
     state.settings.vis = Visuals.select(i);
@@ -592,7 +638,7 @@
     if (state.mode === 'stopped') text = t || s ? 'Stopped' : 'Ready';
     else if (state.mode === 'paused') text = 'Paused';
     else if (feed && !feed.started) text = 'Connecting to YouTube Music…';
-    else if (ext && !ext.started) text = 'Connecting to Apple Music…';
+    else if (ext && !ext.started) text = `Connecting to ${serviceName(ext.t)}…`;
     else if ((feed && feed.stalled) || (ext && ext.stalled)) text = 'Buffering…';
     else if (s) {
       const lines = ['Station: ' + s.name];
@@ -624,16 +670,20 @@
   const list = $('playlist');
   function render() {
     const tracks = shown();
-    list.innerHTML = tracks.map((t) => {
+    // "Play next" songs of another list come first, so that what plays next is always on show
+    const ahead = state.queue.filter((id) => !inView(id)).map(track).filter(Boolean);
+    const row = (t, next) => {
       const queued = state.queue.indexOf(t.id);
-      return `<div class="row${t.id === state.cur ? ' cur' : ''}${t.id === state.sel ? ' sel' : ''}" data-id="${t.id}">` +
+      return `<div class="row${next ? ' next' : ''}${t.id === state.cur ? ' cur' : ''}${t.id === state.sel ? ' sel' : ''}" data-id="${t.id}">` +
         `<span class="t">${esc(t.title)}</span>${queued >= 0 ? `<span class="q" title="Plays next">${queued + 1}</span>` : ''}` +
         `<span class="d">${t.duration ? clock(t.duration) : ''}</span></div>`;
-    }).join('');
+    };
+    list.innerHTML = (ahead.length ? `<div class="ahead">Plays next</div>${ahead.map((t) => row(t, true)).join('')}` +
+      `<div class="ahead">${esc(listLabel())}</div>` : '') + tracks.map((t) => row(t, false)).join('');
     const total = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     $('total-time').textContent = 'Total Time: ' + clock(total);
     $('np-label').textContent = listLabel();
-    $('np-select').title = `Switch between My Music and ${listName('youtube')}, open music or a saved playlist`;
+    $('np-select').title = 'Switch between My Music and the lists of your streaming services, open music or a saved playlist';
     emptyHint();
     const current = list.querySelector('.cur');
     if (current && render.lastCur !== state.cur) { current.scrollIntoView({ block: 'nearest' }); render.lastCur = state.cur; }
@@ -667,8 +717,8 @@
   // drag a row to another place in the list
   let drag = null;
   list.addEventListener('pointerdown', (e) => {
-    const id = rowId(e);
-    if (e.button === 0 && id !== null) drag = { id, y: e.clientY, pointer: e.pointerId, active: false, before: null };
+    const id = rowId(e);   // (a song of another list, shown as playing next, stays where it is)
+    if (e.button === 0 && id !== null && !e.target.closest('.next')) drag = { id, y: e.clientY, pointer: e.pointerId, active: false, before: null };
   });
   list.addEventListener('pointermove', (e) => {
     if (!drag) return;
@@ -680,7 +730,7 @@
     }
     const box = list.getBoundingClientRect();
     if (e.clientY < box.top + 14) list.scrollTop -= 7; else if (e.clientY > box.bottom - 14) list.scrollTop += 7;
-    const rows = [...list.querySelectorAll('.row')];
+    const rows = [...list.querySelectorAll('.row:not(.next)')];
     const under = rows.find((row) => { const r = row.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
     drag.before = under ? Number(under.dataset.id) : null;
     const edge = under ? under.getBoundingClientRect().top : rows[rows.length - 1].getBoundingClientRect().bottom;
@@ -891,7 +941,7 @@
   function showList(which) { state.show = which; render(); }
   function listMenu(anchor) {
     const rect = anchor.getBoundingClientRect();
-    const lists = Object.keys(LISTS).map((which) => ({ label: listName(which), checked: state.show === which, run: () => showList(which) }));
+    const lists = Object.keys(LISTS).filter(offered).map((which) => ({ label: listName(which), checked: state.show === which, run: () => showList(which) }));
     const saved = state.playlists.filter((p) => p.list === state.show)
       .map((p) => ({ label: p.name, checked: p.name === state.names[state.show], run: () => playPlaylist(p.path) }));
     menu(rect.left, rect.bottom + 1, [...lists, null, ...fileItems(), null,
@@ -989,6 +1039,8 @@
   $('shuffle').addEventListener('click', toggleShuffle);
   $('repeat').addEventListener('click', cycleRepeat);
   $('np-select').addEventListener('click', (e) => listMenu(e.currentTarget));
+  // a name cut short with "…" shows in full under the pointer
+  $('np-label').addEventListener('mouseenter', (e) => { const l = e.currentTarget; l.title = l.scrollWidth > l.clientWidth ? l.textContent : ''; });
   $('list-menu').addEventListener('click', (e) => mainMenu(e.currentTarget, true));
   $('shade').addEventListener('click', (e) => mainMenu(e.currentTarget));
   $('tint').addEventListener('click', (e) => hueMenu(e.currentTarget));
@@ -1081,12 +1133,14 @@
       else if (msg.event === 'control') control(msg.action, msg.value);
       else if (msg.event === 'notice') flash(msg.text, 6000);
       else if (msg.event === 'engine') extEvent(msg);
+      else if (msg.event === 'levels') { if (ext && msg.serial === ext.serial) Visuals.feed(msg.b); }
       else if (msg.event === 'radio-title' && msg.id === state.station && msg.title !== state.radioTitle) {
         state.radioTitle = msg.title; showTrack(); flashUntil = 0; statusTick(true); report();
       } else if (msg.event === 'radio-error' && msg.id === state.station) radioError = msg.message;
       fire('event', msg);
     };
     Visuals.init($('vis'));
+    Visuals.onLive(levelsCheck);
     setMode('stopped');
     showTrack();
     refresh().then(layoutChanged);
@@ -1094,7 +1148,7 @@
 
   window.Mist = {
     $, base, audio, state, api, on, fire, onPlay, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream, outside,
-    play, playStation, toggle, stop, step, setVis, applyVolume, cycleRepeat, repeatMode, control,
+    play, playStation, toggle, stop, step, listName, listOf, whereIs, playingList, streamList, setVis, applyVolume, cycleRepeat, repeatMode, control,
     menu, closeMenus, trackMenu, queueNext, queueLast, flash, render, show, layoutChanged, regions, setSleep, setZoom,
     setDark, applyDark, setFont, setFontSize, applyFont,
     probe() {  // handy for debugging

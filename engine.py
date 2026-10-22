@@ -1,17 +1,20 @@
-"""The playback engine: what plays the songs of Apple Music.
+"""The playback engine: what plays the songs of Apple Music and Spotify.
 
-Apple's audio is protected with Widevine, which only a browser engine that carries it can play, and the
-view Ocean Mist is made of (WebKitGTK) does not. So a song of Apple Music is played by a small helper
-(engine/helper/): Apple's own web player in a window that is never shown, signed in with the same
-Firefox cookie apple.py reads, run by a Chromium-based runtime that has Widevine support (castlabs's
-Electron build for content security). Ocean Mist keeps the lists, the queue and the controls; the helper
-only makes the sound, one song at a time.
+Their audio is protected with Widevine, which only a browser engine that carries it can play, and the
+view Ocean Mist is made of (WebKitGTK) does not. So a song of Apple Music or of Spotify is played by a
+small helper (engine/helper/): the service's own web player in a window that is never shown, signed in
+with the same Firefox sign-in apple.py or spotify.py reads (Apple's one cookie, Spotify's cookies),
+run by a Chromium-based runtime that has Widevine support (castlabs's Electron build for content
+security). Ocean Mist keeps the lists, the queue and the controls; the helper only makes the sound,
+one song at a time, one service at a time: a helper serving the other service is ended before the
+next song's starts. While a helper is up for Apple Music, apple.py reads the library in its page too
+(ask), so that Apple's player is not open twice.
 
 The runtime is not part of Ocean Mist. It is downloaded once, when the user asks for it behind a licence
 screen, from the address and with the checksum written below, and kept under
 $XDG_DATA_HOME/ocean-mist/engine/. Google's Widevine module is not in that download either: the runtime
-fetches it from Google the first time it starts. The helper is started only when an Apple Music song is
-played, stops after a minute without one (ten while paused) and when the player closes.
+fetches it from Google the first time it starts. The helper is started only when an Apple Music or a
+Spotify song is played, stops after a minute without one (ten while paused) and when the player closes.
 
 The helper gets the sign-in once, as its first line on standard input, and keeps it in memory only: it
 is never in an argument, an environment variable, a file or a log. It runs with a short list of
@@ -69,9 +72,10 @@ PKEXEC = "/usr/bin/pkexec"  # polkit's way to run a program as the administrator
 BASH = "/usr/bin/bash"
 ASK_WITHIN = 600            # seconds the password window may stay open before Ocean Mist stops waiting for it
 
-IDLE_STOPPED = 60           # seconds without Apple music after which the helper ends
+IDLE_STOPPED = 60           # seconds without music after which the helper ends
 IDLE_PAUSED = 600           # ...and while a song is paused
 IDLE_LOOK = 5               # seconds between looks at whether it is time
+LIBRARY_WITHIN = 20         # seconds the helper's page gets to answer a request of the library (then apple.py asks its own view)
 READY_WITHIN = 330          # seconds the helper gets to be ready (Google's module can need the first time)
 CHECK_WITHIN = 60           # ...and to start for the check of its sandbox
 PROGRESS_EVERY = 0.25       # seconds between the download's progress reports
@@ -84,6 +88,8 @@ ENV_KEEP = ("HOME", "PATH", "USER", "LOGNAME", "LANG", "LANGUAGE", "XDG_RUNTIME_
             "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "PULSE_SERVER", "PULSE_COOKIE", "PULSE_RUNTIME_PATH",
             "http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 SAME_SITE = {0: "no_restriction", 1: "lax", 2: "strict"}   # Firefox's number, as Electron names it
+LEVELS = re.compile(r"[A-Za-z0-9+/]{512}")   # a helper's levels line: 384 bytes, as base64
+STORE = re.compile(r"[a-z]{2}")              # an Apple Music store, as the helper names it
 
 # what the page is told, per kind of failure
 WORDS = {
@@ -95,11 +101,25 @@ WORDS = {
     "offline": "Ocean Mist cannot reach Apple Music; check the internet connection",
     "play": "Apple Music could not play this song",
     "widevine": "The playback engine could not get Google's Widevine module; check the internet connection and try again",
-    "sandbox": "Your system does not let the playback engine start its security sandbox; it needs a one-time step, under Apple Music, Playback engine",
+    "sandbox": "Your system does not let the playback engine start its security sandbox; it needs a one-time step, on the playback engine's page",
     "crash": "The playback engine stopped unexpectedly",
     "page": "Apple Music changed something Ocean Mist depends on, so the engine needs an update",
     "start": "The playback engine could not start",
 }
+
+# the same, in Spotify's words: what the page is told while a Spotify song plays (and "no-plan", which only
+# Spotify's helper says: it plays only an account whose plan its page said)
+SPOTIFY_WORDS = dict(WORDS, **{
+    "not-installed": "Spotify songs need the playback engine; install it under Spotify, Playback engine",
+    "signed-out": "Spotify says you are signed out; sign in again in Firefox",
+    "no-subscription": "Your Spotify account has no active Premium subscription, so its songs cannot be played",
+    "no-plan": "Ocean Mist could not confirm that your Spotify account has Premium, so its songs are not played; try again in a moment",
+    "unavailable": "Spotify cannot play this song for your account",
+    "limit": "Spotify is playing on another device; it allows one player at a time",
+    "offline": "Ocean Mist cannot reach Spotify; check the internet connection",
+    "play": "Spotify could not play this song",
+    "page": "Spotify changed something Ocean Mist depends on, so the engine needs an update",
+})
 
 
 class EngineError(Exception):
@@ -128,9 +148,30 @@ def helper_env(environ=None):
 
 
 def cookie_of(token):
-    """The sign-in (firefox.AppleToken) as the helper's first line has it."""
+    """An Apple Music sign-in (firefox.AppleToken) as the helper's first line has it."""
     return {"value": token.value, "host": token.host, "expires": token.expires or 0, "secure": bool(token.secure),
             "http_only": bool(token.http_only), "same_site": SAME_SITE.get(token.same_site, "unspecified")}
+
+
+def spotify_cookie_of(cookie):
+    """One of a Spotify sign-in's cookies (firefox.SpotifyCookie) as that helper's first line has them."""
+    return {"name": cookie.name, "value": cookie.value, "host": cookie.host, "expires": cookie.expires or 0,
+            "secure": bool(cookie.secure), "http_only": bool(cookie.http_only),
+            "same_site": SAME_SITE.get(cookie.same_site, "unspecified")}
+
+
+def start_line(service, token, volume, muted, store=""):
+    """The helper's first line for `service`: the sign-in as that service's helper takes it, and the
+    volume the player is at. Apple's helper gets one cookie, Spotify's its cookies (sp_dc first); Apple's
+    also the store (country) the account was in last time, when one is known, so its page opens there."""
+    line = {"cmd": "start", "volume": volume, "muted": muted}
+    if service == "spotify":
+        line.update(service="spotify", cookies=[spotify_cookie_of(cookie) for cookie in token.cookies])
+    else:
+        line.update(cookie=cookie_of(token))
+        if STORE.fullmatch(store or ""):
+            line.update(store=store)
+    return line
 
 
 def restricted():
@@ -313,9 +354,10 @@ def install_runtime(root, fetch=download, progress=None, steps=None, cancelled=N
 class Engine:
     """The playback engine of the player. Methods are called from any thread.
 
-    `token_source()` gives the Apple Music sign-in as firefox.AppleToken, or raises EngineError;
-    `emit(event, **data)` tells the page: "engine" for what the song is doing (`phase`: starting, loading,
-    playing, paused, ended, error) and "engine-setup" for the install and the check."""
+    `token_source(service)` gives the sign-in of `service` ("apple", firefox.AppleToken, or "spotify",
+    firefox.SpotifyToken), or raises EngineError; `emit(event, **data)` tells the page: "engine" for what
+    the song is doing (`phase`: starting, loading, playing, paused, ended, error) and "engine-setup" for
+    the install and the check."""
 
     def __init__(self, token_source, emit, root=ROOT, helper=HELPER, popen=subprocess.Popen, fetch=download):
         self.token_source, self.emit = token_source, emit
@@ -323,6 +365,7 @@ class Engine:
         self.program = os.path.join(root, "electron", "electron")
         self.lock = threading.RLock()
         self.proc = None           # the running helper
+        self.service = None        # ...and the service it serves ("apple" or "spotify")
         self.ready = False         # ...and whether it said so
         self.started = False       # ...and whether it got as far as saying it started
         self.leaving = None        # the helper that was asked to end
@@ -341,6 +384,10 @@ class Engine:
         self.asker = None          # ...and the process that waits for it
         self.ask_cancelled = False
         self.ask_failed = False    # whether the last time it was asked for, it did not work
+        self.store = ""            # the Apple Music store the account was in, as the last helper said
+        self.asks = {}             # the library's requests out to the helper's page: id -> {"proc", "done", "raw"}
+        self.asked = 0             # ...and the last id given
+        self.on_ready = None       # called with the service when a helper says it is ready (from the thread that reads it)
 
     # -- what is there --
     def installed(self):
@@ -605,27 +652,32 @@ class Engine:
         return ok
 
     # -- playing --
-    def play(self, serial, ids, start=0.0, volume=None, muted=None):
-        """Play the first of `ids` (Apple Music song ids) that Apple takes, from `start` seconds. The page
-        hears how it goes. EngineError when the engine cannot be started at all."""
+    def play(self, serial, ids, start=0.0, volume=None, muted=None, service="apple"):
+        """Play the first of `ids` (the ids of the song of `service`, "apple" or "spotify") that the
+        service takes, from `start` seconds. The page hears how it goes. EngineError when the engine
+        cannot be started at all. A running helper of the other service ends first."""
         if not self.installed():
-            raise EngineError(WORDS["not-installed"], "not-installed")
+            words = SPOTIFY_WORDS if service == "spotify" else WORDS
+            raise EngineError(words["not-installed"], "not-installed")
         with self.lock:
             if volume is not None:
                 self.volume = max(0.0, min(1.0, _finite(volume, self.volume)))
             if muted is not None:
                 self.muted = bool(muted)
-            self.song = {"serial": serial, "ids": list(ids), "position": max(0.0, _finite(start)), "duration": 0.0, "phase": "starting", "sent": False}
+            self.song = {"serial": serial, "ids": list(ids), "position": max(0.0, _finite(start)),
+                         "duration": 0.0, "phase": "starting", "sent": False, "service": service}
             self.quiet = time.monotonic()
             if self.proc is not None and self.proc.poll() is None and self.leaving is not self.proc:
-                if self.ready:
-                    self._send_play()
-                    self.emit("engine", phase="loading", serial=serial)
-                else:   # it is starting: the song goes to it when it is ready
-                    self.emit("engine", phase="starting", serial=serial)
-                return
+                if self.service == service:
+                    if self.ready:
+                        self._send_play()
+                        self.emit("engine", phase="loading", serial=serial)
+                    else:   # it is starting: the song goes to it when it is ready
+                        self.emit("engine", phase="starting", serial=serial)
+                    return
+                self._end()   # it serves the other service: it ends, and the launch waits for it
             self.emit("engine", phase="starting", serial=serial)
-        threading.Thread(target=self._launch, args=(serial,), daemon=True).start()
+        threading.Thread(target=self._launch, args=(serial, service), daemon=True).start()
 
     def pause(self):
         with self.lock:
@@ -649,7 +701,8 @@ class Engine:
                     self.emit("engine", phase="loading", serial=song["serial"])
                 return True
             ids, position, serial = list(song["ids"]), song["position"], song["serial"]
-        self.play(serial, ids, position)
+            service = song.get("service", "apple")
+        self.play(serial, ids, position, service=service)
         return True
 
     def _send_play(self):
@@ -688,7 +741,44 @@ class Engine:
         if proc is not None:
             self._reap(proc, 2)
 
+    # -- the library --
+    def up_for(self, service):
+        """Whether a helper is up for `service` and ready, and not ending."""
+        with self.lock:
+            proc = self.proc
+            return proc is not None and proc.poll() is None and proc is not self.leaving and self.ready and self.service == service
+
+    def ask(self, path, query=None, within=LIBRARY_WITHIN):
+        """A request of the Apple Music library (apple.py's `path` and `query`), sent in the page of the helper
+        while it is up for Apple Music: what the page answered, as text, or None when no helper is ready for it
+        or its page did not answer within `within` seconds. It never starts a helper, nor keeps one going."""
+        with self.lock:
+            proc = self.proc
+            if not self.up_for("apple"):
+                return None
+            self.asked += 1
+            key = self.asked
+            box = self.asks[key] = {"proc": proc, "done": threading.Event(), "raw": None}
+            if not self._send({"cmd": "ask", "id": key, "path": str(path), "query": dict(query or {})}):
+                del self.asks[key]
+                return None
+        box["done"].wait(within)
+        with self.lock:
+            self.asks.pop(key, None)
+        return box["raw"]
+
+    def _unask(self, proc):
+        """The helper has ended: the requests still out to it have no answer (the caller holds the lock)."""
+        for key, box in list(self.asks.items()):
+            if box["proc"] is proc:
+                del self.asks[key]
+                box["done"].set()
+
     # -- the helper --
+    def _words(self):
+        """What the page is told, in the running helper's service's words."""
+        return SPOTIFY_WORDS if self.service == "spotify" else WORDS
+
     def _send(self, message):
         proc = self.proc
         if proc is None or proc.poll() is not None or not self.ready and message.get("cmd") != "start":
@@ -726,11 +816,12 @@ class Engine:
             except subprocess.TimeoutExpired:
                 proc.kill()
 
-    def _launch(self, serial):
+    def _launch(self, serial, service):
         """Start the helper and hand it the sign-in; its events carry on from there."""
+        words = SPOTIFY_WORDS if service == "spotify" else WORDS
         try:
-            token = self.token_source()
-            cookie = cookie_of(token)
+            token = self.token_source(service)
+            line = start_line(service, token, self.volume, self.muted, self.store if service == "apple" else "")
         except EngineError as error:
             self._broken(serial, error.code, str(error))
             return
@@ -750,14 +841,15 @@ class Engine:
                 proc = self.popen([self.program, self.helper, f"--data={folder}"], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=helper_env(), cwd=self.root,
                                   text=True, encoding="utf-8", errors="replace", bufsize=1)
-                self.proc, self.ready, self.started, self.fail, self.tail = proc, False, False, None, tail
-                proc.stdin.write(json.dumps({"cmd": "start", "cookie": cookie, "volume": self.volume, "muted": self.muted}) + "\n")
+                self.proc, self.service, self.ready, self.started, self.fail, self.tail = \
+                    proc, service, False, False, None, tail
+                proc.stdin.write(json.dumps(line) + "\n")
                 proc.stdin.flush()
         except OSError:
-            self._broken(serial, "start", WORDS["start"])
+            self._broken(serial, "start", words["start"])
             return
         finally:
-            cookie = token = None
+            line = token = None
         reader = threading.Thread(target=self._read, args=(proc,), daemon=True)
         drain = threading.Thread(target=_drain, args=(proc.stderr, tail), daemon=True)
         reader.start()
@@ -790,18 +882,28 @@ class Engine:
     def _event(self, proc, event):
         name = event.get("event")
         with self.lock:
-            if proc is not self.proc:
+            if name == "answer":   # a request of the library: its answer is whoever asked it, even as the helper ends
+                box = self.asks.pop(event.get("id"), None) if isinstance(event.get("id"), int) else None
+                if box is not None and box["proc"] is proc:
+                    box["raw"] = event.get("raw") if isinstance(event.get("raw"), str) else None
+                    box["done"].set()
+                return
+            if proc is not self.proc or proc is self.leaving:   # a helper that was asked to end serves no song
                 return
             song = self.song
             if name == "start":
                 self.started = True
             elif name == "ready":
                 self.ready, self.sandbox = True, "ok"
+                if self.service == "apple" and STORE.fullmatch(str(event.get("store") or "")):
+                    self.store = event["store"]
                 if song and song["phase"] != "paused":   # what was asked for while it started
                     self._send_play()
                     self.emit("engine", phase="loading", serial=song["serial"])
                 else:
                     self._send({"cmd": "volume", "value": self.volume, "muted": self.muted})
+                if self.on_ready is not None:
+                    self.on_ready(self.service)
             elif name == "state" and song and event.get("serial") == song["serial"]:
                 phase = event.get("state")
                 if phase not in ("loading", "playing", "paused", "ended"):
@@ -812,21 +914,28 @@ class Engine:
                     self.quiet = time.monotonic()
                 self.emit("engine", phase=phase, serial=song["serial"], position=position, duration=song["duration"])
             elif name == "problem" and song and event.get("serial") == song["serial"]:
-                code = event.get("code") if event.get("code") in WORDS else "play"
+                code = event.get("code") if event.get("code") in self._words() else "play"
                 self.song = None
                 self.quiet = time.monotonic()
-                self.emit("engine", phase="error", serial=song["serial"], code=code, message=WORDS[code])
+                self.emit("engine", phase="error", serial=song["serial"], code=code, message=self._words()[code])
             elif name == "fail":
-                self.fail = event.get("code") if event.get("code") in WORDS else "crash"
+                self.fail = event.get("code") if event.get("code") in self._words() else "crash"
+            elif name == "levels" and song and event.get("serial") == song["serial"] and song["phase"] == "playing":
+                # the spectrum of what plays, for the visualizations: 384 bands, a byte each, as base64
+                bands = event.get("b")
+                if isinstance(bands, str) and LEVELS.fullmatch(bands):
+                    self.emit("levels", serial=song["serial"], b=bands)
 
     def _wait(self, proc, reader, drain):
         proc.wait()
         reader.join(1)   # what it said last (a "fail", a sandbox line) may still be in its pipes; a child
         drain.join(1)    # that kept a pipe open is not waited for
         with self.lock:
+            self._unask(proc)
             if proc is not self.proc:
                 return
-            self.proc, self.ready = None, False
+            service = self.service
+            self.proc, self.service, self.ready = None, None, False
             song, fail, started = self.song, self.fail, self.started
             if self.leaving is proc:
                 self.leaving = None
@@ -837,8 +946,9 @@ class Engine:
             if fail == "sandbox":
                 self.sandbox = "blocked"
             self.song = None
+        words = SPOTIFY_WORDS if service == "spotify" else WORDS
         if song:
-            self.emit("engine", phase="error", serial=song["serial"], code=fail, message=WORDS.get(fail, WORDS["crash"]))
+            self.emit("engine", phase="error", serial=song["serial"], code=fail, message=words.get(fail, words["crash"]))
         if fail == "sandbox":
             self.setup()
 
@@ -881,7 +991,7 @@ def _drain(stream, tail):
         tail.append(line.rstrip()[:300])
 
 
-def _no_sign_in():
+def _no_sign_in(service=None):
     raise EngineError(WORDS["signed-out"], "signed-out")
 
 
