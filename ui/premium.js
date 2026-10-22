@@ -612,11 +612,19 @@
     const head = [...before, ...first];
     const played = await api('yt-play', { items: head.map(song), start: songKey(first[0]), name });
     if (!played.ok) return;
+    // something else was chosen meanwhile: another Play here, or the Apple Music list has another name. The page
+    // learns the name the host just gave the list a moment after its answer, so until it has seen that name, the one
+    // it shows is the list's name from before and says nothing (the host refuses the additions anyway)
+    let seen = false;
+    const replaced = () => {
+      seen = seen || state.names.apple === name;
+      return queueTurn !== mine || (seen && state.names.apple !== name);
+    };
     let count = Math.min(head.length, QUEUE_LIMIT), failures = 0;
     for (let i = at + 1; i < rows.length; i += READ_AT_ONCE) {   // the rest follow behind it, as they are read
-      if (queueTurn !== mine || count >= QUEUE_LIMIT || failures >= 3) return;
+      if (replaced() || count >= QUEUE_LIMIT || failures >= 3) return;
       const got = await Promise.all(rows.slice(i, i + READ_AT_ONCE).map((r) => songsAt(r, true)));
-      if (queueTurn !== mine || state.names.youtube !== name) return;   // something else was chosen meanwhile
+      if (replaced()) return;
       const songs = [];
       for (const some of got) {
         if (some) { failures = 0; songs.push(...some); } else failures++;   // (three in a row that fail: the rest is left)
