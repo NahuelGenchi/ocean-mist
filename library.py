@@ -57,7 +57,8 @@ COVER_NAMES = ("cover", "folder", "front", "album", "albumart")
 
 # settings the page may change; the rest (window size, zoom, folders) are the host's
 PAGE_SETTINGS = ("volume", "muted", "vis", "shuffle", "repeat", "hue",
-                 "eq", "eq_on", "eq_preset", "eq_open", "notify", "yt_radio")
+                 "eq", "eq_on", "eq_preset", "eq_open", "notify", "yt_radio",
+                 "dark", "font", "font_size")
 STREAM_FIELDS = ("title", "artist", "album", "year", "duration", "cover", "artist_id", "album_id")
 DEFAULT_STATIONS = (
     ("SomaFM: Groove Salad", "https://somafm.com/groovesalad.pls"),
@@ -226,6 +227,7 @@ class Library:
             "repeat": False, "hue": 0, "eq": [0] * 10, "eq_on": False,
             "eq_preset": "Flat", "eq_open": False, "notify": False,
             "yt_radio": True, "zoom": 1, "mini": False,
+            "dark": False, "font": "tahoma", "font_size": 1,   # the skin, the interface font (its key in ui/app.js) and text size
             "yt_account": False,   # the Firefox profile you signed in to YouTube Music with (only which one)
             "apple_account": False,   # ...and to Apple Music
             "spotify_account": False,   # ...and to Spotify

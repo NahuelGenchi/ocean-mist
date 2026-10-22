@@ -134,6 +134,10 @@ When the music matters more than the window, the player shrinks to a small bar t
     <td>Compact mode, full screen, and five player sizes from 100% to 200% for high-resolution screens.</td>
   </tr>
   <tr>
+    <td width="170" valign="top"><strong>Dark skin and text</strong></td>
+    <td>A dark look for the whole player, from the Skin Chooser, where Classic brings the blue look back (<em>Dark skin</em> in the main menu turns it on and off too, and compact mode keeps either). The <em>Font</em> menu picks the interface typeface and <em>Text size</em> one of four sizes, 100% to 130%; the task bar's labels grow only as far as they fit in its panel.</td>
+  </tr>
+  <tr>
     <td width="170" valign="top"><strong>Small comforts</strong></td>
     <td>Picks up where you left off in your files or on the radio. A sleep timer stops the music after a set time or at the end of the song.</td>
   </tr>
