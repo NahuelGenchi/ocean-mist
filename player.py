@@ -29,6 +29,7 @@ import apple
 import firefox
 import radio
 import spotify
+import tags
 from apple import AppleError, AppleMusic
 from engine import Engine, EngineError
 from spotify import SpotifyError, SpotifyMusic
@@ -41,6 +42,14 @@ UI_DIR = os.path.join(HERE, "ui")
 MIN_SIZE = (580, 460)
 ZOOMS = (1, 1.25, 1.5, 1.75, 2)
 SIMILAR = 25   # songs added at a time when similar songs carry on after the list
+# What the page may run and load: script from its own files only (no inline
+# script, no event attribute), requests, covers and songs from this server only
+# (a YouTube Music song is a blob of the page's own), so text that slipped into
+# the page as markup can neither run nor send anything anywhere
+PAGE_POLICY = ("default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'; "
+               "media-src 'self' blob:; font-src 'self'; style-src 'self' 'unsafe-inline'; "
+               "object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; "
+               "frame-ancestors 'none'")
 
 
 # -- http ---------------------------------------------------------------------
@@ -69,7 +78,15 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
 
+    def _here(self):
+        return f"127.0.0.1:{self.server.server_address[1]}"
+
     def _route(self):
+        """The path after the token, or None for a request that is not the
+        page's: without the token, or for another Host (a web page whose own
+        name was pointed at 127.0.0.1 to read from here)."""
+        if self.headers.get("Host") != self._here():
+            return None
         path = urllib.parse.urlparse(self.path).path
         prefix = f"/{self.token}/"
         if not path.startswith(prefix):
@@ -91,7 +108,7 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, data, status=200):
         self._send(status, json.dumps(data).encode(), "application/json")
 
-    def _file(self, path, content_type=None):
+    def _file(self, path, content_type=None, extra=None):
         try:
             size = os.path.getsize(path)
             fh = open(path, "rb")
@@ -122,6 +139,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             if status == 206:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            for key, value in (extra or {}).items():
+                self.send_header(key, value)
             self.end_headers()
             if self.command == "HEAD":
                 return
@@ -142,7 +161,8 @@ class Handler(BaseHTTPRequestHandler):
         if route is None:
             return self._send(403, b"forbidden")
         if route in ("", "index.html"):
-            return self._file(os.path.join(UI_DIR, "index.html"), "text/html; charset=utf-8")
+            return self._file(os.path.join(UI_DIR, "index.html"), "text/html; charset=utf-8",
+                              {"Content-Security-Policy": PAGE_POLICY})
         if route.startswith("ui/"):
             target = os.path.normpath(os.path.join(UI_DIR, route[3:]))
             if not target.startswith(UI_DIR + os.sep):
@@ -156,11 +176,13 @@ class Handler(BaseHTTPRequestHandler):
             art = self.library.cover(track["id"]) if track else None
             if art is None and track and track.get("cover"):   # a streamed song's, fetched once
                 try:
-                    art = self.library.keep_cover(track, cover_of(self.music, track["cover"]))
+                    picture = cover_of(self.music, track["cover"])
                 except YTError:
-                    art = None
-            if isinstance(art, tuple):
-                return self._send(200, art[1], art[0])
+                    picture = None
+                # kept as a file for the media controls; without a runtime folder, sent from memory
+                art = picture and (self.library.keep_cover(track, picture) or picture)
+            if isinstance(art, tuple):   # (type, bytes): no type but an image's goes out as a header
+                return self._send(200, art[1], art[0] if art[0] in tags.PICTURE_TYPES else "application/octet-stream")
             return self._file(art) if art else self._send(404, b"no art")
         if route.startswith("radio/"):
             return self._radio(route[6:])
@@ -487,7 +509,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = self._route()
-        if route != "api/cmd":
+        origin = self.headers.get("Origin")   # a browser's says which page sends it
+        if route != "api/cmd" or origin not in (None, f"http://{self._here()}"):
             return self._send(403, b"forbidden")
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -998,10 +1021,24 @@ def run_app(argv):
             window.connect("window-state-event", self._on_state)
 
             port = self.server.server_address[1]
-            view.load_uri(f"http://127.0.0.1:{port}/{self.token}/")
+            self.home = f"http://127.0.0.1:{port}/{self.token}/"
+            view.connect("decide-policy", self._decide)
+            view.load_uri(self.home)
             self.window, self.view = window, view
             self._limit()
             window.show_all()
+
+        def _decide(self, view, decision, kind):
+            """The player's own page only: no other address opens in its view
+            (a link, a script or a redirect alike), and no window beside it."""
+            if kind == WebKit2.PolicyDecisionType.NEW_WINDOW_ACTION:
+                decision.ignore()
+                return True
+            if kind == WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
+                if not (decision.get_navigation_action().get_request().get_uri() or "").startswith(self.home):
+                    decision.ignore()
+                    return True
+            return False
 
         def _limit(self):
             """The smallest the window may get (compact mode has one size)."""
@@ -1297,9 +1334,10 @@ def main():
         library.load()
         library.add_paths(sys.argv[3:])
         library.scan()
-        server = start_server(library, "dev", port=int(sys.argv[2]), music=YTMusic(),
+        token = secrets.token_urlsafe(16)   # a new one each time, as with the window
+        server = start_server(library, token, port=int(sys.argv[2]), music=YTMusic(),
                               engine=Engine(lambda service: engine_sign_in(library, service), library.emit))
-        print(f"http://127.0.0.1:{server.server_address[1]}/dev/", flush=True)
+        print(f"http://127.0.0.1:{server.server_address[1]}/{token}/", flush=True)
         threading.Event().wait()
         return 0
     return run_app(sys.argv)

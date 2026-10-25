@@ -36,7 +36,7 @@ Never describe something as working or complete unless a recorded check establis
 ## Commands
 
 - `python3 player.py [FILES OR FOLDERS...]` runs the player.
-- `python3 player.py --serve PORT [FILES...]` serves the interface without a window, at `http://127.0.0.1:PORT/dev/`, for work on the page alone.
+- `python3 player.py --serve PORT [FILES...]` serves the interface without a window, for work on the page alone, at the address it prints (`http://127.0.0.1:PORT/TOKEN/`, with a new random token each time, as in the window). The server answers only requests whose Host is `127.0.0.1:PORT`, and the page runs under a Content-Security-Policy (`PAGE_POLICY` in `player.py`): no inline script or event attribute, nothing loaded or asked from another address.
 - `python3 -m py_compile player.py library.py tags.py radio.py mpris.py ytmusic.py firefox.py apple.py spotify.py engine.py`, `for f in ui/*.js engine/helper/*.js; do node --check "$f"; done` and `bash -n engine/allow-sandbox.sh` are the source checks. There is no test suite yet.
 - `packaging/build-deb.sh [FOLDER]` builds `FOLDER/ocean-mist_VERSION_all.deb` (default `dist/`, which git ignores) from the last commit (a rebuild of the same commit gives the same bytes on the same tools); `OCEAN_MIST_VERSION=0.3.0` makes a release build (releases so far: 0.1.0, 0.1.1, 0.2.0, 0.3.0). It needs git and dpkg-deb, installs nothing and needs no root. `dpkg-deb --info FILE` and `dpkg-deb --contents FILE` show what it made.
 - `OCEAN_MIST_DEBUG=1` logs the HTTP requests and enables the web inspector.
