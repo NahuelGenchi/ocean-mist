@@ -23,6 +23,7 @@ import json
 import os
 import queue
 import re
+import stat
 import tempfile
 import threading
 import time
@@ -45,8 +46,11 @@ CACHE_DIR = os.path.join(
 STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
 TAG_CACHE = os.path.join(CACHE_DIR, "tags.json")
 # YouTube Music covers, as files for the desktop's media controls; named after
-# the app id, so a test instance never clears the covers of the real player
-STREAM_COVERS = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), APP_ID)
+# the app id, so a test instance never clears the covers of the real player.
+# Only in the user's own runtime folder: without one there are no such files,
+# since a shared folder (/tmp) can hold another user's folder and links
+_RUNTIME = os.environ.get("XDG_RUNTIME_DIR")
+STREAM_COVERS = os.path.join(_RUNTIME, APP_ID) if _RUNTIME and os.path.isdir(_RUNTIME) else None
 LISTS = ("local", "youtube", "apple", "spotify")   # the Now Playing lists: My Music, and one for each streaming service
 STREAMING = LISTS[1:]                               # ...the streaming ones, which can hold each other's songs
 AUDIO_EXTENSIONS = {
@@ -770,7 +774,7 @@ class Library:
 
     @staticmethod
     def _stream_cover(track):
-        if not track.get("cover"):
+        if not track.get("cover") or STREAM_COVERS is None:
             return None
         name = "yt-" + hashlib.sha1(track["cover"].encode()).hexdigest()[:16] + ".jpg"
         return os.path.join(STREAM_COVERS, name)
@@ -786,6 +790,8 @@ class Library:
         """Remove the YouTube Music covers kept in a folder: the runtime one
         when the player closes, or the cache, where the previous version
         kept them."""
+        if folder is None:   # (no runtime folder)
+            return
         try:
             names = os.listdir(folder)
         except OSError:
@@ -804,19 +810,33 @@ class Library:
 
     @staticmethod
     def _write_cover(path, data):
-        """Write a cover file; its folder keeps the last forty."""
+        """Write a cover file; its folder keeps the last forty. The folder
+        must be the user's own, and the file is written under a new name
+        (never through a link someone left there) and then renamed."""
         folder = os.path.dirname(path)
+        temp = None
         try:
             os.makedirs(folder, mode=0o700, exist_ok=True)
-            with open(path + ".tmp", "wb") as fh:
+            info = os.lstat(folder)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                return None
+            fd, temp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=folder)
+            with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
-            os.replace(path + ".tmp", path)
+            os.replace(temp, path)
+            temp = None
             old = sorted((os.path.join(folder, n) for n in os.listdir(folder)),
                          key=os.path.getmtime)
             for stale in old[:-40]:
                 os.remove(stale)
         except OSError:
             return None
+        finally:
+            if temp is not None:
+                try:
+                    os.remove(temp)
+                except OSError:
+                    pass
         return path
 
     # ---- the media library ----

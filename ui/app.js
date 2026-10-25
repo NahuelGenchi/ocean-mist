@@ -1,7 +1,7 @@
 // The player itself: playback, the Now Playing pane, menus and the talk with
 // the host. The other files (eq.js, library.js, radio.js, skins.js,
-// premium.js) add their parts through window.Mist; Mist.boot() at the end of
-// the page starts it all.
+// premium.js) add their parts through window.Mist; boot() starts it all once
+// the page and all of them are in (the page allows no inline script).
 (() => {
   const $ = (id) => document.getElementById(id);
   const base = location.pathname.replace(/[^/]*$/, '');
@@ -113,7 +113,9 @@
     if (h) return `${h}:${two(m)}:${two(s)}`;
     return `${pad ? two(m) : m}:${two(s)}`;
   }
-  function esc(text) { const d = document.createElement('span'); d.textContent = text; return d.innerHTML; }
+  // text for HTML: inside an element or inside an attribute's quotes, so quotes too
+  const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  function esc(text) { return String(text ?? '').replace(/[&<>"']/g, (c) => ESCAPES[c]); }
   const sentence = (text) => (text ? text[0].toUpperCase() + text.slice(1) : '');
   const isStream = (t) => !!t && t.source === 'youtube';
   // an Apple Music or Spotify song is not played by this page but by the playback engine (engine.py)
@@ -1168,6 +1170,8 @@
     showTrack();
     refresh().then(layoutChanged);
   }
+
+  document.addEventListener('DOMContentLoaded', boot);
 
   window.Mist = {
     $, base, audio, state, api, on, fire, onPlay, boot, refresh, saveSettings, track, station, clock, esc, sentence, isStream, outside,

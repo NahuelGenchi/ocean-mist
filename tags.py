@@ -6,7 +6,8 @@ library touches a few kilobytes per file.
 
     read(path)            -> {"title", "artist", "album", "year", "genre",
                               "track", "duration", "has_art"}   (those known)
-    read(path, art=True)  -> the same, plus "art": (mime, bytes)
+    read(path, art=True)  -> the same, plus "art": (mime, bytes), the mime
+                             one of PICTURE_TYPES
 """
 import base64
 import io
@@ -15,6 +16,7 @@ import struct
 
 TEXT_LIMIT = 1 << 16          # longest text frame worth reading
 PACKET_LIMIT = 32 << 20       # longest Ogg comment packet (covers live there)
+PICTURE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")   # the types a cover is sent as
 
 
 def read(path, art=False):
@@ -40,7 +42,25 @@ def read(path, art=False):
         clean["year"] = str(clean["year"])[:4]
     if "track" in clean:
         clean["track"] = _number(clean["track"])
+    if "art" in clean:
+        mime, data = clean["art"]
+        clean["art"] = (picture_type(mime, data), data)
     return clean
+
+
+def picture_type(mime, data):
+    """A cover's type, from its first bytes, else the one its tag names when
+    that is one of PICTURE_TYPES, else JPEG: the words of a tag (which may
+    hold anything, a line break too) never go out as a header."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    return mime if mime in PICTURE_TYPES else "image/jpeg"
 
 
 def _number(value):
@@ -115,10 +135,6 @@ def _id3_picture(body, legacy):
     else:
         pos = body.index(b"\x00", pos) + 1
     data = body[pos:]
-    if data[:3] == b"\xff\xd8\xff":
-        mime = "image/jpeg"
-    elif data[:8] == b"\x89PNG\r\n\x1a\n":
-        mime = "image/png"
     return (mime, data) if data else None
 
 
