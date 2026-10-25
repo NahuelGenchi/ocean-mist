@@ -304,7 +304,7 @@ class Handler(BaseHTTPRequestHandler):
             raise AppleError("Apple Music needs the player's window, which this mode has none of", general=True)
         folder = self.library.settings.get("apple_account")
         if not isinstance(folder, str) or not folder:
-            raise AppleError("sign in to Apple Music first, under Library", signed_out=True)
+            raise AppleError("sign in to Apple Music first, under Apple Music in Premium Services", signed_out=True)
         return self.apple
 
     def _spotify_reader(self):
@@ -313,7 +313,7 @@ class Handler(BaseHTTPRequestHandler):
             raise SpotifyError("Spotify needs the player's window, which this mode has none of", general=True)
         folder = self.library.settings.get("spotify_account")
         if not isinstance(folder, str) or not folder:
-            raise SpotifyError("sign in to Spotify first, under Library", signed_out=True)
+            raise SpotifyError("sign in to Spotify first, under Spotify in Premium Services", signed_out=True)
         return self.spotify
 
     def _ahead(self, track):
@@ -401,7 +401,7 @@ class Handler(BaseHTTPRequestHandler):
         sign-in any more."""
         folder = self.library.settings.get("yt_account")
         if not isinstance(folder, str) or not folder:
-            raise YTError("sign in to YouTube Music first, under Library", signed_out=True)
+            raise YTError("sign in to YouTube Music first, under YouTube Music in Premium Services", signed_out=True)
         found = self._firefox(firefox.session, folder)
         if found is None:
             raise YTError("Firefox is not signed in to YouTube any more; sign in there again",
@@ -641,7 +641,7 @@ def apple_sign_in(library):
     or when that profile has no sign-in any more."""
     folder = library.settings.get("apple_account")
     if not isinstance(folder, str) or not folder:
-        raise AppleError("sign in to Apple Music first, under Library", signed_out=True)
+        raise AppleError("sign in to Apple Music first, under Apple Music in Premium Services", signed_out=True)
     try:
         found = firefox.apple_token(folder)
     except RuntimeError as error:   # an older Python
@@ -660,7 +660,7 @@ def spotify_sign_in(library):
     or when that profile has no sign-in any more."""
     folder = library.settings.get("spotify_account")
     if not isinstance(folder, str) or not folder:
-        raise SpotifyError("sign in to Spotify first, under Library", signed_out=True)
+        raise SpotifyError("sign in to Spotify first, under Spotify in Premium Services", signed_out=True)
     try:
         found = firefox.spotify_token(folder)
     except RuntimeError as error:   # an older Python

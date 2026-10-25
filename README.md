@@ -269,11 +269,11 @@ Most of it is what the player stands on: an empty WebKit window takes 160 to 170
 
 Ocean Mist has no sign-in form of its own and never sees your password. You sign in to YouTube Music in Firefox, on Google's own page, and Ocean Mist uses that sign-in:
 
-1. In Premium Services, choose **Library**, then **Sign in with Firefox**.
+1. In Premium Services, choose **YouTube Music**, then **Sign in with Firefox**.
 2. If Firefox is signed in to YouTube already, that is all. If not, Firefox opens on YouTube Music's sign-in page: sign in there, and Ocean Mist carries on by itself.
 3. If more than one of your Firefox profiles is signed in to YouTube, choose the one Ocean Mist should use. They are listed by the names Firefox's profile menu shows, and Ocean Mist keeps to the one you chose.
 
-Your playlists and Liked music then show under Library, and play like any playlist. Right-click a song to like it, to take the like back or to add it to one of your playlists. In a playlist of your own, you can also take a song out.
+Your playlists and Liked music then show under YouTube Music, and play like any playlist. Right-click a song to like it, to take the like back or to add it to one of your playlists. In a playlist of your own, you can also take a song out.
 
 What Ocean Mist reads, and when:
 
