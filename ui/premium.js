@@ -2,7 +2,7 @@
 // searches and opens albums, artists and playlists; their songs go into the
 // YouTube Music list, a Now Playing list of its own beside My Music, and play
 // like files. The streaming lists, like what is searched and opened here, are
-// kept in memory only. Signed in through Firefox (firefox.py), the Library
+// kept in memory only. Signed in through Firefox (firefox.py), the YouTube Music branch
 // shows your playlists and Liked music, and songs can be liked and put in your
 // playlists. Apple Music and Spotify have branches of the tree too: the hosts
 // (apple.py, spotify.py) read your libraries there, signed in through Firefox
@@ -124,7 +124,7 @@
     fetchPage(kind, id).then((page) => {
       yt.pages[node.value] = page.error ? { error: page.error, signed_out: page.signed_out } : page;
       if (page.error) { if (page.signed_out) outFor(kind)(page); }
-      else if (kind === 'mine') learn(page.tracks);   // the Library lists it already
+      else if (kind === 'mine') learn(page.tracks);   // the YouTube Music branch lists it already
       else remember(node.value, page.title);
       if (same(yt.node, node)) draw();
     });
@@ -375,7 +375,7 @@
     if (node.kind === 'account') return 'There are no playlists in your library yet.';
     return node.kind === 'search' ? `YouTube Music found nothing for “${esc(yt.words)}”.` : 'There is nothing to play here.';
   }
-  // the Library when you are not signed in: what signing in does, and its button
+  // the YouTube Music branch when you are not signed in: what signing in does, and its button
   function signInText(error) {
     if (yt.waiting) {
       return '<div class="yt-sign">Sign in to YouTube Music in the Firefox window that opened. Ocean Mist goes on as soon as you have.' +
@@ -392,7 +392,7 @@
       'each time it asks for something of your account, and keeps nothing of it. Searches and the music itself stay anonymous.' +
       '<br><button id="yt-signin">Sign in with Firefox</button></div>';
   }
-  // the Library when Apple Music is not signed in: what signing in does, and its button
+  // the Apple Music branch when it is not signed in: what signing in does, and its button
   function appleSignInText(error) {
     if (ap.waiting) {
       return '<div class="yt-sign">Sign in to Apple Music in the Firefox window that opened. Ocean Mist goes on as soon as you have.' +
@@ -411,7 +411,7 @@
       'Playback engine. Playing them needs an active Apple Music subscription, which the engine checks.' +
       '<br><button id="ap-signin">Sign in with Firefox</button></div>';
   }
-  // the Library when Spotify is not signed in: what signing in does, and its button
+  // the Spotify branch when it is not signed in: what signing in does, and its button
   function spotifySignInText(error) {
     if (sp.waiting) {
       return '<div class="yt-sign">Sign in to Spotify in the Firefox window that opened. Ocean Mist goes on as soon as you have.' +
@@ -470,7 +470,7 @@
     }
     if (library) {
       const profile = yt.library && yt.library.profile ? ` profile “${esc(yt.library.profile)}”` : '';
-      $('yt-head').innerHTML = `<b>Library</b><span>Signed in to YouTube Music through Firefox${profile} · <a id="yt-signout">Sign out</a></span>`;
+      $('yt-head').innerHTML = `<b>YouTube Music</b><span>Signed in to YouTube Music through Firefox${profile} · <a id="yt-signout">Sign out</a></span>`;
     }
     if (page) {
       const bits = [page.kind === 'artist' ? page.info : page.artist, page.kind === 'album' ? page.label : '', page.year,
@@ -522,7 +522,7 @@
       for (const p of saved) rows.push({ depth: 1, label: p.name, node: { kind: 'list', value: p.path } });
       if (!saved.length) rows.push({ depth: 1, label: '(none saved yet)', dim: true });
     }
-    rows.push({ depth: 0, label: 'Library', fold: 'library', node: { kind: 'account' } });
+    rows.push({ depth: 0, label: 'YouTube Music', fold: 'library', node: { kind: 'account' } });   // your YouTube Music library
     if (yt.open.library) {
       const lib = yt.library;
       if (!signedIn()) rows.push({ depth: 1, label: 'Sign in…', node: { kind: 'account', value: 'sign-in' } });
