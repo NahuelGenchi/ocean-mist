@@ -26,7 +26,7 @@ Every meaningful action must stay discoverable through that chain. Routine reads
 
 ## Checks
 
-Source checks (`python3 -m py_compile` on the Python files, `node --check` on the files in `ui/`) establish that the code parses, nothing more. Live checks run the player itself as a separate instance with scratch settings, muted, as described in [AGENTS.md](AGENTS.md); they never touch your own player, settings or music. Report each separately in the PR's delivery record, and say what was not run.
+Source checks (`python3 -m py_compile` on the Python files, `node --check` on the files in `ui/`) establish that the code parses, nothing more. The tests in `tests/` (`python3 -m unittest discover -s tests -t .` and `node --test tests/*.test.js`) check behavior that runs without a window or a network; a change adds or updates the tests for what it changes. The Checks workflow runs both on every pull request, and a PR merges only when it passes. Live checks run the player itself as a separate instance with scratch settings, muted, as described in [AGENTS.md](AGENTS.md); they never touch your own player, settings or music. Report each separately in the PR's delivery record, and say what was not run.
 
 A change to the frame's shape, sizes or colors is compared against a reference of the original player before it is proposed.
 
