@@ -41,3 +41,34 @@ jobs:
 
       - name: Page and helper tests
         run: node --test tests/*.test.js
+
+  package:
+    name: Package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Ubuntu 24.04's own tools: its AppArmor (4.0.1) is the oldest the package allows, so the profiles are parsed
+      # by the parser that matters most; nothing else is installed
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends apparmor desktop-file-utils lintian shellcheck
+          apparmor_parser --version | head -1
+          lintian --version
+
+      - name: Shell scripts
+        run: shellcheck --severity=warning engine/allow-sandbox.sh packaging/build-deb.sh packaging/deb/postinst packaging/deb/prerm packaging/deb/ocean-mist
+
+      # build-deb.sh parses both AppArmor profiles and checks the menu entry when the tools are there
+      - name: Build twice, the same bytes
+        run: |
+          packaging/build-deb.sh "$RUNNER_TEMP/first"
+          packaging/build-deb.sh "$RUNNER_TEMP/second"
+          cmp "$RUNNER_TEMP"/first/*.deb "$RUNNER_TEMP"/second/*.deb
+
+      - name: Lintian
+        run: lintian --fail-on error "$RUNNER_TEMP"/first/*.deb

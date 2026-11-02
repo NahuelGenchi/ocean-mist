@@ -49,7 +49,7 @@ abi_for() {
       return
     fi
   done
-  newest="$(ls "$DIR/abi" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+  newest="$(find "$DIR/abi" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
   printf 'abi <abi/%s>,' "${newest:-4.0}"
 }
 

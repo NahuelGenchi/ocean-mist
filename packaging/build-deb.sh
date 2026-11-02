@@ -173,7 +173,7 @@ if [ -n "${OCEAN_MIST_APPARMOR_ROOT:-}" ]; then
   old_options=(--base="$old/etc/apparmor.d" -Q -T -K)
   if [ -f "$old/etc/apparmor/parser.conf" ]; then old_options=(--config-file="$old/etc/apparmor/parser.conf" "${old_options[@]}"); fi
   # on that system the script would name the newest abi it has, as it does on this one
-  old_abi="$(ls "$old/etc/apparmor.d/abi" | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+  old_abi="$(find "$old/etc/apparmor.d/abi" -mindepth 1 -maxdepth 1 -printf '%f\n' | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
   sed "s|^abi <abi/[^>]*>,\$|abi <abi/${old_abi:-4.0}>,|" "$work/step-profile" > "$work/step-profile-old"
   old_profiles=("$pkg/etc/apparmor.d/ocean-mist-engine" "$work/step-profile-old")
   for i in "${!old_profiles[@]}"; do
