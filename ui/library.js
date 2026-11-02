@@ -9,6 +9,7 @@
   const UNKNOWN = { artist: 'Unknown Artist', album: 'Unknown Album', genre: 'Unknown Genre' };
   const lib = {
     tracks: [], loaded: false, stale: true, scanning: false,
+    at: new Map(), coming: null,   // a track's place in tracks, by id; rows read while the library loads
     node: { kind: 'all' },      // what the table shows: now | all | artist | album | genre | list
     open: { artist: false, album: false, genre: false, lists: true },
     lists: {},                  // playlist path -> its tracks
@@ -20,9 +21,23 @@
 
   async function load() {
     lib.stale = false;
-    const data = await (await fetch(base + 'api/library')).json();
-    lib.tracks = data.tracks; lib.scanning = data.scanning; lib.loaded = true;
+    lib.coming = [];   // rows read while the whole library is on its way, put in place once it is here
+    try {
+      const data = await (await fetch(base + 'api/library')).json();
+      lib.tracks = data.tracks; lib.scanning = data.scanning; lib.loaded = true;
+      lib.at = new Map(lib.tracks.map((t, i) => [t.id, i]));
+      merge(lib.coming);
+    } finally {
+      lib.coming = null;
+    }
     draw();
+  }
+  // the rows whose tags were read since: put in place, without asking for the whole library again
+  function merge(rows) {
+    for (const t of rows) {
+      const i = lib.at.get(t.id);
+      if (i !== undefined) lib.tracks[i] = t;
+    }
   }
   function loadList(path) {
     api('playlist-tracks', { path }).then((r) => { lib.lists[path] = r.tracks || []; if (same(lib.node, { kind: 'list', value: path })) drawRows(); });
@@ -183,7 +198,14 @@
 
   // ---- keeping up ----
   on('view', (view) => { if (view !== 'library') return; if (lib.stale || !lib.loaded) load(); else draw(); });
-  on('event', (msg) => { if (msg.event !== 'library') return; if (state.view === 'library') load(); else lib.stale = true; });
+  on('event', (msg) => {
+    if (msg.event !== 'library') return;
+    if (Array.isArray(msg.changed) && lib.coming) { lib.coming = lib.coming.concat(msg.changed); return; }
+    if (Array.isArray(msg.changed) && lib.loaded && !lib.stale) {   // tags read: only those rows
+      merge(msg.changed);
+      if (state.view === 'library') draw();
+    } else if (state.view === 'library') load(); else lib.stale = true;   // the library itself changed
+  });
   on('state', () => {
     if (state.view !== 'library') return;
     drawTree();

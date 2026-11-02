@@ -247,22 +247,41 @@ def _mp3_frame(head):
 
 
 def _mp3_duration(fh, start, size):
-    """Seconds, from the Xing/VBRI frame count or, failing that, the bitrate."""
+    """Seconds, from the Xing/VBRI frame count or, failing that, the bitrate. The first 8 KiB hold the first
+    frame, and with it the count LAME and most encoders write; only a file without one is read further (128
+    KiB), to measure its frames."""
     fh.seek(start)
-    data = fh.read(1 << 17)
+    seconds = _mp3_counted(fh.read(1 << 13))
+    if seconds is not None:
+        return seconds
+    fh.seek(start)
+    return _mp3_measured(fh, start, size, fh.read(1 << 17))
+
+
+def _mp3_first(data):
+    """(where the first real frame starts, its header), or None."""
     pos = 0
     while True:
         pos = data.find(b"\xff", pos)
         if pos < 0 or pos + 4 > len(data):
-            return 0
+            return None
         frame = _mp3_frame(data[pos:pos + 4])
         if frame and frame[0] > 4:
             follow = pos + frame[0]
             # a real frame is followed by another one
             if follow + 4 > len(data) or _mp3_frame(data[follow:follow + 4]):
-                break
+                return pos, frame
         pos += 1
-    length, samples, hz, kbps, xing = frame
+
+
+def _mp3_counted(data):
+    """Seconds from the frame count in the first frame (Xing, Info or VBRI), or None."""
+    found = _mp3_first(data)
+    if found is None:
+        return None
+    pos, (length, samples, hz, kbps, xing) = found
+    if pos + length > len(data):   # the first frame goes on past what was read
+        return None
     body = data[pos:pos + length]
     if body[xing:xing + 4] in (b"Xing", b"Info") and body[xing + 7] & 1:
         frames = int.from_bytes(body[xing + 8:xing + 12], "big")
@@ -272,7 +291,18 @@ def _mp3_duration(fh, start, size):
         frames = int.from_bytes(body[50:54], "big")
         if frames:
             return frames * samples / hz
-    # no frame count: measure the frames at hand and scale up to the whole file
+    return None
+
+
+def _mp3_measured(fh, start, size, data):
+    """Seconds from the frames at hand, scaled up to the whole file (no frame count), or what the count says."""
+    seconds = _mp3_counted(data)
+    if seconds is not None:
+        return seconds
+    found = _mp3_first(data)
+    if found is None:
+        return 0
+    pos, (length, samples, hz, kbps, xing) = found
     frames, at = 0, pos
     while at + 4 <= len(data):
         step = _mp3_frame(data[at:at + 4])
@@ -385,21 +415,30 @@ def _flac(fh, size, want_art):
 
 def _ogg_packets(fh, wanted):
     """The first `wanted` packets of an Ogg stream (they may span pages)."""
-    packets, current = [], b""
+    # a packet is gathered in a bytearray, and the segments of a page that belong to one packet are read at once:
+    # adding to bytes 255 at a time took seconds for a cover of a few megabytes
+    packets, current = [], bytearray()
     while len(packets) < wanted:
         head = fh.read(27)
         if len(head) < 27 or head[:4] != b"OggS":
             break
-        lacing = fh.read(head[26])
-        for value in lacing:
-            current += fh.read(value)
+        run = 0
+        for value in fh.read(head[26]):
+            run += value
+            if value == 255:   # the packet goes on
+                continue
+            current += fh.read(run)
+            run = 0
             if len(current) > PACKET_LIMIT:
                 return packets
-            if value < 255:
-                packets.append(current)
-                current = b""
-                if len(packets) == wanted:
-                    break
+            packets.append(bytes(current))
+            current = bytearray()
+            if len(packets) == wanted:
+                return packets
+        if run:   # ...into the next page
+            current += fh.read(run)
+            if len(current) > PACKET_LIMIT:
+                return packets
     return packets
 
 
