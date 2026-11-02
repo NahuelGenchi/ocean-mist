@@ -50,4 +50,4 @@ The job uses inline Node.js and the repository's `GITHUB_TOKEN` with only issue 
 
 ## Enforcement boundary
 
-**The workflow does not prevent direct pushes or block merges.** PR-only delivery is project policy; server-side enforcement needs a branch ruleset configured by the owner (require a PR for `main`, block force pushes and deletion). Record that setup in its own operations issue.
+**The workflows do not prevent direct pushes or block merges.** PR-only delivery is project policy; server-side enforcement needs a branch ruleset configured by the owner, in the repository's settings (Rules → Rulesets → New branch ruleset, target `main`): require a pull request before merging, require the status checks *Source checks and tests* and *Package* (from [`checks.yml`](../.github/workflows/checks.yml)) to pass, block force pushes, and restrict deletions. Record that setup in its own operations issue (#96 for the first one).

@@ -1,0 +1,97 @@
+name: Release
+
+# A tag vX.Y.Z (X.Y.Z being what packaging/VERSION names) builds the release package, checks it, attests where it
+# was built, and puts it with its SHA256SUMS on the release of that tag: a new draft one for the owner to write the
+# notes of and publish, or the one already there. Run by hand, it is a dry run: the same build and checks, the
+# package kept with the run, nothing published.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Version
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < packaging/VERSION)"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::the tag is $GITHUB_REF_NAME, but packaging/VERSION names $version (the tag should be v$version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends apparmor desktop-file-utils lintian
+          apparmor_parser --version | head -1
+
+      - name: Build twice, the same bytes
+        env:
+          OCEAN_MIST_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          packaging/build-deb.sh dist
+          packaging/build-deb.sh "$RUNNER_TEMP/again"
+          cmp dist/*.deb "$RUNNER_TEMP"/again/*.deb
+          lintian --fail-on error dist/*.deb
+          (cd dist && sha256sum -- *.deb > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Attest and publish
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # only this job may write, and it runs nothing from the repository: it attests and uploads what the build made
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: dist
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.deb
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          sum="$(cut -d' ' -f1 dist/SHA256SUMS)"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.deb dist/SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            notes="ocean-mist_${VERSION}_all.deb, SHA-256 ${sum}. Check where it was built with: gh attestation verify ocean-mist_${VERSION}_all.deb --repo ${GITHUB_REPOSITORY}"
+            gh release create "$GITHUB_REF_NAME" dist/*.deb dist/SHA256SUMS --draft --verify-tag \
+              --title "Ocean Mist ${VERSION}" --notes "$notes" --repo "$GITHUB_REPOSITORY"
+          fi
