@@ -15,18 +15,19 @@ Description: music player with the look of Windows Media Player 9
  the classic Windows Media Player 9: the sculpted frame, the visualizations, a
  ten-band equalizer, a media library and playlists. It also searches and plays
  YouTube Music; once you have signed in through Firefox (which this package
- only suggests), it shows and plays your Apple Music library as well. It is an
- unofficial fan project, not affiliated with Microsoft.
+ only suggests), it shows and plays your Apple Music and Spotify libraries as
+ well. It is an unofficial fan project, not affiliated with Microsoft.
  .
- Apple Music songs play in a playback engine that the player downloads when
- you ask it to, after showing what it downloads. On Ubuntu 24.04 and later
- that engine needs a permission for its security sandbox, and this package
- installs it as an AppArmor profile, /etc/apparmor.d/ocean-mist-engine, so the
- player has nothing to ask you for. The profile names one file, the engine's
- runtime in ~/.local/share/ocean-mist/engine in each user's home folder, and
- gives it one thing: creating user namespaces. As that file is in a folder its
- user can write, a program that anything running as that user puts there gets
- the same permission. "sudo aa-disable ocean-mist-engine" switches it off.
+ Apple Music and Spotify songs play in a playback engine that the player
+ downloads when you ask it to, after showing what it downloads. On Ubuntu
+ 24.04 and later that engine needs a permission for its security sandbox, and
+ this package installs it as an AppArmor profile,
+ /etc/apparmor.d/ocean-mist-engine, so the player has nothing to ask you for.
+ The profile names one file, the engine's runtime in
+ ~/.local/share/ocean-mist/engine in each user's home folder, and gives it one
+ thing: creating user namespaces. As that file is in a folder its user can
+ write, a program that anything running as that user puts there gets the same
+ permission. "sudo aa-disable ocean-mist-engine" switches it off.
  .
  The profile needs AppArmor 4.0 or later, so this package depends on it and
  cannot be installed on a system with an older one (Debian 12, for example).
