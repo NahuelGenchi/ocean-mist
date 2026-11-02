@@ -111,18 +111,18 @@
     if (node.kind === 'search') {
       const words = yt.words, key = node.value + '\n' + words;
       if (!words || (yt.results[key] && !yt.results[key].error)) return;
-      yt.results[key] = { loading: true };
+      keep(yt.results, key, { loading: true });
       get(`search?q=${encodeURIComponent(words)}&kind=${node.value}`).then((r) => {
-        yt.results[key] = r.error ? { error: r.error } : { items: r.items || [], more: r.more };
+        keep(yt.results, key, r.error ? { error: r.error } : { items: r.items || [], more: r.more });
         if (same(yt.node, node) && yt.words === words) draw();
       });
       return;
     }
     if (yt.pages[node.value] && !yt.pages[node.value].error) return;
     const [kind, id] = split(node.value);
-    yt.pages[node.value] = { loading: true };
+    keep(yt.pages, node.value, { loading: true });
     fetchPage(kind, id).then((page) => {
-      yt.pages[node.value] = page.error ? { error: page.error, signed_out: page.signed_out } : page;
+      keep(yt.pages, node.value, page.error ? { error: page.error, signed_out: page.signed_out } : page);
       if (page.error) { if (page.signed_out) outFor(kind)(page); }
       else if (kind === 'mine') learn(page.tracks);   // the YouTube Music branch lists it already
       else remember(node.value, page.title);
@@ -248,6 +248,18 @@
     yt.recent = [{ key, title: title || 'Untitled' }, ...yt.recent.filter((p) => p.key !== key)].slice(0, 12);
     drawTree();
   }
+  // searches and pages are kept in memory, the latest KEPT of each (and always the one shown and your own playlists),
+  // not every one of a long session
+  const KEPT = 30;
+  function keep(cache, key, value) {
+    delete cache[key];
+    cache[key] = value;   // the latest last
+    const shown = yt.node.kind === 'search' ? yt.node.value + '\n' + yt.words : yt.node.value;
+    const keys = Object.keys(cache);
+    for (const old of keys.slice(0, Math.max(0, keys.length - KEPT))) {
+      if (!old.startsWith('mine:') && old !== shown) delete cache[old];
+    }
+  }
   // an album's or a playlist's songs, for a row that was not opened (`quiet`: not one of the pages you opened, so it is
   // not remembered, and a failure is not announced)
   async function pageOf(item, quiet) {
@@ -256,7 +268,7 @@
     if (!page || page.error || page.loading) {
       page = await fetchPage(kind, id);
       if (page.error) { if (!quiet) failed(page, kind); else if (page.signed_out) outFor(kind)(page); return null; }
-      yt.pages[key] = page;
+      keep(yt.pages, key, page);
       if (kind === 'mine') learn(page.tracks); else if (!quiet) remember(key, page.title);
     }
     return page;

@@ -6,6 +6,12 @@ window.Visuals = (function () {
   let canvas, ctx, buffer, bctx, width = 0, height = 0;
   let analyser = null, freq = new Uint8Array(1024), wave = new Uint8Array(2048);
   let running = false, raf = 0, last = 0, clock = 0, index = 0;
+  // frames are asked for only while there is something to draw; otherwise the engine's levels are looked at a few
+  // times a second (whether they come or stop), on a timer
+  const RESTING = 250;
+  let resting = 0;
+  // the canvas is measured again only when its size or the player's zoom may have changed, not at every frame
+  let sized = true, scale = 1;
   let randomPick = 0, randomUntil = 0, bassAvg = 0;
   const peaks = [];
   // the playback engine's levels, for an Apple Music or Spotify song (whose sound never reaches the page): the low
@@ -167,8 +173,8 @@ window.Visuals = (function () {
 
   function resize() {
     const rect = canvas.getBoundingClientRect();
-    const most = Math.min(1280, 720 * (api.scale || 1));   // a zoomed player gets more pixels
-    const w = Math.max(2, Math.round(Math.min(rect.width * (api.scale || 1), most))), h = Math.max(2, Math.round(rect.height * (w / Math.max(1, rect.width))));
+    const most = Math.min(1280, 720 * (scale || 1));   // a zoomed player gets more pixels
+    const w = Math.max(2, Math.round(Math.min(rect.width * (scale || 1), most))), h = Math.max(2, Math.round(rect.height * (w / Math.max(1, rect.width))));
     if (w === width && h === height) return;
     width = canvas.width = w; height = canvas.height = h;
     buffer.width = w; buffer.height = h;
@@ -215,16 +221,17 @@ window.Visuals = (function () {
     return { freq, wave, bass, mid, treble, beat: bass > bassAvg * 1.25 && bass > 0.25, t: clock };
   }
 
+  const drawing = () => running && !!presets[index].draw;
   function frame(now) {
-    raf = requestAnimationFrame(frame);
+    raf = 0;
     const live = isLive();
     if (live !== wasLive) { wasLive = live; if (onLive) onLive(live); }
     const dt = Math.min(0.1, (now - last) / 1000 || 0); last = now;
-    if (!running) return;
+    if (!drawing()) { rest(); return; }
+    raf = requestAnimationFrame(frame);
     clock += dt;
-    resize();
+    if (sized || !window.ResizeObserver) { sized = false; resize(); }
     const preset = presets[index];
-    if (!preset.draw) return;
     if (preset.feedback) {
       bctx.clearRect(0, 0, width, height); bctx.drawImage(canvas, 0, 0);
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, width, height);
@@ -232,13 +239,26 @@ window.Visuals = (function () {
     preset.draw(sample());
   }
 
+  function rest() {
+    if (!resting) resting = setTimeout(() => { resting = 0; if (!raf) frame(performance.now()); }, RESTING);
+  }
+  // back to frames, when there is something to draw again
+  function wake() {
+    if (raf || !drawing()) return;
+    clearTimeout(resting); resting = 0;
+    last = performance.now();
+    raf = requestAnimationFrame(frame);
+  }
+
   const api = {
     presets,
-    scale: 1,
+    get scale() { return scale; },
+    set scale(value) { scale = value; sized = true; },
     init(el) {
       canvas = el; ctx = canvas.getContext('2d');
       buffer = document.createElement('canvas'); bctx = buffer.getContext('2d');
-      resize(); raf = requestAnimationFrame(frame);
+      if (window.ResizeObserver) new ResizeObserver(() => { sized = true; }).observe(canvas);
+      resize(); rest();
     },
     // the engine's levels (base64 of a byte a band), and who wants to know when they come and when they stop
     feed(levels) {
@@ -256,9 +276,9 @@ window.Visuals = (function () {
       analyser = node;
       if (node) { freq = new Uint8Array(node.frequencyBinCount); wave = new Uint8Array(node.fftSize); }
     },
-    select(i) { index = ((i % presets.length) + presets.length) % presets.length; this.clear(); return index; },
+    select(i) { index = ((i % presets.length) + presets.length) % presets.length; this.clear(); wake(); return index; },
     get index() { return index; },
-    start() { running = true; },
+    start() { running = true; wake(); },
     pause() { running = false; },
     clear() { if (ctx) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, width, height); } peaks.length = 0; },
     stop() { running = false; this.clear(); },
