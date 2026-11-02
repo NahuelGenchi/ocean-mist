@@ -903,10 +903,22 @@ def run_app(argv):
 
         def do_open(self, files, n_files, hint):
             paths = [f.get_path() for f in files if f.get_path()]
-            first = self.library.open_paths(paths)
-            self.do_activate()
-            if first is not None:
-                self.library.request_play(first)
+            self.do_activate()   # the window at once; a big folder is walked meanwhile
+            self._off_the_window(lambda: self.library.open_paths(paths))
+
+        def _off_the_window(self, work, play=True):
+            """Open or add files in a thread of their own, so that walking a folder of thousands of songs never
+            holds up the window; then play what it gives (the page is told, from whatever thread)."""
+            def run():
+                try:
+                    first = work()
+                except Exception as error:   # nothing to play; why, when debugging
+                    if os.environ.get("OCEAN_MIST_DEBUG"):
+                        print("open:", error, file=sys.stderr)
+                    return
+                if first is not None and play:
+                    self.library.request_play(first)
+            threading.Thread(target=run, daemon=True).start()
 
         def _open_file(self, path):
             """A file the desktop's media controls ask to play (OpenUri): opened as from the file manager.
@@ -1135,6 +1147,7 @@ def run_app(argv):
                         and library.now["mode"] == "playing"):
                     library.resume["position"] = round(library.position(), 1)
             library.save()
+            library._save_cache()   # tags read since the last save, such as during a first long reading
             library.forget_stream_covers()
             self.apple.close_now(now=True)   # Apple's page: its view, and the folder of its rules
             self.spotify.close_now(now=True)   # Spotify's view
@@ -1212,12 +1225,11 @@ def run_app(argv):
                 path = Gio.File.new_for_uri(uri).get_path()
                 if path:
                     paths.append(path)
+            library = self.library
             if len(paths) == 1 and is_playlist(paths[0]):
-                first = self.library.open_paths(paths)
+                self._off_the_window(lambda: library.open_paths(paths))
             else:
-                first = self.library.add_paths(paths)
-            if first is not None:
-                self.library.request_play(first)
+                self._off_the_window(lambda: library.add_paths(paths))
             Gtk.drag_finish(context, True, False, time)
 
         def choose(self, kind, play=True, which="local"):
@@ -1274,9 +1286,7 @@ def run_app(argv):
                 # the menu's Open replaces the list like opening from
                 # Files does; the library's Add buttons only add
                 opener = library.open_paths if play else library.add_paths
-                first = opener(paths)
-                if first is not None and play:
-                    library.request_play(first)
+                self._off_the_window(lambda: opener(paths), play)
             elif kind == "playlist":
                 first = library.open_playlist(paths[0])
                 if first is None:

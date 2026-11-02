@@ -45,6 +45,7 @@ CACHE_DIR = os.path.join(
 )
 STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
 TAG_CACHE = os.path.join(CACHE_DIR, "tags.json")
+SAVE_EVERY = 30   # seconds: the tag cache is saved this often while tags are read, not only at the end
 # YouTube Music covers, as files for the desktop's media controls; named after
 # the app id, so a test instance never clears the covers of the real player.
 # Only in the user's own runtime folder: without one there are no such files,
@@ -89,6 +90,16 @@ def _natural(name):
 
 def _is_audio(name):
     return os.path.splitext(name)[1].lower() in AUDIO_EXTENSIONS
+
+
+def _reachable(folder):
+    """Whether a library folder is there to be read: a drive that is not plugged in leaves no folder, or an
+    empty one where it is mounted."""
+    try:
+        with os.scandir(folder) as entries:
+            return next(entries, None) is not None
+    except OSError:
+        return False
 
 
 def _walk(folder):
@@ -305,6 +316,8 @@ class Library:
         self._order = 0
         self._tagged = set()
         self._retag = set()       # ids read before whose file changed: read again from scratch
+        self._collection_paths = None   # (the collection, the set of its paths)
+        self._cache_writing = threading.Lock()   # one write of the tag cache at a time
         self._reader = None
         self._covers = {}         # path -> (mime, bytes) of the last few shown
         self._folder_covers = {}
@@ -379,9 +392,14 @@ class Library:
         with self.lock:
             if not self._cache_dirty:
                 return
-            files = {p: v for p, v in self._cache.items() if p in self.by_path}
+            cache, known = dict(self._cache), set(self.by_path)
             self._cache_dirty = False
-        _write_json(TAG_CACHE, {"version": tags.VERSION, "files": files})
+        # a file this session did not see is kept while its library folder cannot be reached (a drive that is
+        # not plugged in), so that its tags are not all read again when it is back; otherwise it is gone
+        away = tuple(os.path.join(folder, "") for folder in self.folders() if not _reachable(folder))
+        files = {p: v for p, v in cache.items() if p in known or (away and p.startswith(away))}
+        with self._cache_writing:   # the reading thread and the player's close may both save
+            _write_json(TAG_CACHE, {"version": tags.VERSION, "files": files})
 
     # ---- events to the page ----
     def subscribe(self):
@@ -413,6 +431,7 @@ class Library:
             self.emit("play", **payload)
 
     def snapshot(self):
+        playlists, folders = self.playlist_files(), self.folders()   # (files looked at: outside the lock)
         with self.lock:
             pending, self.pending_play = self.pending_play, None
             offer, self._resume_offer = self._resume_offer, None
@@ -427,16 +446,16 @@ class Library:
                                       "name": self.names[which]} for which in LISTS},
                     "settings": dict(self.settings), "play": pending,
                     "resume": resume, "stations": list(self.stations),
-                    "playlists": self.playlist_files(),
-                    "folders": self.folders(),
+                    "playlists": playlists,
+                    "folders": folders,
                     # when it was read, in microseconds of the system's monotonic clock (which goes on
                     # across a restart of --serve): of answers that cross, the page keeps the newest
                     "taken": time.monotonic_ns() // 1000}
 
     def library_snapshot(self):
-        with self.lock:
-            return {"tracks": [self._public(t) for t in self.collection],
-                    "scanning": self.scanning}
+        with self.lock:   # copies only: the rows are made outside it, so tag reading and the rest need not wait
+            tracks, scanning = [dict(t) for t in self.collection], self.scanning
+        return {"tracks": [self._public(t) for t in tracks], "scanning": scanning}
 
     @staticmethod
     def _public(track):
@@ -769,8 +788,9 @@ class Library:
         return True
 
     def _read_tags(self):
-        dirty = stale = False     # the page's list / its library view is behind
+        listed, read = set(), set()   # what was read since the page was last told: for its lists / its library
         last = last_library = 0.0
+        last_save = time.monotonic()
         while True:
             try:
                 track_id = self._untagged.get(timeout=0.25)[2]
@@ -778,19 +798,36 @@ class Library:
                 track_id = None
             try:
                 if track_id is not None and self._tag(track_id):
-                    dirty = stale = True
+                    listed.add(track_id)
+                    read.add(track_id)
             except Exception:   # one odd file must not end tag reading for the rest
                 pass
             now, idle = time.monotonic(), track_id is None
-            if dirty and (idle or now - last > 0.3):
-                self.emit("playlist")
-                dirty, last = False, now
-            if stale and (idle or now - last_library > 1.5):
-                if self.collection:
-                    self.emit("library")
-                stale, last_library = False, now
-            if idle:
+            if listed and (idle or now - last > 0.3):
+                # the page asks for all its lists again: only when a song in one of them was read
+                with self.lock:
+                    shown = any(t["id"] in listed for which in LISTS for t in self.lists[which])
+                if shown:
+                    self.emit("playlist")
+                listed, last = set(), now
+            if read and (idle or now - last_library > 1.5):
+                # the rows read, not the whole library again: the page puts them in place
+                with self.lock:
+                    rows = [dict(self.by_id[i]) for i in read if i in self.by_id]
+                rows = [self._public(t) for t in rows if t.get("path") in self._in_collection()]
+                if rows:
+                    self.emit("library", changed=rows)
+                read, last_library = set(), now
+            if idle or now - last_save > SAVE_EVERY:   # a long first reading is not lost with the player
                 self._save_cache()
+                last_save = now
+
+    def _in_collection(self):
+        """The paths of the Media Library's songs, as a set (made again when the library changes)."""
+        with self.lock:
+            if self._collection_paths is None or self._collection_paths[0] is not self.collection:
+                self._collection_paths = (self.collection, {t["path"] for t in self.collection})
+            return self._collection_paths[1]
 
     def set_duration(self, track_id, seconds):
         """The length the page measured while playing; beats any estimate."""
@@ -1029,8 +1066,10 @@ class Library:
         Music addresses become YouTube Music songs, Apple Music and Spotify
         ones theirs (those with a title in the file)."""
         labels, chosen = {}, []
+        entries = list(dict.fromkeys(read_playlist(path, labels)))   # the file and its songs looked at outside the lock
+        there = {e for e in entries if "://" not in e and _is_audio(e) and os.path.isfile(e)}
         with self.lock:
-            for entry in dict.fromkeys(read_playlist(path, labels)):
+            for entry in entries:
                 video = ytmusic.video_id(entry) if "://" in entry else None
                 ident = apple.song_id(entry) if "://" in entry else None
                 tune = spotify.song_id(entry) if "://" in entry and not video and not ident else None
@@ -1046,7 +1085,7 @@ class Library:
                         {"apple": ident, "title": title, "artist": artist, "duration": seconds} if ident
                         else ({"spotify": tune, "title": title, "artist": artist, "duration": seconds} if tune
                               else {"video": video, "title": title, "artist": artist, "duration": seconds})))
-                elif "://" not in entry and _is_audio(entry) and os.path.isfile(entry):
+                elif entry in there:
                     chosen.append(self._entry(entry))
         unique, listed = [], set()
         for track in chosen:
