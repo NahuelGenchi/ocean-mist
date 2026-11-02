@@ -158,6 +158,20 @@ def folder_cover(folder):
     return None
 
 
+def _playlist_lines(raw):
+    """A playlist's lines as text, each on its own: UTF-8, which Ocean Mist writes, so that one line in another
+    encoding does not spoil the others. A line that is not UTF-8 comes as (Latin-1 text, as an older player
+    wrote it; the same bytes as a file name holds them, for a name that is not UTF-8 itself); the others as
+    (text, None)."""
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    for line in raw.splitlines():
+        try:
+            yield line.decode("utf-8"), None
+        except UnicodeError:
+            yield line.decode("latin-1"), os.fsdecode(line)
+
+
 def read_playlist(path, labels=None):
     """The entries of an .m3u/.m3u8/.pls file: file paths and stream addresses.
     `labels`, a dict, gets each entry's (seconds, "artist - title") when an
@@ -167,20 +181,16 @@ def read_playlist(path, labels=None):
             raw = fh.read(4 << 20)
     except OSError:
         return []
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeError:
-        text = raw.decode("latin-1")
     folder = os.path.dirname(os.path.abspath(path))
     pls = path.lower().endswith(".pls")
     entries, label = [], None
-    for line in text.splitlines():
-        line = line.strip()
+    for line, named in _playlist_lines(raw):
+        line, named = line.strip(), named and named.strip()
         if pls:
             key, _, line = line.partition("=")
             if not key.strip().lower().startswith("file"):
                 continue
-            line = line.strip()
+            line, named = line.strip(), named and named.partition("=")[2].strip()
         if line.upper().startswith("#EXTINF:"):
             seconds, _, name = line[8:].partition(",")
             try:
@@ -198,11 +208,26 @@ def read_playlist(path, labels=None):
                 continue
             line = urllib.parse.unquote(urllib.parse.urlparse(line).path)
         target = os.path.normpath(os.path.join(folder, os.path.expanduser(line)))
+        if not os.path.exists(target) and named:   # a file name that is not UTF-8 itself, as Ocean Mist writes it
+            other = os.path.normpath(os.path.join(folder, os.path.expanduser(named)))
+            target = other if os.path.exists(other) else target
         if not os.path.exists(target) and "\\" in line:   # written on Windows
             target = os.path.normpath(os.path.join(folder, line.replace("\\", "/")))
         entries.append(target)
         label = None
     return entries
+
+
+def save_name(path):
+    """Where a playlist saved as `path` goes. With .m3u or .m3u8 it goes there: the dialog asked before
+    replacing a file of that name. Without, .m3u is added after the dialog, which asked about no such name,
+    so it never replaces a file that is there: "Mix (2).m3u" then."""
+    if os.path.splitext(path)[1].lower() in (".m3u", ".m3u8"):
+        return path
+    candidate, n = path + ".m3u", 2
+    while os.path.lexists(candidate):
+        candidate, n = f"{path} ({n}).m3u", n + 1
+    return candidate
 
 
 def write_playlist(path, tracks):
@@ -219,11 +244,21 @@ def write_playlist(path, tracks):
             lines.append(track["path"])
             continue
         inside = os.path.relpath(track["path"], folder)
+        if inside[:1] == "#" or inside[:1].isspace():   # read back, it would be a comment, or lose its space
+            inside = "./" + inside
         lines.append(track["path"] if inside.startswith("..") else inside)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
-    os.replace(tmp, path)
+    try:
+        # a file name that is not UTF-8 is written as its own bytes, which read_playlist finds again
+        with open(tmp, "w", encoding="utf-8", errors="surrogateescape") as fh:
+            fh.write("\n".join(lines) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _write_json(path, data):

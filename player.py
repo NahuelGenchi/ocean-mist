@@ -34,7 +34,7 @@ from apple import AppleError, AppleMusic
 from engine import Engine, EngineError
 from spotify import SpotifyError, SpotifyMusic
 from library import (APP_ID, AUDIO_EXTENSIONS, PAGE_SETTINGS, PLAYLIST_EXTENSIONS,
-                     STREAMING, Library, is_playlist, music_dir, stream_key)
+                     STREAMING, Library, is_playlist, music_dir, save_name, stream_key)
 from ytmusic import PLAYLIST_LIMIT, YTError, YTMusic
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1273,14 +1273,17 @@ def run_app(argv):
                 else:
                     library.request_play(first)
             elif kind == "save":
-                path = paths[0]
-                if os.path.splitext(path)[1].lower() not in (".m3u", ".m3u8"):
-                    path += ".m3u"
+                path = save_name(paths[0])
+                saved = "Playlist saved: " + os.path.basename(path)
+                if path != paths[0] and path != paths[0] + ".m3u":
+                    saved += f" ({os.path.basename(paths[0])}.m3u is there already)"
                 try:
                     library.save_playlist(path, which)
-                    library.emit("notice", text="Playlist saved: " + os.path.basename(path))
+                    library.emit("notice", text=saved)
                 except OSError as error:
                     library.emit("notice", text=f"Could not save the playlist ({error.strerror})")
+                except ValueError:   # a name that cannot be written as text at all
+                    library.emit("notice", text="Could not save the playlist (a song's name cannot be written in it)")
             else:
                 library.add_folder(paths[0])
 
