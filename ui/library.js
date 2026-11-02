@@ -10,14 +10,25 @@
   const lib = {
     tracks: [], loaded: false, stale: true, scanning: false,
     at: new Map(), coming: null,   // a track's place in tracks, by id; rows read while the library loads
+    version: 0,                 // counts the library's changes, for what is made from it once
     node: { kind: 'all' },      // what the table shows: now | all | artist | album | genre | list
     open: { artist: false, album: false, genre: false, lists: true },
     lists: {},                  // playlist path -> its tracks
     sel: null, filter: '', sort: null, rows: [], shown: 0, tree: [],
   };
-  const compare = (a, b) => String(a).localeCompare(String(b), undefined, { sensitivity: 'base', numeric: true });
+  // one collator for every comparison: localeCompare with options set one up each time, which made sorting a
+  // large library take a good part of a second
+  const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+  const compare = (a, b) => collator.compare(String(a), String(b));
   const same = (a, b) => a && b && a.kind === b.kind && a.value === b.value;
   const plain = (text) => text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');   // so "song" finds "Söng"
+  // what a search looks in, made once for each row (a row read again is a new object, and gets its own)
+  const keys = new WeakMap();
+  const searchKey = (t) => {
+    let key = keys.get(t);
+    if (key === undefined) { key = plain(`${t.title}\n${t.artist}\n${t.album}`); keys.set(t, key); }
+    return key;
+  };
 
   async function load() {
     lib.stale = false;
@@ -26,6 +37,7 @@
       const data = await (await fetch(base + 'api/library')).json();
       lib.tracks = data.tracks; lib.scanning = data.scanning; lib.loaded = true;
       lib.at = new Map(lib.tracks.map((t, i) => [t.id, i]));
+      lib.version++;
       merge(lib.coming);
     } finally {
       lib.coming = null;
@@ -34,6 +46,7 @@
   }
   // the rows whose tags were read since: put in place, without asking for the whole library again
   function merge(rows) {
+    if (rows.length) lib.version++;
     for (const t of rows) {
       const i = lib.at.get(t.id);
       if (i !== undefined) lib.tracks[i] = t;
@@ -44,6 +57,14 @@
   }
 
   // ---- the tree on the left ----
+  // the artists, albums or genres the library holds, in order: sorted again only when the library changed
+  const names = {};
+  function namesOf(key) {
+    if (!names[key] || names[key].of !== lib.version) {
+      names[key] = { of: lib.version, list: [...new Set(lib.tracks.map((t) => t[key] || ''))].sort(compare) };
+    }
+    return names[key].list;
+  }
   function drawTree() {
     const rows = [];
     const add = (depth, label, node, extra) => rows.push(Object.assign({ depth, label, node }, extra));
@@ -52,7 +73,7 @@
     for (const key of Object.keys(KINDS)) {
       add(1, KINDS[key], null, { fold: key });
       if (!lib.open[key]) continue;
-      const names = [...new Set(lib.tracks.map((t) => t[key] || ''))].sort(compare);
+      const names = namesOf(key);
       for (const name of names) add(2, name || UNKNOWN[key], { kind: key, value: name });
     }
     add(0, 'My Playlists', null, { fold: 'lists' });
@@ -90,7 +111,7 @@
       : node.kind === 'all' ? lib.tracks
       : lib.tracks.filter((t) => (t[node.kind] || '') === node.value);
     const q = plain(lib.filter.trim());
-    if (q) rows = rows.filter((t) => plain(`${t.title}\n${t.artist}\n${t.album}`).includes(q));
+    if (q) rows = rows.filter((t) => searchKey(t).includes(q));
     const ordered = node.kind === 'now' || node.kind === 'list';   // these have an order of their own
     const sort = lib.sort || (ordered ? null : { key: 'artist', dir: 1 });
     if (sort) {
@@ -194,7 +215,13 @@
   $('lib-queue').addEventListener('click', () => addToList(lib.sel !== null ? [lib.sel] : lib.rows.map((t) => t.id)));
   $('lib-remove').addEventListener('click', () => { if (lib.sel !== null) api('remove', { ids: [lib.sel] }); });
   $('lib-clear').addEventListener('click', () => api('clear', { list: 'local' }));
-  $('lib-search').addEventListener('input', (e) => { lib.filter = e.target.value; drawRows(); });
+  // the search runs once typing pauses, not at every key
+  let typing = 0;
+  $('lib-search').addEventListener('input', (e) => {
+    lib.filter = e.target.value;
+    clearTimeout(typing);
+    typing = setTimeout(drawRows, lib.filter ? 150 : 0);
+  });
 
   // ---- keeping up ----
   on('view', (view) => { if (view !== 'library') return; if (lib.stale || !lib.loaded) load(); else draw(); });

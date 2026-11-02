@@ -9,6 +9,7 @@
   const probe = new Audio(); probe.preload = 'metadata';
 
   const LISTS = { local: 'My Music', youtube: 'YouTube Music', apple: 'Apple Music', spotify: 'Spotify' };   // the Now Playing lists: My Music, and one for each streaming service
+  const HISTORY = 200;   // songs remembered for Previous in shuffle
   const state = {
     lists: { local: [], youtube: [], apple: [], spotify: [] },   // the songs of each, in order
     names: { local: '', youtube: '', apple: '', spotify: '' },   // the saved playlist (or page) each came from
@@ -84,7 +85,14 @@
   }
 
   // ---- helpers ----
-  const track = (id) => { for (const which of Object.keys(LISTS)) { const t = state.lists[which].find((x) => x.id === id); if (t) return t; } return undefined; };
+  // a song by id: from a Map made again whenever a list is another array (the lists are only ever replaced whole),
+  // where looking through every list took a while for each row of a long one
+  let byId = { lists: [], map: new Map() };
+  const track = (id) => {
+    const lists = Object.keys(LISTS).map((which) => state.lists[which]);
+    if (lists.some((l, i) => l !== byId.lists[i])) byId = { lists, map: new Map(lists.flat().map((t) => [t.id, t])) };
+    return byId.map.get(id);
+  };
   const station = (id) => state.stations.find((s) => s.id === id);
   // the list a song belongs in: its service's, or My Music
   const listOf = (t) => (!isStream(t) ? 'local' : t.apple ? 'apple' : t.spotify ? 'spotify' : 'youtube');
@@ -174,6 +182,7 @@
     if (!how) early.clear();
     if (from !== to) state.show = to;   // the pane follows the music to its list
     if (state.cur !== null && state.cur !== id) state.history.push(state.cur);
+    if (state.history.length > HISTORY) state.history.splice(0, state.history.length - HISTORY);   // Previous in shuffle goes this far
     state.queue = state.queue.filter((q) => q !== id);
     state.station = null; state.radioTitle = ''; cueAt = 0;
     state.cur = id; state.sel = id; state.heard.add(id);
@@ -517,7 +526,7 @@
     if (m.phase === 'ended') { songEnded(); return; }
     if (m.duration > 0 && Math.abs(m.duration - e.dur) > 0.5) {
       e.dur = m.duration;
-      if (Math.abs((e.t.duration || 0) - m.duration) > 0.5) { e.t.duration = m.duration; api('duration', { id: e.t.id, seconds: m.duration }); render(); }
+      if (Math.abs((e.t.duration || 0) - m.duration) > 0.5) { e.t.duration = m.duration; api('duration', { id: e.t.id, seconds: m.duration }); showLength(e.t); }
     }
     const late = !settled && e.sought !== null && Math.abs(m.position - e.sought) > 3;   // from before the jump
     if (m.phase === 'playing') {
@@ -683,8 +692,7 @@
     };
     list.innerHTML = (ahead.length ? `<div class="ahead">Plays next</div>${ahead.map((t) => row(t, true)).join('')}` +
       `<div class="ahead">${esc(listLabel())}</div>` : '') + tracks.map((t) => row(t, false)).join('');
-    const total = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
-    $('total-time').textContent = 'Total Time: ' + clock(total);
+    totalTime();
     $('np-label').textContent = listLabel();
     $('np-select').title = 'Switch between My Music and the lists of your streaming services, open music or a saved playlist';
     emptyHint();
@@ -693,6 +701,19 @@
     fire('render');
   }
   function rowId(event) { const row = event.target.closest('[data-id]'); return row ? Number(row.dataset.id) : null; }
+  function totalTime() { $('total-time').textContent = 'Total Time: ' + clock(shown().reduce((sum, t) => sum + (t.duration || 0), 0)); }
+  // a song's length, learned: its own row and the total, not every row again
+  function showLength(t) {
+    for (const cell of list.querySelectorAll(`.row[data-id="${t.id}"] .d`)) cell.textContent = t.duration ? clock(t.duration) : '';
+    totalTime();
+    fire('render');
+  }
+  // the selection is the rows' class: changed on them alone, not by drawing every row again
+  function select(id) {
+    state.sel = id;
+    for (const row of list.querySelectorAll('.row.sel')) row.classList.remove('sel');
+    for (const row of list.querySelectorAll(`.row[data-id="${id}"]`)) row.classList.add('sel');
+  }
   function queueNext(id) { state.queue = [id, ...state.queue.filter((q) => q !== id)]; render(); }
   function queueLast(id) { state.queue = [...state.queue.filter((q) => q !== id), id]; render(); }
   function unqueue(id) { state.queue = state.queue.filter((q) => q !== id); render(); }
@@ -708,12 +729,12 @@
     fire('track-menu', id, items);   // the other parts may add theirs
     menu(e.clientX, e.clientY, [...items, ...(extra || [])]);
   }
-  list.addEventListener('click', (e) => { const id = rowId(e); if (id !== null) { state.sel = id; render(); } });
+  list.addEventListener('click', (e) => { const id = rowId(e); if (id !== null) select(id); });
   list.addEventListener('dblclick', (e) => { const id = rowId(e); if (id !== null) play(id); });
   list.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const id = rowId(e); if (id === null) return;
-    state.sel = id; render();
+    select(id);
     trackMenu(e, id, [null, { label: 'Clear playlist', run: () => api('clear', { list: state.show }) }]);
   });
 
@@ -772,7 +793,7 @@
     probing = true; t.probed = true;
     const done = () => { probing = false; probe.onloadedmetadata = probe.onerror = null; probeNext(); };
     probe.onloadedmetadata = () => {
-      if (isFinite(probe.duration)) { t.duration = probe.duration; api('duration', { id: t.id, seconds: t.duration }); render(); }
+      if (isFinite(probe.duration)) { t.duration = probe.duration; api('duration', { id: t.id, seconds: t.duration }); showLength(t); }
       done();
     };
     probe.onerror = done;
@@ -1102,7 +1123,7 @@
   audio.addEventListener('loadedmetadata', () => {
     const t = track(state.cur);
     if (t && length() && Math.abs((t.duration || 0) - audio.duration) > 0.5) {
-      t.duration = audio.duration; api('duration', { id: t.id, seconds: t.duration }); render();
+      t.duration = audio.duration; api('duration', { id: t.id, seconds: t.duration }); showLength(t);
     }
   });
   audio.addEventListener('playing', () => {
