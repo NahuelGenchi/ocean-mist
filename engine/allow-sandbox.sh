@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time step for Ocean Mist's Apple Music playback engine on Ubuntu 24.04 and later.
+# One-time step for Ocean Mist's playback engine (Apple Music and Spotify) on Ubuntu 24.04 and later.
 #
 # The engine is Chromium, which keeps its pages in a sandbox that needs "user namespaces". Ubuntu only lets a
 # program create them when AppArmor has a profile that names the program: it has one for Chrome, Chromium,
@@ -58,7 +58,7 @@ profile_for() {
   name="$(name_for "$program")"
   abi="$(abi_for)"
   cat <<PROFILE
-# Ocean Mist's Apple Music engine: lets this one file create the sandbox Chromium keeps its pages in.
+# Ocean Mist's playback engine (Apple Music and Spotify): lets this one file create the sandbox Chromium keeps its pages in.
 # Added by engine/allow-sandbox.sh. Take it away with:  sudo bash allow-sandbox.sh --remove
 $abi
 include <tunables/global>
