@@ -269,6 +269,10 @@ def _kind(found, page, video, video_type):
 def _list_item(renderer, signed=False):
     """A row of a list: musicResponsiveListItemRenderer. A signed-in answer's
     rows also say where the song is in its playlist and whether you like it."""
+    # a row YouTube shows greyed out (taken down, or not available here) cannot be played: it is left out, as
+    # spotify.py leaves out the rows Spotify cannot play, so that Play does not stop on it
+    if renderer.get("musicItemRendererDisplayPolicy") == "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT":
+        return None
     columns = [_runs(_dig(column, "musicResponsiveListItemFlexColumnRenderer", "text"))
                for column in renderer.get("flexColumns") or []]
     columns += [_runs(_dig(column, "musicResponsiveListItemFixedColumnRenderer", "text"))
@@ -1051,9 +1055,16 @@ class YTMusic:
         address = _dig(data, "streamingData", "hlsManifestUrl")
         if not isinstance(address, str) or not AUDIO_HOSTS.match(address):
             raise YTError("YouTube sent this song in a way the player cannot read yet")
-        address = _hls_audio(_open(address, headers=agent).decode("utf-8", "replace"), address)
-        found = address and _hls_segments(_open(address, headers=agent).decode("utf-8", "replace"),
-                                          address)
+        try:
+            address = _hls_audio(_open(address, headers=agent).decode("utf-8", "replace"), address)
+            found = address and _hls_segments(_open(address, headers=agent).decode("utf-8", "replace"),
+                                              address)
+        except YTError as error:
+            # this song's own playlists: refused, they are this song's failure (the next one may play), as its
+            # first segment's is below; asked to slow down, or no network, every song would fail the same way
+            if error.code and error.code != 429:
+                raise YTError(f"YouTube did not send this song (HTTP {error.code})") from None
+            raise
         if not found:
             raise YTError("YouTube sent this song in a way the player cannot read yet")
         segments, lengths, complete = found
