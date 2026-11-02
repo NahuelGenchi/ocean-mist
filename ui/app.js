@@ -280,12 +280,13 @@
     }
     // the list goes on from the song it played before the "Play next" ones, if they came in between
     const after = dir > 0 && resumeAfter !== null && track(resumeAfter) ? resumeAfter : state.cur;
+    // Previous past the first seconds starts the same song again: the list still goes on where it would have
+    if (dir < 0 && !auto && (ext ? extPosition() : audio.currentTime) > 3) { if (ext) extSeek(0); else audio.currentTime = 0; return; }
     resumeAfter = null;
     const which = whereIs(after), tracks = which ? state.lists[which] : shown();
     if (!tracks.length) return;
     let i = tracks.findIndex((t) => t.id === after);
     if (dir < 0) {
-      if (!auto && (ext ? extPosition() : audio.currentTime) > 3) { if (ext) extSeek(0); else audio.currentTime = 0; return; }
       if (state.settings.shuffle && state.history.length) { const back = state.history.pop(); const keep = state.history.slice(); play(back); state.history = keep; return; }
       i = i <= 0 ? tracks.length - 1 : i - 1;
     } else if (state.settings.shuffle && tracks.length > 1) {
@@ -724,6 +725,7 @@
   });
   list.addEventListener('pointermove', (e) => {
     if (!drag) return;
+    if (!(e.buttons & 1)) { endDrag(); return; }   // the button went up outside the list, where no pointerup reached it
     if (!drag.active) {
       if (Math.abs(e.clientY - drag.y) < 5) return;
       drag.active = true;
@@ -740,12 +742,17 @@
     line.style.top = Math.max(box.top, Math.min(box.bottom - 2, edge - 1)) - $('pane').getBoundingClientRect().top + 'px';
     line.hidden = false;
   });
-  function drop() {
+  // the drag ends without a move: its look goes, and the next press starts afresh
+  function endDrag() {
     const d = drag; drag = null;
-    if (!d || !d.active) return;
     list.classList.remove('dragging');
     $('drop-line').hidden = true;
-    if (d.before === d.id) return;
+    if (d && d.active) { try { list.releasePointerCapture(d.pointer); } catch (err) { /* already released */ } }
+    return d;
+  }
+  function drop() {
+    const d = endDrag();
+    if (!d || !d.active || d.before === d.id) return;
     const rest = shown().filter((t) => t.id !== d.id);
     const at = d.before === null ? rest.length : rest.findIndex((t) => t.id === d.before);
     state.lists[state.show] = [...rest.slice(0, at), track(d.id), ...rest.slice(at)];
@@ -865,7 +872,12 @@
   }
   function setRepeat(mode) { state.settings.repeat = mode; showToggles(); saveSettings(); }
   function cycleRepeat() { setRepeat({ off: 'all', all: 'one', one: 'off' }[repeatMode()]); }
-  function toggleShuffle() { state.settings.shuffle = !state.settings.shuffle; state.heard.clear(); showToggles(); saveSettings(); }
+  function toggleShuffle() {
+    state.settings.shuffle = !state.settings.shuffle;
+    state.heard.clear();
+    if (state.cur !== null) state.heard.add(state.cur);   // the song that is playing counts as heard: Next never picks it again
+    showToggles(); saveSettings();
+  }
   function showToggles() {
     const mode = repeatMode();
     $('shuffle').classList.toggle('on', !!state.settings.shuffle);
@@ -1119,7 +1131,13 @@
     if (feed) { streamFailed(feed, new Error('the player could not read this song')); return; }
     if (state.station !== null) {
       if (state.mode === 'playing') { stop(); flash('Radio: ' + (radioError || 'this station cannot be played'), 10000); }
-    } else if (state.mode === 'playing') { flash('Cannot play this file', 1500); setTimeout(() => step(1, true), 1200); }
+    } else if (state.mode === 'playing') {
+      const failed = state.cur, t = track(failed), name = t ? `“${t.title}”` : 'this file';
+      // as with streams: three in a row stop the music, or a list of files that cannot play would go round for ever
+      if (++streamFails >= 3) { streamFails = 0; stop(); flash(`Cannot play ${name}, the third song in a row that cannot be played`, 30000); return; }
+      flash(`Cannot play ${name}`, 5000);
+      setTimeout(() => { if (state.cur === failed && state.mode === 'playing') step(1, true); }, 1200);   // unless another song was chosen meanwhile
+    }
   });
 
   document.addEventListener('keydown', (e) => {
