@@ -1138,9 +1138,9 @@
     else if (key === 'arrowleft') seekTo(position() - 5);
     else if (key === 'arrowright') seekTo(position() + 5);
     else if (key === 'arrowup' || key === 'arrowdown') setVolume(state.settings.volume + (key === 'arrowup' ? 0.05 : -0.05));
+    else if (key === 'f11' || (e.altKey && key === 'enter')) api('fullscreen');   // before Enter, which would take Alt+Enter too
     else if (key === 'delete' && inView(state.sel) && state.view === 'now') api('remove', { ids: [state.sel] });
     else if (key === 'enter' && inView(state.sel) && state.view === 'now') play(state.sel);
-    else if (key === 'f11' || (e.altKey && key === 'enter')) api('fullscreen');
     else if (key === 'escape') { closeMenus(); if (document.body.classList.contains('fullscreen')) api('fullscreen'); }
     else handled = false;
     if (handled) e.preventDefault();
