@@ -5,7 +5,8 @@ MP4/M4A and WAV. Covers are only pulled out when asked for, so scanning a big
 library touches a few kilobytes per file.
 
     read(path)            -> {"title", "artist", "album", "year", "genre",
-                              "track", "duration", "has_art"}   (those known)
+                              "track", "duration", "has_art"}   (those known;
+                              MP4 also "albumartist")
     read(path, art=True)  -> the same, plus "art": (mime, bytes), the mime
                              one of PICTURE_TYPES
 """
@@ -13,6 +14,10 @@ import base64
 import io
 import os
 import struct
+
+# What read() answers for a file, by version: library.py keeps the answers in its tag cache and reads every file
+# again when this changes, so raise it whenever a reader starts to answer differently
+VERSION = 2   # 2: MP4's album artist (aART) is no longer read as the artist
 
 TEXT_LIMIT = 1 << 16          # longest text frame worth reading
 PACKET_LIMIT = 32 << 20       # longest Ogg comment packet (covers live there)
@@ -429,7 +434,7 @@ def _ogg(fh, size, want_art):
 # -- MP4 / M4A ----------------------------------------------------------------
 
 MP4_NAMES = {
-    b"\xa9nam": "title", b"\xa9ART": "artist", b"aART": "artist",
+    b"\xa9nam": "title", b"\xa9ART": "artist", b"aART": "albumartist",
     b"\xa9alb": "album", b"\xa9day": "year", b"\xa9gen": "genre",
 }
 
@@ -475,6 +480,8 @@ def _mp4(fh, size, want_art):
                 for kind3, start3, end3 in _atoms(fh, start2 + 4, end2):
                     if kind3 == b"ilst":
                         _mp4_items(fh, start3, end3, tags, want_art)
+    if "albumartist" in tags and not tags.get("artist"):   # better the album's artist than none
+        tags["artist"] = tags["albumartist"]
     return tags
 
 

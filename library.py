@@ -91,6 +91,27 @@ def _is_audio(name):
     return os.path.splitext(name)[1].lower() in AUDIO_EXTENSIONS
 
 
+def _walk(folder):
+    """(folder, file names) for a folder and every folder in it, the hidden ones left out, in file-manager
+    order. Linked folders are followed too, each real folder once: a link to a folder above it ends there
+    instead of going round, and a folder reached two ways is listed once, under its real name where it has
+    one (real folders are walked before linked ones)."""
+    seen = set()
+    for root, dirs, names in os.walk(folder, followlinks=True):
+        try:
+            info = os.stat(root)
+        except OSError:
+            dirs[:] = []
+            continue
+        if (info.st_dev, info.st_ino) in seen:
+            dirs[:] = []
+            continue
+        seen.add((info.st_dev, info.st_ino))
+        dirs[:] = sorted((d for d in dirs if not d.startswith(".")),
+                         key=lambda d: (os.path.islink(os.path.join(root, d)), _natural(d)))
+        yield root, [name for name in sorted(names, key=_natural) if not name.startswith(".")]
+
+
 def is_playlist(name):
     return os.path.splitext(name)[1].lower() in PLAYLIST_EXTENSIONS
 
@@ -248,6 +269,7 @@ class Library:
         self._untagged = queue.PriorityQueue()   # (urgency, order, track id)
         self._order = 0
         self._tagged = set()
+        self._retag = set()       # ids read before whose file changed: read again from scratch
         self._reader = None
         self._covers = {}         # path -> (mime, bytes) of the last few shown
         self._folder_covers = {}
@@ -261,7 +283,9 @@ class Library:
     def load(self):
         try:
             with open(TAG_CACHE, encoding="utf-8") as fh:
-                self._cache = json.load(fh).get("files", {})
+                cached = json.load(fh)
+            # what an older reader answered is read again: a fix to a reader reaches every file
+            self._cache = cached.get("files", {}) if cached.get("version") == tags.VERSION else {}
         except (OSError, ValueError, AttributeError):
             self._cache = {}
         try:
@@ -322,7 +346,7 @@ class Library:
                 return
             files = {p: v for p, v in self._cache.items() if p in self.by_path}
             self._cache_dirty = False
-        _write_json(TAG_CACHE, {"version": 1, "files": files})
+        _write_json(TAG_CACHE, {"version": tags.VERSION, "files": files})
 
     # ---- events to the page ----
     def subscribe(self):
@@ -401,12 +425,16 @@ class Library:
             }
             self._next_id += 1
             self.by_id[track["id"]] = self.by_path[path] = track
-            self._order += 1
-            self._untagged.put((0 if urgent else 1, self._order, track["id"]))
-            if self._reader is None:
-                self._reader = threading.Thread(target=self._read_tags, daemon=True)
-                self._reader.start()
+            self._queue(track["id"], urgent)
         return track
+
+    def _queue(self, track_id, urgent):
+        """Have a track's tags read in the background (caller holds the lock)."""
+        self._order += 1
+        self._untagged.put((0 if urgent else 1, self._order, track_id))
+        if self._reader is None:
+            self._reader = threading.Thread(target=self._read_tags, daemon=True)
+            self._reader.start()
 
     def _stream(self, item):
         """The track for a YouTube Music song, or for an Apple Music one
@@ -553,10 +581,8 @@ class Library:
         for path in paths:
             path = os.path.abspath(os.path.expanduser(path))
             if os.path.isdir(path):
-                for root, dirs, names in os.walk(path):
-                    dirs[:] = sorted((d for d in dirs if not d.startswith(".")), key=_natural)
-                    files += [os.path.join(root, name) for name in sorted(names, key=_natural)
-                              if _is_audio(name) and not name.startswith(".")]
+                for root, names in _walk(path):
+                    files += [os.path.join(root, name) for name in names if _is_audio(name)]
             elif os.path.isfile(path) and _is_audio(path):
                 files.append(path)
         return list(dict.fromkeys(files))
@@ -686,9 +712,16 @@ class Library:
             track = self.by_id.get(track_id)
             if track is None or track_id in self._tagged:
                 return False
+            again = track_id in self._retag
+            self._retag.discard(track_id)
         found = self._tags_for(track["path"])
         cover = True if found.get("has_art") else self._folder_cover(os.path.dirname(track["path"]))
         with self.lock:
+            if again:   # the file changed since it was read: what its tags no longer say goes too
+                track.update(title=os.path.splitext(os.path.basename(track["path"]))[0], artist="", album="",
+                             year="", genre="", track=0, duration=0)
+                self.art.pop(track_id, None)
+                self._covers.pop(track["path"], None)
             for key in ("title", "artist", "album", "year", "genre", "track"):
                 if found.get(key):
                     track[key] = found[key]
@@ -875,11 +908,8 @@ class Library:
         while True:
             files, lists = [], []
             for folder in self.folders():
-                for root, dirs, names in os.walk(folder):
-                    dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for root, names in _walk(folder):
                     for name in names:
-                        if name.startswith("."):
-                            continue
                         ext = os.path.splitext(name)[1].lower()
                         if ext in AUDIO_EXTENSIONS:
                             files.append(os.path.join(root, name))
@@ -895,8 +925,29 @@ class Library:
                     self.scanning = False
             if not again:
                 break
+        self._read_changed()
         self.emit("library")
         self.emit("playlist")   # the list of saved playlists rides along
+
+    def _read_changed(self):
+        """Files of the library read before that changed on disk since (a tag edited in another program, say):
+        their tags are read again. The others are not touched."""
+        with self.lock:
+            known = [(t["id"], t["path"], self._cache.get(t["path"])) for t in self.collection if t["id"] in self._tagged]
+        changed = []
+        for track_id, path, hit in known:
+            try:
+                info = os.stat(path)
+            except OSError:
+                continue
+            if not hit or hit[0] != info.st_mtime_ns or hit[1] != info.st_size:
+                changed.append(track_id)
+        with self.lock:
+            for track_id in changed:
+                if track_id in self._tagged:
+                    self._tagged.discard(track_id)
+                    self._retag.add(track_id)
+                    self._queue(track_id, urgent=False)
 
     # ---- saved playlists ----
     def playlist_files(self):
