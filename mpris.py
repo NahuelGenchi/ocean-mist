@@ -66,11 +66,14 @@ def bus_name(app_id):
 
 class Mpris:
     """Publishes the player on the session bus. `control(action, value)` is
-    called with what the desktop asks for; `raise_window` and `quit` too."""
+    called with what the desktop asks for; `raise_window` and `quit` too, and
+    `open_file(path)`, which says whether it found anything to play there, for
+    a file the desktop asks to play (OpenUri)."""
 
-    def __init__(self, connection, app_id, library, control, raise_window, quit):
+    def __init__(self, connection, app_id, library, control, raise_window, quit, open_file=None):
         self.connection, self.library, self.app_id = connection, library, app_id
         self.control, self.raise_window, self.quit = control, raise_window, quit
+        self.open_file = open_file
         self.sent = {}
         self.last_position = 0.0
         node = Gio.DBusNodeInfo.new_for_xml(XML)
@@ -175,7 +178,26 @@ class Mpris:
         elif method == "Seek":
             self.control("seek", params.unpack()[0] / 1e6)
         elif method == "SetPosition":
-            self.control("position", params.unpack()[1] / 1e6)
+            # only for the song that plays: a call meant for the one before must not seek the next one
+            track_id, position = params.unpack()
+            with self.library.lock:
+                playing = self.library.now["id"]
+            if playing is not None and track_id == f"{PATH}/track/{playing}" and position >= 0:
+                self.control("position", position / 1e6)
+        elif method == "OpenUri":
+            uri = params.unpack()[0]
+            try:
+                path, host = GLib.filename_from_uri(uri) if uri.lower().startswith("file:") else (None, None)
+            except GLib.Error:
+                path, host = None, None
+            if host and host != "localhost":   # a file on another computer
+                path = None
+            if path is None:
+                return invocation.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs",
+                                                    "Ocean Mist opens file:// addresses only")
+            if not (self.open_file and self.open_file(path)):
+                return invocation.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs",
+                                                    "there is nothing Ocean Mist can play there")
         invocation.return_value(None)
 
     # ---- telling the desktop what changed ----

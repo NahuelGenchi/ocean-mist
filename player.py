@@ -883,7 +883,8 @@ def run_app(argv):
                 self.mpris = Mpris(
                     self.get_dbus_connection(), APP_ID, library, self.control,
                     lambda: self.window and self.window.present(),
-                    lambda: self.window.close() if self.window else self.quit())
+                    lambda: self.window.close() if self.window else self.quit(),
+                    self._open_file)
             except Exception as error:   # no session bus: no media keys, that is all
                 if os.environ.get("OCEAN_MIST_DEBUG"):
                     print("mpris:", error, file=sys.stderr)
@@ -906,6 +907,16 @@ def run_app(argv):
             self.do_activate()
             if first is not None:
                 self.library.request_play(first)
+
+        def _open_file(self, path):
+            """A file the desktop's media controls ask to play (OpenUri): opened as from the file manager.
+            Whether there was anything to play."""
+            first = self.library.open_paths([path])
+            if first is None:
+                return False
+            self.do_activate()
+            self.library.request_play(first)
+            return True
 
         def control(self, action, value=None):
             """What the desktop's media controls ask for, passed to the page."""
