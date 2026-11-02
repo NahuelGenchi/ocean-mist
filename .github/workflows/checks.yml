@@ -1,0 +1,43 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Reads the code and runs it: no secrets, no writes, nothing installed.
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Source checks and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Versions
+        run: python3 --version && node --version
+
+      - name: Python compiles
+        run: python3 -m py_compile player.py library.py tags.py radio.py mpris.py ytmusic.py firefox.py apple.py spotify.py engine.py
+
+      - name: Scripts parse
+        run: |
+          for f in ui/*.js engine/helper/*.js tests/*.js; do node --check "$f"; done
+          bash -n engine/allow-sandbox.sh
+          bash -n packaging/build-deb.sh
+
+      - name: Python tests
+        run: python3 -m unittest discover -s tests -t . -v
+
+      - name: Page and helper tests
+        run: node --test tests/*.test.js
