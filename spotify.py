@@ -64,6 +64,9 @@ ASKED = 60                       # seconds a request gets
 IDLE = 600                       # seconds without a request after which the page is closed
 CHECK = 60                       # seconds between looks at whether the page has been idle
 KEEP = 300                       # seconds a list read whole for a search is kept, for the next one
+MISSING = 25                     # seconds the page may be in with neither its player nor its sign-in button
+PAUSE = 2                        # seconds waited before asking once more, when Spotify asks to slow down
+PASSED = "another page was opened in the meantime"   # a page asked for and no longer wanted (never shown)
 WORDS = 100                      # characters of a search kept
 PICTURES = 64                    # covers kept in memory
 MEMORY = 256                     # MB WebKit is told the page's process may use (see _open)
@@ -103,11 +106,15 @@ class SpotifyError(YTError):
     """What went wrong, worded for the status line. A YTError, so that what
     answers a YouTube Music error answers this too; `signed_out` when Spotify
     no longer accepts the sign-in; `shaped`, the optional variables that were
-    set on a request Spotify answered with nothing (see Page.call)."""
+    set on a request Spotify answered with nothing (see Page.call); `reason`,
+    a short code that what retries compares, never the wording: "refused"
+    (REFUSED), "changed" (an answer of a shape Ocean Mist does not know),
+    "no-player" (a page without the player or its sign-in button) or
+    "passed" (PASSED)."""
 
-    def __init__(self, message, signed_out=False, status=0, general=False):
+    def __init__(self, message, signed_out=False, status=0, general=False, reason=""):
         super().__init__(message, general=general, signed_out=signed_out)
-        self.status = status
+        self.status, self.reason = status, reason
         self.shaped = ()
 
 
@@ -517,10 +524,13 @@ class Page:
                 self._ready()
                 return
             if new and said.get("refused"):   # Spotify's notice in place of its player: see REFUSED
-                self._fail(SpotifyError(REFUSED))
+                self._fail(SpotifyError(REFUSED, reason="refused"))
                 return
             if new and said.get("up"):
                 self.seen = self.seen or now
+            elif new and not moved and self.loaded and now - self.loaded > MISSING:   # in, with neither: Spotify changed its page
+                self._fail(SpotifyError(f"{CHANGED} (no-player)", reason="no-player"))
+                return
             if moved or (self.seen and now - self.seen > SETTLE):   # the page asks for a sign-in
                 self._fail(SpotifyError(SIGNED_OUT, signed_out=True))
                 return
@@ -538,14 +548,23 @@ class Page:
             self.GLib.source_remove(self.expiry)
             self.expiry = None
 
-    def call(self, op, route, variables, finish, optional=None):
+    def call(self, op, route, variables, finish, optional=None, opened=False):
         """Ask the page's own request again with `variables` (the ones it last
         saw, with these on top) and `optional` (only those it already has);
         `finish(ok, (answer, the optional ones set) or SpotifyError)` is called
-        from the main thread. `route` is the page the request lives on."""
+        from the main thread. `route` is the page the request lives on;
+        `opened` when it is for a page you opened, which a request for another
+        page that comes before it is sent replaces."""
         if self.state == "dead":
             return finish(False, self.error)
-        self.queue.append((op, route, variables, optional, finish))
+        if route and route != HOME:
+            # a page of an album or an artist: one you opened before it and still waiting is no longer wanted (you
+            # went on), so the view does not go to each page you passed; every new document brings Spotify's
+            # REFUSED notice nearer too. The one the view is on, or on its way to, is answered all the same
+            for job in [job for job in self.queue if job[5] and job[1] not in (HOME, route, self.route)]:
+                self.queue.remove(job)
+                job[4](False, SpotifyError(PASSED, reason="passed"))
+        self.queue.append((op, route, variables, optional, finish, bool(opened and route and route != HOME)))
         self._pump()
 
     def _pump(self, fresh=False):
@@ -565,7 +584,7 @@ class Page:
             self._go(away[0][1])
 
     def _send(self, job, until):
-        op, _, variables, optional, finish = job
+        op, _, variables, optional, finish, _ = job
         if self.state == "dead":
             return finish(False, self.error)
         key = object()
@@ -619,7 +638,7 @@ class Page:
         queue, running = self.queue, list(self.running.values())
         self.queue, self.running = [], {}
         for job in queue:
-            job[-1](False, error)
+            job[4](False, error)
         for finish in running:
             finish(False, error)
         self.GLib.idle_add(self._release)   # not from inside one of the view's own signals
@@ -655,12 +674,12 @@ def _answer_of(said):
     not show in the account's country, say). An answer whose data holds nothing
     (GraphQL's errors in place of it, say) is not an empty library."""
     if not isinstance(said, dict):
-        raise SpotifyError(CHANGED)
+        raise SpotifyError(CHANGED, reason="changed")
     if said.get("ok"):
         body = said.get("body")
         data = body.get("data") if isinstance(body, dict) else None
         if not isinstance(data, dict) or all(value is None for value in data.values()):
-            raise SpotifyError(CHANGED)
+            raise SpotifyError(CHANGED, reason="changed")
         return body
     status = said.get("status") if isinstance(said.get("status"), int) else 0
     if said.get("late"):
@@ -673,7 +692,8 @@ def _answer_of(said):
         raise SpotifyError("Spotify has no such page", status=404)
     if status == 429:
         raise SpotifyError("Spotify asked Ocean Mist to slow down; try again in a minute", status=429)
-    raise SpotifyError(CHANGED if not status else f"Spotify did not answer (HTTP {status})", status=status)
+    raise SpotifyError(CHANGED if not status else f"Spotify did not answer (HTTP {status})", status=status,
+                       reason="" if status else "changed")
 
 
 # ---- the library, as rows for the page ----
@@ -891,50 +911,63 @@ class SpotifyMusic:
         self.unfiltered = False   # Spotify refused the library's filter: the mixed list is read from then on
         self.pseudo = {}          # per kind: the rows of its first page that are not the kind's own (Liked Songs)
         self.whole = {}           # per kind, a list read whole for a search: (generation, when, rows, all of it)
+        self.reading = {}         # per kind, the lock a whole read holds, so that two searches read it once
 
     # -- the page --
-    def _ask(self, op, route, variables=None, optional=None):
+    def _ask(self, op, route, variables=None, optional=None, opened=False):
         """Spotify's answer to the page's own request `op`, asked again on `route`
         with `variables`; with `optional` (see Page.call), (answer, the optional
-        ones set). A view Spotify's page refused (see REFUSED) is replaced once."""
+        ones set). A view Spotify's page refused (see REFUSED) is replaced once.
+        `opened`: for a page you opened (see Page.call)."""
         try:
-            return self._ask_once(op, route, variables, optional)
+            return self._ask_once(op, route, variables, optional, opened)
         except SpotifyError as error:
-            if str(error) != REFUSED:
+            if error.reason != "refused":
                 raise
-            return self._ask_once(op, route, variables, optional)
+            return self._ask_once(op, route, variables, optional, opened)
 
-    def _ask_once(self, op, route, variables, optional):
-        done, box = threading.Event(), {}
+    def _ask_once(self, op, route, variables, optional, opened):
         generation = self.generation
         token = None if self.page is not None and self.page.state != "dead" else self.token_source()
+        for _ in (1, 2):
+            done, box = threading.Event(), {}
 
-        def finish(ok, value):
-            box.update(ok=ok, value=value)
-            done.set()
+            def finish(ok, value):
+                box.update(ok=ok, value=value)
+                done.set()
 
-        def run():
-            try:
-                if generation != self.generation:   # you signed out meanwhile: no page is opened with the sign-in read before
-                    raise SpotifyError(SIGNED_OUT, signed_out=True)
-                self.last = time.monotonic()
-                page = self.page
-                if page is None or page.state == "dead":
-                    self.context = self.context or Page.new_context()
-                    page = self.page = Page(token or self.token_source(), self.site, self.folder, self.context)
-                    self.watch(page)
-                page.call(op, route, variables, finish, optional)
-            except SpotifyError as error:
-                finish(False, error)
-            except Exception as error:   # a view that cannot be made, for one
-                finish(False, SpotifyError(f"Ocean Mist could not open Spotify's page ({type(error).__name__})"))
-        self.schedule(run)
-        if not done.wait(ASKED * 3):
-            raise SpotifyError("Spotify took too long to answer")
-        if box["ok"]:
-            answer, shaped = box["value"]
-            return (answer, shaped) if optional is not None else answer
-        raise box["value"]
+            def run():
+                try:
+                    if generation != self.generation:   # you signed out meanwhile: no page is opened with the sign-in read before
+                        raise SpotifyError(SIGNED_OUT, signed_out=True)
+                    self.last = time.monotonic()
+                    page = self.page
+                    if page is None or page.state == "dead":
+                        if token is None:
+                            # the page went after this request looked: Firefox's cookie file is read on the request's
+                            # own thread, not here on the GTK thread, and the request is made again
+                            box.update(again=True)
+                            done.set()
+                            return
+                        self.context = self.context or Page.new_context()
+                        page = self.page = Page(token, self.site, self.folder, self.context)
+                        self.watch(page)
+                    page.call(op, route, variables, finish, optional, opened)
+                except SpotifyError as error:
+                    finish(False, error)
+                except Exception as error:   # a view that cannot be made, for one
+                    finish(False, SpotifyError(f"Ocean Mist could not open Spotify's page ({type(error).__name__})"))
+            self.schedule(run)
+            if not done.wait(ASKED * 3):
+                raise SpotifyError("Spotify took too long to answer")
+            if box.get("again"):
+                token = self.token_source()
+                continue
+            if box["ok"]:
+                answer, shaped = box["value"]
+                return (answer, shaped) if optional is not None else answer
+            raise box["value"]
+        raise SpotifyError(REFUSED, reason="refused")
 
     def watch(self, page):
         """Close the page once it has had no request for IDLE seconds."""
@@ -967,7 +1000,7 @@ class SpotifyMusic:
         try:
             return self._library(kind, max(0, min(int(offset), 1_000_000)))
         except (AttributeError, KeyError, TypeError):   # an answer of a shape the parsing below did not expect
-            raise SpotifyError(CHANGED) from None
+            raise SpotifyError(CHANGED, reason="changed") from None
 
     def _library(self, kind, offset):
         op, wrapper, chip = LIBRARY[kind]
@@ -994,7 +1027,7 @@ class SpotifyMusic:
             try:
                 body = self._ask(op, HOME, dict(asked, filters=[chip]) if filtered else asked)
             except SpotifyError as error:
-                if not filtered or str(error) != CHANGED:
+                if not filtered or error.reason != "changed":
                     raise
                 # Spotify answered the filtered list with errors in place of it: the mixed list, for the
                 # rest of the session (the rows kept by their kind, with no total)
@@ -1042,47 +1075,68 @@ class SpotifyMusic:
 
     def _whole(self, kind):
         """One part of the library, read whole up to LIMIT rows (kept for KEEP seconds), and whether that is
-        all of it."""
-        generation, kept = self.generation, self.whole.get(kind)
-        if kept and kept[0] == generation and time.monotonic() - kept[1] < KEEP:
-            return kept[2], kept[3]
-        rows, offset, more = [], 0, None
-        while len(rows) < LIMIT:
-            page = self.library(kind, offset)
-            rows += page["items"]
-            more = page["more"]
-            if more is None or more <= offset:
-                more = None
-                break
-            offset = more
-        rows, whole = rows[:LIMIT], more is None and len(rows) <= LIMIT
-        if generation == self.generation:   # (read with a sign-in that is still the one in use)
-            self.whole[kind] = (generation, time.monotonic(), rows, whole)
-        return rows, whole
+        all of it. Two searches of one kind read it once: the second waits for the first's rows. Asked to slow
+        down, it waits PAUSE seconds and asks once more; asked again, it answers the rows read so far (not all
+        of it, and not kept), or the error when there are none."""
+        with self.reading.setdefault(kind, threading.Lock()):
+            generation, kept = self.generation, self.whole.get(kind)
+            if kept and kept[0] == generation and time.monotonic() - kept[1] < KEEP:
+                return kept[2], kept[3]
+            rows, offset, more, cut = [], 0, None, False
+            while len(rows) < LIMIT:
+                try:
+                    page = self._slowly(kind, offset)
+                except SpotifyError as error:
+                    if error.status != 429 or not rows:
+                        raise
+                    cut, more = True, offset
+                    break
+                rows += page["items"]
+                more = page["more"]
+                if more is None or more <= offset:
+                    more = None
+                    break
+                offset = more
+            rows, whole = rows[:LIMIT], more is None and len(rows) <= LIMIT
+            if generation == self.generation and not cut:   # (read with a sign-in that is still the one in use)
+                self.whole[kind] = (generation, time.monotonic(), rows, whole)
+            return rows, whole
 
-    def page_of(self, kind, ident):
+    def _slowly(self, kind, offset):
+        """A page of the library; when Spotify asks to slow down, the same page once more, PAUSE seconds later."""
+        try:
+            return self.library(kind, offset)
+        except SpotifyError as error:
+            if error.status != 429:
+                raise
+        time.sleep(PAUSE)
+        return self.library(kind, offset)
+
+    def page_of(self, kind, ident, opened=False):
         """A playlist, an album or an artist, opened: its title and, for a playlist or an
-        album, its songs; for an artist, its popular songs and its albums."""
+        album, its songs; for an artist, its popular songs and its albums. `opened`
+        when you opened it, rather than played or added it: a page you open next
+        replaces it while it waits (see Page.call)."""
         if kind not in ("playlist", "album", "artist") or not ITEM_ID.match(str(ident)):
             raise SpotifyError("that is not a page of your Spotify library")
         try:
             if kind == "album":
-                return self._album_page(ident)
+                return self._album_page(ident, opened)
             if kind == "artist":
-                return self._artist_page(ident)
+                return self._artist_page(ident, opened)
             return self._playlist_page(ident)
         except (AttributeError, KeyError, TypeError):   # an answer of a shape the parsing below did not expect
-            raise SpotifyError(CHANGED) from None
+            raise SpotifyError(CHANGED, reason="changed") from None
 
-    def _album_page(self, ident):
+    def _album_page(self, ident, opened=False):
         uri, route = f"spotify:album:{ident}", ALBUM + ident
-        head = self._ask("getAlbum", route, {"uri": uri, "offset": 0, "limit": PAGE})
+        head = self._ask("getAlbum", route, {"uri": uri, "offset": 0, "limit": PAGE}, opened=opened)
         data = head.get("data") if isinstance(head, dict) else None
         union = _dict(_at(data, "albumUnion"))
         tracks, offset = [], 0
         while len(tracks) < LIMIT:
             if offset:   # the first page has been asked already
-                body = self._ask("getAlbum", route, {"uri": uri, "offset": offset, "limit": PAGE})
+                body = self._ask("getAlbum", route, {"uri": uri, "offset": offset, "limit": PAGE}, opened=opened)
                 data = body.get("data") if isinstance(body, dict) else None
                 union = _dict(_at(data, "albumUnion"))
             page = _songs_part(union)
@@ -1113,8 +1167,8 @@ class SpotifyMusic:
                 "label": "Album", "cover": cover, "tracks": tracks[:LIMIT], "groups": [],
                 "info": f"{total} {'song' if total == 1 else 'songs'}" if isinstance(total, int) else ""}
 
-    def _artist_page(self, ident):
-        body = self._ask("queryArtistOverview", ARTIST + ident, {"uri": f"spotify:artist:{ident}"})
+    def _artist_page(self, ident, opened=False):
+        body = self._ask("queryArtistOverview", ARTIST + ident, {"uri": f"spotify:artist:{ident}"}, opened=opened)
         union = _dict(_at(body, "data", "artistUnion"))
         title = _text((union.get("profile") or {}).get("name")) if isinstance(union.get("profile"), dict) else ""
         visuals = union.get("visuals") if isinstance(union.get("visuals"), dict) else {}

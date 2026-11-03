@@ -44,6 +44,10 @@ class SpotifyReader(Reader):
         self.asked.append(("search", kind, words))
         return {"items": [], "more": None, "total": 0, "read": 0, "whole": True}
 
+    def page_of(self, kind, ident, opened=False):   # `opened`: a page you opened, which the next one replaces (#91)
+        self.asked.append(("page", kind, ident) + (("opened",) if opened else ()))
+        return {"title": "", "tracks": []}
+
 
 def page_routes():
     """(service, route) for each request ui/premium.js builds with getApple or getSpotify."""
@@ -122,6 +126,18 @@ class Routes(unittest.TestCase):
         self.get("apple/search?kind=songs&q=x&offset=-1")
         self.assertEqual(self.readers["apple"].asked[-1], ("search", "songs", "x", 0))
         self.assertEqual(self.readers["spotify"].asked, [])
+
+    def test_a_spotify_page_you_opened_says_so(self):
+        self.assertEqual(self.get("spotify/page?kind=album&id=Invented1&open=1")[0].status, 200)
+        self.assertEqual(self.get("spotify/page?kind=album&id=Invented2")[0].status, 200)
+        self.assertEqual(self.readers["spotify"].asked, [("page", "album", "Invented1", "opened"),
+                                                         ("page", "album", "Invented2")])
+
+    def test_the_page_says_which_spotify_pages_you_opened(self):
+        with open(os.path.join(ROOT, "ui", "premium.js"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("${opened ? '&open=1' : ''}", source)
+        self.assertIn("fetchPage(kind, id, true)", source)   # the page you open, not a row you play or add
 
     def test_an_unknown_route_is_still_refused(self):
         for service in ("apple", "spotify"):

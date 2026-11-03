@@ -51,9 +51,11 @@ WORDS = 100                      # characters of a search kept
 LIMIT = ytmusic.PLAYLIST_LIMIT   # songs read from one album or playlist
 READY = 45                       # seconds Apple's page gets to open and sign in
 SETTLE = 10                      # ...to say it is signed in, once its player is up
+MISSING = 25                     # ...to have its player at all, once it has loaded
 ASKED = 60                       # seconds a request gets
 IDLE = 600                       # seconds without a request after which the page is closed
 CHECK = 60                       # seconds between looks at whether the page has been idle
+PAUSE = 2                        # seconds waited before asking once more, when Apple asks to slow down
 PICTURES = 64                    # covers kept in memory
 MEMORY = 256                     # MB WebKit is told the page's process may use (see _open)
 
@@ -61,6 +63,7 @@ OFFLINE = "cannot reach Apple Music; check the internet connection"
 SIGNED_OUT = "Apple Music says you are signed out; sign in again in Firefox"
 CHANGED = "Apple Music changed something Ocean Mist depends on, so the player needs an update"
 UNSAFE = "Ocean Mist could not keep Apple's page from signing you out, so it did not open it"
+SLOWED = "not all of it: Apple Music asked Ocean Mist to slow down, so open it again in a minute for the rest"
 
 PICTURE_HOSTS = re.compile(r"^https://(?:[a-z0-9-]+\.)*(?:mzstatic\.com|blobstore\.apple\.com)/", re.I)
 ITEM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,59}\Z")   # a song's, album's, playlist's or artist's id
@@ -92,11 +95,13 @@ SIGN_OUT = ("log.?out", "sign.?out", "log.?off", "sign.?off", "unauthori[sz]e")
 class AppleError(YTError):
     """What went wrong, worded for the status line. A YTError, so that what
     answers a YouTube Music error answers this too; `signed_out` when Apple
-    Music no longer accepts the sign-in."""
+    Music no longer accepts the sign-in; `reason`, a short code: "changed"
+    (an answer of a shape Ocean Mist does not know) or "no-musickit" (a page
+    without Apple's player)."""
 
-    def __init__(self, message, signed_out=False, status=0, general=False):
+    def __init__(self, message, signed_out=False, status=0, general=False, reason=""):
         super().__init__(message, general=general, signed_out=signed_out)
-        self.status = status
+        self.status, self.reason = status, reason
 
 
 # ---- what the page is asked ----
@@ -138,7 +143,7 @@ def _answer(raw, personal=True):
     except (TypeError, ValueError):
         said = None
     if not isinstance(said, dict):
-        raise AppleError(CHANGED)
+        raise AppleError(CHANGED, reason="changed")
     status = said.get("status") if isinstance(said.get("status"), int) else 0
     if said.get("signed_out") or status == 401 or (status == 403 and personal):
         raise AppleError(SIGNED_OUT, signed_out=True, status=status)
@@ -151,7 +156,7 @@ def _answer(raw, personal=True):
             raise AppleError("Apple Music asked Ocean Mist to slow down; try again in a minute", status=429)
         raise AppleError(f"Apple Music did not answer (HTTP {status})" if status else OFFLINE, status=status)
     if not isinstance(said.get("body"), dict):
-        raise AppleError(CHANGED)
+        raise AppleError(CHANGED, reason="changed")
     return said["body"]
 
 
@@ -348,6 +353,9 @@ class Page:
                 return
             if said.get("api"):
                 self.seen = self.seen or now
+            elif not moved and self.loaded and now - self.loaded > MISSING:   # loaded, with no MusicKit: Apple changed its page
+                self._fail(AppleError(f"{CHANGED} (no-musickit)", reason="no-musickit"))
+                return
             if moved or (self.seen and now - self.seen > SETTLE):   # the page asks for a sign-in
                 self._fail(AppleError(SIGNED_OUT, signed_out=True))
                 return
@@ -561,35 +569,46 @@ class AppleMusic:
         answer = self._by_engine(path, query)
         if answer is not None:
             return answer
-        done, box = threading.Event(), {}
         generation = self.generation
         token = None if self.page is not None and self.page.state != "dead" else self.token_source()
+        for _ in (1, 2):
+            done, box = threading.Event(), {}
 
-        def finish(ok, value):
-            box.update(ok=ok, value=value)
-            done.set()
+            def finish(ok, value):
+                box.update(ok=ok, value=value)
+                done.set()
 
-        def run():
-            try:
-                if generation != self.generation:   # you signed out meanwhile: no page is opened with the sign-in read before
-                    raise AppleError(SIGNED_OUT, signed_out=True)
-                self.last = time.monotonic()
-                page = self.page
-                if page is None or page.state == "dead":
-                    self.context = self.context or Page.new_context()
-                    page = self.page = Page(token or self.token_source(), self.site, self.folder, self.context)
-                    self.watch(page)
-                page.call(path, query, finish)
-            except AppleError as error:
-                finish(False, error)
-            except Exception as error:   # a view that cannot be made, for one
-                finish(False, AppleError(f"Ocean Mist could not open Apple's page ({type(error).__name__})"))
-        self.schedule(run)
-        if not done.wait(ASKED):
-            raise AppleError("Apple Music took too long to answer")
-        if box["ok"]:
-            return box["value"]
-        raise box["value"]
+            def run():
+                try:
+                    if generation != self.generation:   # you signed out meanwhile: no page is opened with the sign-in read before
+                        raise AppleError(SIGNED_OUT, signed_out=True)
+                    self.last = time.monotonic()
+                    page = self.page
+                    if page is None or page.state == "dead":
+                        if token is None:
+                            # the page went after this request looked: Firefox's cookie file is read on the request's
+                            # own thread, not here on the GTK thread, and the request is made again
+                            box.update(again=True)
+                            done.set()
+                            return
+                        self.context = self.context or Page.new_context()
+                        page = self.page = Page(token, self.site, self.folder, self.context)
+                        self.watch(page)
+                    page.call(path, query, finish)
+                except AppleError as error:
+                    finish(False, error)
+                except Exception as error:   # a view that cannot be made, for one
+                    finish(False, AppleError(f"Ocean Mist could not open Apple's page ({type(error).__name__})"))
+            self.schedule(run)
+            if not done.wait(ASKED):
+                raise AppleError("Apple Music took too long to answer")
+            if box.get("again"):
+                token = self.token_source()
+                continue
+            if box["ok"]:
+                return box["value"]
+            raise box["value"]
+        raise AppleError("Apple Music's page closed while Ocean Mist was asking it; try again")
 
     def _by_engine(self, path, query):
         """Apple's answer from the playback engine's page, while its helper is up for Apple Music; None when
@@ -686,21 +705,35 @@ class AppleMusic:
         return {"items": items, "more": more, "total": None}
 
     def _all(self, path, shape, limit):
-        """Every row of a list Apple sends in pages, up to `limit`: a missing list is an empty one."""
+        """Every row of a list Apple sends in pages, up to `limit`, and whether Apple stopped it: a missing list is an
+        empty one. Asked to slow down, it waits PAUSE seconds and asks once more; asked again, it keeps the rows
+        read so far (stopped), or raises when there are none."""
         items, offset = [], 0
         while len(items) < limit:
             try:
-                body = self._ask(path, {"limit": PAGE, "offset": offset})
+                body = self._slowly(path, {"limit": PAGE, "offset": offset})
             except AppleError as error:
                 if error.status == 404:
                     break
+                if error.status == 429 and items:
+                    return items[:limit], True
                 raise
             rows = [row for row in body.get("data") or [] if isinstance(row, dict)]
             items += [item for item in map(shape, rows) if item]
             offset += len(rows)
             if not (body.get("next") and rows):
                 break
-        return items[:limit]
+        return items[:limit], False
+
+    def _slowly(self, path, query):
+        """A page of a list; when Apple asks to slow down, the same page once more, PAUSE seconds later."""
+        try:
+            return self._ask(path, query)
+        except AppleError as error:
+            if error.status != 429:
+                raise
+        time.sleep(PAUSE)
+        return self._ask(path, query)
 
     def page_of(self, kind, ident):
         """A playlist, an album or an artist of the library, opened: its title and, for a
@@ -712,17 +745,18 @@ class AppleMusic:
         res = head[0] if head and isinstance(head[0], dict) else {}
         if kind == "artist":
             item = artist(dict(res, id=ident)) or {"title": ""}
-            albums = self._all(base + "/albums", album, LIMIT)
+            albums, stopped = self._all(base + "/albums", album, LIMIT)
             return {"service": "apple", "kind": "artist", "id": ident, "title": item["title"] or "Artist",
                     "artist": "", "year": "", "label": "Artist", "cover": "", "tracks": [],
                     "info": f"{len(albums)} {'album' if len(albums) == 1 else 'albums'}" if albums else "",
-                    "groups": [{"title": "Albums", "items": albums}] if albums else []}
+                    "groups": [{"title": "Albums", "items": albums}] if albums else [],
+                    "notice": SLOWED if stopped else ""}
         item = (album if kind == "album" else playlist)(dict(res, id=ident)) or {"title": ""}
-        tracks = self._all(base + "/tracks", song, LIMIT)
+        tracks, stopped = self._all(base + "/tracks", song, LIMIT)
         cover = item.get("cover") or next((t["cover"] for t in tracks if t["cover"]), "")
         return {"service": "apple", "kind": kind, "id": ident, "title": item["title"] or kind.capitalize(),
                 "artist": item.get("artist", ""), "year": item.get("year", ""), "label": item.get("label", ""),
-                "cover": cover, "info": "", "tracks": tracks, "groups": []}
+                "cover": cover, "info": "", "tracks": tracks, "groups": [], "notice": SLOWED if stopped else ""}
 
 class _Stay(urllib.request.HTTPRedirectHandler):
     """A picture server that sends the request elsewhere is not followed."""
