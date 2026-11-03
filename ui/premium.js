@@ -67,9 +67,10 @@
   const get = (path) => fetchJson('yt/' + path, 'YouTube Music');
   const getApple = (path) => fetchJson('apple/' + path, 'Apple Music');
   const getSpotify = (path) => fetchJson('spotify/' + path, 'Spotify');
-  // an album's, an artist's or a playlist's page, whichever service it is of
-  const fetchPage = (kind, id) => (kind.startsWith('apple-') ? getApple(`page?kind=${kind.slice(6)}&id=${encodeURIComponent(id)}`)
-    : kind.startsWith('spotify-') ? getSpotify(`page?kind=${kind.slice(8)}&id=${encodeURIComponent(id)}`)
+  // an album's, an artist's or a playlist's page, whichever service it is of; `opened` when you opened it (a Spotify page
+  // you open next then replaces it while it waits for Spotify's page, so the view does not go to each one you passed)
+  const fetchPage = (kind, id, opened) => (kind.startsWith('apple-') ? getApple(`page?kind=${kind.slice(6)}&id=${encodeURIComponent(id)}`)
+    : kind.startsWith('spotify-') ? getSpotify(`page?kind=${kind.slice(8)}&id=${encodeURIComponent(id)}${opened ? '&open=1' : ''}`)
     : get(`${kind}?id=${encodeURIComponent(id)}`));
   // a song of Apple Music or Spotify has no video: the playback engine plays it by its own id
   const playable = (item) => !!item && (item.kind === 'song' || item.kind === 'video') && !!(item.video || item.apple || item.spotify);
@@ -118,10 +119,10 @@
       });
       return;
     }
-    if (yt.pages[node.value] && !yt.pages[node.value].error) return;
+    if (yt.pages[node.value] && !yt.pages[node.value].error && !yt.pages[node.value].notice) return;   // (one cut short is read again)
     const [kind, id] = split(node.value);
     keep(yt.pages, node.value, { loading: true });
-    fetchPage(kind, id).then((page) => {
+    fetchPage(kind, id, true).then((page) => {
       keep(yt.pages, node.value, page.error ? { error: page.error, signed_out: page.signed_out } : page);
       if (page.error) { if (page.signed_out) outFor(kind)(page); }
       else if (kind === 'mine') learn(page.tracks);   // the YouTube Music branch lists it already
@@ -265,7 +266,7 @@
   async function pageOf(item, quiet) {
     const key = keyOf(item), [kind, id] = split(key);
     let page = yt.pages[key];
-    if (!page || page.error || page.loading) {
+    if (!page || page.error || page.loading || page.notice) {
       page = await fetchPage(kind, id);
       if (page.error) { if (!quiet) failed(page, kind); else if (page.signed_out) outFor(kind)(page); return null; }
       keep(yt.pages, key, page);
@@ -486,7 +487,8 @@
     }
     if (page) {
       const bits = [page.kind === 'artist' ? page.info : page.artist, page.kind === 'album' ? page.label : '', page.year,
-        page.kind !== 'artist' && songs.length ? `${songs.length} ${songs.length === 1 ? 'song' : 'songs'}${total ? ', ' + clock(total) : ''}` : ''];
+        page.kind !== 'artist' && songs.length ? `${songs.length} ${songs.length === 1 ? 'song' : 'songs'}${total ? ', ' + clock(total) : ''}` : '',
+        page.notice];   // (Apple's page of a list it stopped sending: what was read, and why the rest is not there)
       $('yt-head').innerHTML = `<b>${esc(page.title)}</b><span>${esc(bits.filter(Boolean).join(' · '))}</span>`;
     }
     // the count, and more results for a search

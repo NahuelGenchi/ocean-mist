@@ -313,8 +313,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(found)
             if what == "search":   # Spotify's page has no search of the library: the reader reads it and matches the words
                 return self._json(reader.search(ask("kind"), ask("q")))
-            if what == "page":
-                return self._json(reader.page_of(ask("kind"), ask("id")))
+            if what == "page":   # `open`: a page you opened, not one played or added (see SpotifyMusic.page_of)
+                return self._json(reader.page_of(ask("kind"), ask("id"), opened=ask("open") == "1"))
         except YTError as error:
             return self._json({"error": str(error), "general": error.general,
                                "signed_out": error.signed_out}, 502)

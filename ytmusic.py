@@ -47,6 +47,11 @@ AUDIO_CLIENT = {
                "deviceModel": "RealityDevice17,1", "osName": "visionOS",
                "osVersion": "26.5.23O471", "hl": "en"},
 }
+# the clients a song's audio is asked of, in turn: when YouTube refuses one (a sign-in or a bot check asked of it,
+# or an answer without HLS), the next is tried, and the one that worked is asked first after that. Add one here
+# only once it is checked to give whole songs as HLS, as the visionOS app's does
+AUDIO_CLIENTS = (AUDIO_CLIENT,)
+SLOW_DOWN = 10   # seconds: a 429 that asks to wait at most this long is waited for and asked again, once
 AUDIO_CODECS = ("mp4a.40.2", "mp4a.40.5")   # AAC about 130 kbit/s, then HE-AAC about 50
 # the "params" of the site's search filter chips; every search without a
 # filter reads the current ones back from the chips it comes with
@@ -97,6 +102,14 @@ class YTError(Exception):
         self.general, self.code, self.signed_out = general, code, signed_out
 
 
+class _Refused(Exception):
+    """YouTube refused the audio client a song was asked with, not the song: `error` says how."""
+
+    def __init__(self, error):
+        super().__init__(str(error))
+        self.error = error
+
+
 class Song:
     """A song's audio as YouTube streams it: AAC in segments of about seven
     seconds, at addresses good for about six hours."""
@@ -104,6 +117,7 @@ class Song:
     def __init__(self, video, segments, lengths, expires, details):
         self.video, self.segments, self.lengths = video, segments, lengths
         self.expires, self.details = expires, details
+        self.agent = AUDIO_CLIENT["agent"]   # the User-Agent of the audio client it was given to
         self.base = None       # the first segment's clock, in 90 kHz ticks
         self.config = None     # (AAC profile, sample rate, channels)
 
@@ -489,18 +503,55 @@ def _problem(code):
     return f"YouTube Music refused the request (HTTP {code})"
 
 
-def _open(url, data=None, headers=None, timeout=15, limit=32 << 20):
-    """The body of an answer, unpacked; YTError when there is none."""
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect that is not followed: a request signed in with your cookies goes nowhere but where it was
+    sent (a 3xx is answered as the error it is)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class _Pictures(urllib.request.HTTPRedirectHandler):
+    """A picture server that sends the request elsewhere is followed only to another of YouTube's own."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not PICTURE_HOSTS.match(newurl):
+            raise urllib.error.HTTPError(newurl, code, "that is not a YouTube Music picture", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener()
+_signed_opener = urllib.request.build_opener(_NoRedirect)
+_picture_opener = urllib.request.build_opener(_Pictures)
+
+
+def _wait_for(error):
+    """How long a 429 asks to wait, when that is worth waiting (SLOW_DOWN at most), or None."""
+    asked = (error.headers.get("Retry-After") or "").strip() if error.headers else ""
+    seconds = int(asked) if asked.isdigit() else 2
+    return seconds if seconds <= SLOW_DOWN else None
+
+
+def _open(url, data=None, headers=None, timeout=15, limit=32 << 20, follow=True):
+    """The body of an answer, unpacked; YTError when there is none. Without `follow` (a request signed in
+    with your cookies) a redirect is not followed. Asked to slow down for a few seconds, it waits and asks
+    once more."""
     request = urllib.request.Request(url, data=data, headers=headers or {})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read(limit)
-            packed = response.headers.get("Content-Encoding") == "gzip"
-            size = response.headers.get("Content-Length") or ""
-    except urllib.error.HTTPError as error:
-        raise YTError(_problem(error.code), general=True, code=error.code) from None
-    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError):
-        raise YTError(OFFLINE, general=True) from None
+    for attempt in (1, 2):
+        try:
+            with (_opener if follow else _signed_opener).open(request, timeout=timeout) as response:
+                body = response.read(limit)
+                packed = response.headers.get("Content-Encoding") == "gzip"
+                size = response.headers.get("Content-Length") or ""
+            break
+        except urllib.error.HTTPError as error:
+            wait = _wait_for(error) if error.code == 429 and attempt == 1 else None
+            error.close()   # (the refusal's own connection)
+            if wait is None:
+                raise YTError(_problem(error.code), general=True, code=error.code) from None
+            time.sleep(wait)
+        except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError):
+            raise YTError(OFFLINE, general=True) from None
     if re.fullmatch(r"\d{1,12}", size) and len(body) < int(size) <= limit:   # cut short on the way
         raise YTError(OFFLINE, general=True)
     if packed:
@@ -664,7 +715,9 @@ class YTMusic:
 
     def __init__(self):
         self.lock = threading.Lock()
+        self.reading = threading.Lock()   # the site's page is read by one thread at a time
         self.web = None           # (client version, visitor id, when to read them again)
+        self.audio_from = 0       # the audio client asked first: the one that worked last
         self.songs = {}           # video id -> Song
         self.gates = {}           # video id -> lock, so a song is looked up once at a time
         self.pieces = {}          # (video id, segment) -> repacked, the most recent last
@@ -680,16 +733,26 @@ class YTMusic:
         with self.lock:
             if self.web and time.time() < self.web[2]:
                 return self.web[:2]
-        page = _open(SITE + "/", headers={
-            "User-Agent": BROWSER, "Accept-Language": "en-US,en;q=0.8",
-            "Accept-Encoding": "gzip", "Cookie": "SOCS=CAI",   # skips the cookie banner
-        }).decode("utf-8", "replace")
-        version = re.search(r'"INNERTUBE_CLIENT_VERSION":"([0-9.]+)"', page)
-        visitor = re.search(r'"VISITOR_DATA":"([A-Za-z0-9_%=-]+)"', page)
-        web = (version.group(1) if version else WEB_VERSION,
-               visitor.group(1) if visitor else "", time.time() + (86400 if visitor else 300))
-        with self.lock:
-            self.web = web
+        with self.reading:   # one thread reads the page; the others wait for what it found
+            with self.lock:
+                if self.web and time.time() < self.web[2]:
+                    return self.web[:2]
+            try:
+                page = _open(SITE + "/", headers={
+                    "User-Agent": BROWSER, "Accept-Language": "en-US,en;q=0.8",
+                    "Accept-Encoding": "gzip", "Cookie": "SOCS=CAI",   # skips the cookie banner
+                }).decode("utf-8", "replace")
+            except YTError:
+                # the page did not come: the version this player knows, no visitor id, and the page again in a
+                # minute; the requests themselves say whether YouTube Music answers at all
+                web = (WEB_VERSION, "", time.time() + 60)
+            else:
+                version = re.search(r'"INNERTUBE_CLIENT_VERSION":"([0-9.]+)"', page)
+                visitor = re.search(r'"VISITOR_DATA":"([A-Za-z0-9_%=-]+)"', page)
+                web = (version.group(1) if version else WEB_VERSION,
+                       visitor.group(1) if visitor else "", time.time() + (86400 if visitor else 300))
+            with self.lock:
+                self.web = web
         return web[:2]
 
     def _call(self, endpoint, body, query="", session=None):
@@ -706,11 +769,13 @@ class YTMusic:
             client["visitorData"] = headers["X-Goog-Visitor-Id"] = visitor
         payload = json.dumps(dict(body, context={"client": client})).encode()
         try:
-            data = json.loads(_open(f"{API}{endpoint}?prettyPrint=false{query}", payload, headers))
+            data = json.loads(_open(f"{API}{endpoint}?prettyPrint=false{query}", payload, headers,
+                                    follow=session is None))
         except ValueError:
             raise YTError(CHANGED, general=True) from None
         except YTError as error:
-            if session is not None and error.code in (401, 403):
+            # signed in: refused, or sent elsewhere (to a sign-in page), the sign-in is no longer good
+            if session is not None and (error.code in (401, 403) or 300 <= error.code < 400):
                 raise YTError(SIGNED_OUT, general=True, code=error.code, signed_out=True) from None
             raise
         if not isinstance(data, dict):
@@ -1027,17 +1092,17 @@ class YTMusic:
                     self.gates.pop(old, None)
             return found
 
-    def _resolve(self, video):
+    def _player(self, video, audio):
+        """The player's answer for a song, asked as the audio client `audio` asks it. Raises _Refused when
+        YouTube refuses that client, rather than the song: another one may be given it."""
         try:
             visitor = self._session()[1]
         except YTError:
             visitor = ""
-        client = dict(AUDIO_CLIENT["client"])
-        agent = {"User-Agent": AUDIO_CLIENT["agent"]}
-        headers = dict(agent, **{"Content-Type": "application/json", "Accept-Encoding": "gzip",
-                                 "Origin": "https://www.youtube.com",
-                                 "X-YouTube-Client-Name": AUDIO_CLIENT["id"],
-                                 "X-YouTube-Client-Version": client["clientVersion"]})
+        client = dict(audio["client"])
+        headers = {"User-Agent": audio["agent"], "Content-Type": "application/json", "Accept-Encoding": "gzip",
+                   "Origin": "https://www.youtube.com", "X-YouTube-Client-Name": audio["id"],
+                   "X-YouTube-Client-Version": client["clientVersion"]}
         if visitor:   # without one, YouTube wants a sign-in
             client["visitorData"] = headers["X-Goog-Visitor-Id"] = visitor
         body = json.dumps({"context": {"client": client}, "videoId": video,
@@ -1046,15 +1111,44 @@ class YTMusic:
             data = json.loads(_open(PLAYER_API, body, headers))
         except ValueError:
             raise YTError(CHANGED, general=True) from None
+        except YTError as error:
+            if error.code and error.code != 429:   # this client's request refused (a version gone, say)
+                raise _Refused(error) from None
+            raise
+        if not isinstance(data, dict):
+            raise YTError(CHANGED, general=True)
         status = str(_dig(data, "playabilityStatus", "status") or "")
+        reason = str(_dig(data, "playabilityStatus", "reason") or "")
         if status != "OK":
-            raise _why(status, str(_dig(data, "playabilityStatus", "reason") or ""))
+            low = reason.lower()
+            refused = "bot" in low or (status in ("LOGIN_REQUIRED", "UNPLAYABLE")
+                                       and not any(word in low for word in ("age", "country", "region")))
+            raise _Refused(_why(status, reason)) if refused else _why(status, reason)
         details = data.get("videoDetails") or {}
         if details.get("isLive") or details.get("isUpcoming"):
             raise YTError("Ocean Mist cannot play live streams yet")
         address = _dig(data, "streamingData", "hlsManifestUrl")
         if not isinstance(address, str) or not AUDIO_HOSTS.match(address):
-            raise YTError("YouTube sent this song in a way the player cannot read yet")
+            raise _Refused(YTError("YouTube sent this song in a way the player cannot read yet"))
+        return data, address
+
+    def _resolve(self, video):
+        clients = AUDIO_CLIENTS
+        first = min(self.audio_from, len(clients) - 1)
+        refused = None
+        for n in [first] + [i for i in range(len(clients)) if i != first]:
+            try:
+                data, address = self._player(video, clients[n])
+            except _Refused as error:
+                refused = refused or error.error   # what the client asked first said
+                continue
+            self.audio_from = n
+            audio = clients[n]
+            break
+        else:
+            raise refused
+        details = data.get("videoDetails") or {}
+        agent = {"User-Agent": audio["agent"]}
         try:
             address = _hls_audio(_open(address, headers=agent).decode("utf-8", "replace"), address)
             found = address and _hls_segments(_open(address, headers=agent).decode("utf-8", "replace"),
@@ -1081,6 +1175,7 @@ class YTMusic:
             "duration": round(sum(lengths), 2),
             "cover": _cover(_dig(details, "thumbnail", "thumbnails"))
                      or f"https://i.ytimg.com/vi/{video}/hqdefault.jpg"})
+        song.agent = audio["agent"]   # its pieces are asked for as the client it was given to
         # the first segment says how the song is coded and when its clock starts
         for attempt in (1, 2):
             try:
@@ -1103,7 +1198,7 @@ class YTMusic:
         network) the song is asked for again once."""
         for attempt in (1, 2):
             try:
-                return _open(song.segments[n], headers={"User-Agent": AUDIO_CLIENT["agent"]},
+                return _open(song.segments[n], headers={"User-Agent": song.agent},
                              timeout=20, limit=8 << 20)
             except YTError as error:
                 if not error.code:
@@ -1192,7 +1287,7 @@ class YTMusic:
                 return found
         request = urllib.request.Request(url, headers={"User-Agent": BROWSER})
         try:
-            with urllib.request.urlopen(request, timeout=15) as response:
+            with _picture_opener.open(request, timeout=15) as response:
                 kind = response.headers.get_content_type()
                 data = response.read(8 << 20)
         except urllib.error.HTTPError as error:
@@ -1222,7 +1317,8 @@ def main(argv):
             song = music.song(rest[0])
             info = song.info()
             last = len(song.segments) - 1
-            result = {"type": info["type"], "seconds": info["duration"],
+            result = {"client": AUDIO_CLIENTS[music.audio_from]["client"]["clientName"],   # the one that worked
+                      "type": info["type"], "seconds": info["duration"],
                       "segments": len(song.segments), "rate": song.config[1],
                       "first piece": len(music.piece(rest[0], 0)),
                       "last piece": len(music.piece(rest[0], last)),
