@@ -1,5 +1,6 @@
 """The server the page talks to (player.py): only the page's own requests are
-answered, and nothing a file's tags say reaches a header (#74)."""
+answered, nothing a file's tags say reaches a header (#74), and a command of
+the wrong shape gets a 400 (#116)."""
 import http.client
 import json
 import os
@@ -105,6 +106,63 @@ class Server(unittest.TestCase):
                 self.assertIsNone(answer.getheader("X-Injected"))
         finally:
             del self.lib.cover
+
+
+class Malformed(unittest.TestCase):
+    """A command whose body is not what the page sends gets an answer, not a dropped connection (#116)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = Library()
+        cls.token = secrets.token_urlsafe(16)
+        cls.server = player.start_server(cls.lib, cls.token, music=object())
+        cls.port = cls.server.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def post(self, body, length=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.putrequest("POST", f"/{self.token}/api/cmd")
+        conn.putheader("Host", f"127.0.0.1:{self.port}")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(len(body)) if length is None else length)
+        conn.endheaders()
+        conn.send(body)
+        answer = conn.getresponse()
+        answer.read()
+        conn.close()
+        return answer
+
+    def test_a_body_of_the_wrong_shape_is_a_bad_request(self):
+        for body in (b"[]", b'"x"', b"5", b"null", b"{}", b'{"cmd": 5}', b"{oops",
+                     b'{"cmd": "duration", "id": 1, "seconds": "x"}',
+                     b'{"cmd": "settings", "values": [1, 2]}',
+                     b'{"cmd": "remove", "ids": 5}'):
+            with self.subTest(body=body):
+                self.assertEqual(self.post(body).status, 400)
+
+    def test_a_length_that_is_not_one_is_refused_without_waiting(self):
+        for length, status in (("-1", 400), ("x", 400), (str(player.BODY_LIMIT + 1), 413)):
+            with self.subTest(length=length):
+                self.assertEqual(self.post(b"{}", length).status, status)
+
+    def test_what_the_page_sends_is_answered_as_before(self):
+        answer = self.post(json.dumps({"cmd": "settings", "values": {"vis": 2}}).encode())
+        self.assertEqual(answer.status, 200)
+        self.assertEqual(self.lib.settings.get("vis"), 2)
+
+    def test_every_answer_says_its_type_is_what_it_is(self):
+        self.assertEqual(self.post(b"[]").getheader("X-Content-Type-Options"), "nosniff")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        for path in (f"/{self.token}/", f"/{self.token}/ui/app.js", "/nothing"):
+            conn.request("GET", path, headers={"Host": f"127.0.0.1:{self.port}"})
+            answer = conn.getresponse()
+            answer.read()
+            self.assertEqual(answer.getheader("X-Content-Type-Options"), "nosniff", path)
+        conn.close()
 
 
 class PictureType(unittest.TestCase):
