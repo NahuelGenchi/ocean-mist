@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from tests import SCRATCH
 
@@ -151,6 +152,60 @@ class Saved(unittest.TestCase):
         self.assertEqual(apple_list[0]["title"], "Apple One")
         self.assertEqual(self.lib.lists["youtube"], [])
         self.assertEqual(self.lib.names["apple"], "mixed")
+
+
+
+class StateFile(unittest.TestCase):
+    """state.json that cannot be read is kept aside, not written over; a save reaches the disk (#117)."""
+
+    def setUp(self):
+        self.bad = STATE_FILE + ".bad"
+        for path in (STATE_FILE, self.bad):
+            if os.path.exists(path):
+                os.unlink(path)
+        self.addCleanup(lambda: [os.unlink(p) for p in (STATE_FILE, self.bad) if os.path.exists(p)])
+
+    def write(self, text):
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        with open(STATE_FILE, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_one_that_does_not_parse_is_kept_as_bad(self):
+        for text in ('{"settings": {"volume": 0.3}, "playlist": ["/invented/a.ogg"', "[]", "\ufffe\x00", ""):
+            with self.subTest(text=text):
+                self.write(text)
+                lib = Library()
+                lib.load()
+                self.assertEqual(lib.settings.get("volume", 0.5), Library().settings.get("volume", 0.5))
+                with open(self.bad, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), text)
+                lib.save()   # the defaults go to state.json, and the one that could not be read stays aside
+                with open(self.bad, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), text)
+                with open(STATE_FILE, encoding="utf-8") as fh:
+                    self.assertIsInstance(json.load(fh), dict)
+                os.unlink(self.bad)
+
+    def test_a_good_one_with_odd_parts_is_read_without_them(self):
+        self.write(json.dumps({"settings": [1], "stations": "x", "playlists": 5, "list": 3}))
+        lib = Library()
+        lib.load()
+        self.assertTrue(lib.stations)   # the default stations
+        self.assertEqual((lib._remembered, lib.names["local"]), ([], ""))
+        self.assertFalse(os.path.exists(self.bad))
+
+    def test_no_file_is_no_trouble(self):
+        lib = Library()
+        lib.load()
+        self.assertFalse(os.path.exists(self.bad))
+
+    def test_a_save_is_on_the_disk_before_it_takes_the_old_ones_place(self):
+        order = []
+        real_fsync, real_replace = os.fsync, os.replace
+        with mock.patch.object(library.os, "fsync", lambda fd: (order.append("fsync"), real_fsync(fd))[1]), \
+                mock.patch.object(library.os, "replace", lambda a, b: (order.append("replace"), real_replace(a, b))[1]):
+            Library().save()
+        self.assertEqual(order, ["fsync", "replace"])
 
 
 if __name__ == "__main__":
