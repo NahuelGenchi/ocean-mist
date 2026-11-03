@@ -81,3 +81,33 @@ test('the helper passes only plain query keys', () => {
     assert.ok(!QUERY_KEY.test(bad), JSON.stringify(bad));
   }
 });
+
+// the helper cancels every request that would sign you out; the library's search is judged by its host and path,
+// as its query holds your own words (#86). apple.py's view does the same with WebKit's rules
+const signsOut = new Function(['SIGN_OUT', 'SEARCH_PATH', 'signsOut'].map((name) => definition('engine/helper/main.js', `const ${name} =`)).join('\n')
+  + '\nreturn signsOut;')();
+
+test('a search of the library for words that name a sign-out is not cancelled (#86)', () => {
+  for (const words of ['Log%20Off', 'log+off', 'Logoff', 'Sign-Out', 'sign%20out', 'Unauthorized', 'Night%20Drive']) {
+    assert.ok(!signsOut(`https://amp-api.music.apple.com/v1/me/library/search?term=${words}&types=library-songs`), words);
+  }
+  assert.ok(!signsOut('https://amp-api.music.apple.com/v1/me/library/songs?limit=100&offset=0'));
+});
+
+test('every other address that names a sign-out still is (#86)', () => {
+  for (const bad of ['https://music.apple.com/logout', 'https://idmsa.apple.com/appleauth/auth/signout',
+    'https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/logOff?x=1', 'https://music.apple.com/auth?action=logout',
+    'https://amp-api.music.apple.com/v1/me/account?unauthorized=1', 'https://amp-api.music.apple.com/v1/me/library/songs?term=logout',
+    'https://amp-api.music.apple.com/v1/me/library/search/logout?term=x', 'https://logout.apple.com/v1/me/library/search?term=x',
+    'https://amp-api.music.apple.com/signout/v1/me/library/search?term=x', 'https://www.spotify.com/logout/',
+    'https://accounts.spotify.com/api/logout?continue=x', 'not an address, but logout']) {
+    assert.ok(signsOut(bad), bad);
+  }
+});
+
+test('apple.py\'s view and the helper block the same words (#86)', () => {
+  const words = read('apple.py').match(/^SIGN_OUT = \(([^)]*)\)$/m)[1].match(/"([^"]+)"/g).map((w) => w.slice(1, -1));
+  assert.equal(definition('engine/helper/main.js', 'const SIGN_OUT =').split('/')[1], words.join('|'));
+  assert.equal(read('spotify.py').match(/^SIGN_OUT = .*$/m)[0], read('apple.py').match(/^SIGN_OUT = .*$/m)[0]);
+  assert.match(read('apple.py'), /^SEARCH_RULE = r"\^\[a-z\]\+:\/\/\[\^\/\?\]\*\/v1\/me\/library\/search\[\?\]"/m);
+});

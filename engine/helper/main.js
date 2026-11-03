@@ -59,6 +59,9 @@ const mayGo = (raw) => {
   } catch (_) { return false; }
 };
 const SIGN_OUT = /log.?out|sign.?out|log.?off|sign.?off|unauthori[sz]e/i;   // the same as apple.py and spotify.py block: a sign-out here would end Firefox's sign-in too
+const SEARCH_PATH = /^\/v1\/me\/library\/search$/;   // the library's search, whose query holds your own words (a song may be called "Log Off")
+// does a request sign you out? its whole address says so, but for the library's search only its host and path count
+const signsOut = (raw) => { try { const url = new URL(raw); return SIGN_OUT.test(SEARCH_PATH.test(url.pathname) ? `${url.protocol}//${url.host}${url.pathname}` : raw); } catch (_) { return SIGN_OUT.test(String(raw)); } };
 const PERMITTED = new Set(['protected-media-identifier']);   // the only permission the service's player may be given
 const READY_WITHIN = 45000;       // the service's page gets this long to open and to say it is signed in
 const SIGNED_WITHIN = 10000;      // ...and this long, once its player is up, to say it is signed in
@@ -745,7 +748,7 @@ async function run() {
   const ses = session.fromPartition(service === 'spotify' ? 'ocean-mist-spotify' : 'ocean-mist-apple');   // no "persist:": in memory only
   ses.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`);
   ses.webRequest.onBeforeRequest((details, callback) => {
-    callback(SIGN_OUT.test(details.url) || unneeded(details) ? { cancel: true } : {});
+    callback(signsOut(details.url) || unneeded(details) ? { cancel: true } : {});
   });
   const denied = new Set();
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
