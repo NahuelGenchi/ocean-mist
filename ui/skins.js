@@ -22,7 +22,9 @@
         '<br>while the album art and the green accents keep their own colors.',
     },
   };
-  let chosen = 'compact';
+  let chosen = 'classic';
+  // the skin in use: the chooser is only seen in the full player, so it is Classic or Dark
+  const inUse = () => (state.settings.dark ? 'dark' : 'classic');
 
   function select(name) {
     chosen = name;
@@ -72,8 +74,9 @@
     el.addEventListener('dblclick', () => { select(el.dataset.skin); apply(); });
   }
   $('w-full').addEventListener('click', leave);
-  select('compact');
-  on('settings', () => { if (state.settings.mini) compact(); });
+  select(inUse());
+  on('settings', () => { if (state.settings.mini) compact(); select(inUse()); });
+  on('view', (view) => { if (view === 'skins') select(inUse()); });   // it opens on the skin that is on
 
   Mist.skins = { apply, leave, compact };
 })();
