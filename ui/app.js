@@ -551,7 +551,16 @@
   }
   function extFailed(e, code, text) {
     if (ext !== e) return;
+    const at = extPosition();
     ext = null;
+    // the engine itself stopped (its process, or its page) while the song played: it is started again, once for
+    // the song, from where it was; a second stop is told as before
+    if ((code === 'crash' || code === 'page') && !e.again && state.mode === 'playing' && state.cur === e.t.id) {
+      flash(`${sentence(text || 'the playback engine stopped unexpectedly')}; starting it again…`, 6000);
+      extStart(e.t, at);
+      ext.again = true;
+      return;
+    }
     clearInterval(extTimer); extTimer = 0;
     const unsure = e.t.spotify ? 'Ocean Mist could not confirm that your Spotify account has Premium, so its songs were not played'
       : 'Ocean Mist could not confirm that your Apple Music account has an active subscription, so its songs were not played';

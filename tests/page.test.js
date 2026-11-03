@@ -111,3 +111,12 @@ test('apple.py\'s view and the helper block the same words (#86)', () => {
   assert.equal(read('spotify.py').match(/^SIGN_OUT = .*$/m)[0], read('apple.py').match(/^SIGN_OUT = .*$/m)[0]);
   assert.match(read('apple.py'), /^SEARCH_RULE = r"\^\[a-z\]\+:\/\/\[\^\/\?\]\*\/v1\/me\/library\/search\[\?\]"/m);
 });
+
+test('every session of the helper refuses downloads (#90)', () => {
+  const source = read('engine/helper/main.js');
+  const sessions = [...source.matchAll(/const (\w+) = session\.fromPartition\(/g)].map((m) => m[1]);
+  assert.deepEqual(sessions.sort(), ['own', 'ses']);
+  for (const name of sessions) {
+    assert.match(source, new RegExp(`${name}\\.on\\('will-download', \\(event\\) => event\\.preventDefault\\(\\)\\)`), name);
+  }
+});

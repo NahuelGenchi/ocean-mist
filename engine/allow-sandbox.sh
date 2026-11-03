@@ -95,6 +95,37 @@ check_program() {
   fi
 }
 
+# every folder above the file is changed by nobody but its owner (root, or whoever asked) and root: whoever else
+# could rename one could put another file where the profile points. A folder anyone may write to is fine with the
+# sticky bit (/tmp's), which keeps others from renaming what is not theirs; a group-writable one only when the group
+# is its owner's own, with nobody else in it (a user private group, which Ubuntu's umask makes folders writable for)
+check_folders() {
+  local program="$1" asker="$2" dir owner perm members
+  dir="$(dirname "$program")"
+  while :; do
+    owner="$(stat -c %u "$dir")"
+    perm=$((8#$(stat -c %a "$dir")))
+    if [ "$owner" != 0 ] && [ "$owner" != "$asker" ]; then
+      echo "A folder above the engine's file belongs to someone else, so no profile is added for it: $dir"
+      exit 1
+    fi
+    if (( perm & 8#1000 )); then
+      :
+    elif (( perm & 8#002 )); then
+      echo "Anyone may change a folder above the engine's file, so no profile is added for it: $dir"
+      exit 1
+    elif (( perm & 8#020 )); then
+      members="$(getent group "$(stat -c %g "$dir")" | cut -d: -f4)"
+      if [ "$(stat -c %G "$dir")" != "$(stat -c %U "$dir")" ] || [ -n "$members" ]; then
+        echo "Others may change a folder above the engine's file, so no profile is added for it: $dir"
+        exit 1
+      fi
+    fi
+    [ "$dir" = / ] && break
+    dir="$(dirname "$dir")"
+  done
+}
+
 # put the profile in place: parsed in a hidden file the system does not load, moved into place, then loaded
 install_profile() {
   local program="$1" file tmp
@@ -161,6 +192,7 @@ main() {
         echo "The engine's file belongs to someone else than you; no profile is added for it."
         exit 1
       fi
+      check_folders "$program" "${SUDO_UID:-${PKEXEC_UID:-0}}"
       if ! command -v apparmor_parser >/dev/null 2>&1 || [ ! -d "$DIR" ]; then
         echo "This system has no AppArmor, so there is nothing to allow."
         exit 0
