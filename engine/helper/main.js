@@ -685,6 +685,7 @@ let listener = null;              // the listening page's window
 let listenUntil = 0;              // until when the capture it was asked for may be allowed (once)
 async function listen() {
   const own = session.fromPartition('ocean-mist-listen');   // in memory only, and nothing of the service's
+  own.on('will-download', (event) => event.preventDefault());   // a page that starts a download gets nothing saved
   const mine = (contents) => !!listener && contents === listener.webContents;
   own.setPermissionRequestHandler((contents, permission, callback) => callback(permission === 'media' && mine(contents)));
   own.setPermissionCheckHandler((contents, permission) => permission === 'media' && mine(contents));
@@ -746,6 +747,7 @@ async function run() {
   say('widevine', { ready: true, seconds: round((Date.now() - began) / 1000), components: summary(components.status()) });
 
   const ses = session.fromPartition(service === 'spotify' ? 'ocean-mist-spotify' : 'ocean-mist-apple');   // no "persist:": in memory only
+  ses.on('will-download', (event) => event.preventDefault());   // the service's page saves nothing to the disk, whatever it starts
   ses.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`);
   ses.webRequest.onBeforeRequest((details, callback) => {
     callback(signsOut(details.url) || unneeded(details) ? { cancel: true } : {});

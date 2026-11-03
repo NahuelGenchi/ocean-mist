@@ -28,6 +28,8 @@ shows the same step as a command to run in a terminal.
     python3 engine.py check     starts the installed engine for a moment and checks its sandbox
 """
 import collections
+import ctypes
+import errno
 import hashlib
 import http.client
 import json
@@ -36,6 +38,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -61,6 +64,9 @@ UNPACKED = 296027496        # ...and of what it holds
 WIDEVINE = 45 << 20         # what Google's module and Chromium's own files add the first time it runs
 DOWNLOAD_HOSTS = re.compile(r"^https://(?:[a-z0-9-]+\.)*(?:github\.com|githubusercontent\.com)/", re.I)
 ENTRIES = 400               # most files the archive may hold (it holds 72)
+PARTIAL = f".download-{SHA256[:16]}.partial"   # the archive as far as it came: the next try goes on from there
+TRIES = 3                   # tries of the download in all, each going on from where the last one stopped
+BACKOFF = 2                 # seconds before the second try, twice that before the third
 APPARMOR_DIR = "/etc/apparmor.d"
 PROFILE_PREFIX = "ocean-mist-engine"                    # what allow-sandbox.sh calls its profiles
 PROFILE_PATH = re.compile(r"^/[A-Za-z0-9_./+-]+$")      # the characters that script can put in a profile
@@ -105,12 +111,16 @@ WORDS = {
     "crash": "The playback engine stopped unexpectedly",
     "page": "Apple Music changed something Ocean Mist depends on, so the engine needs an update",
     "start": "The playback engine could not start",
+    "outdated": "Apple Music songs need the playback engine updated; update it under Apple Music, Playback engine",
+    "damaged": "The playback engine's files are damaged; install it again under Apple Music, Playback engine",
 }
 
 # the same, in Spotify's words: what the page is told while a Spotify song plays (and "no-plan", which only
 # Spotify's helper says: it plays only an account whose plan its page said)
 SPOTIFY_WORDS = dict(WORDS, **{
     "not-installed": "Spotify songs need the playback engine; install it under Spotify, Playback engine",
+    "outdated": "Spotify songs need the playback engine updated; update it under Spotify, Playback engine",
+    "damaged": "The playback engine's files are damaged; install it again under Spotify, Playback engine",
     "signed-out": "Spotify says you are signed out; sign in again in Firefox",
     "no-subscription": "Your Spotify account has no active Premium subscription, so its songs cannot be played",
     "no-plan": "Ocean Mist could not confirm that your Spotify account has Premium, so its songs are not played; try again in a moment",
@@ -236,42 +246,107 @@ def sandbox_failure(lines):
 
 # ---- the download ----
 
-def download(url, path, size, sha256, progress=None, opener=None, cancelled=None):
-    """Fetch `url` into the file `path`, checking its size and its SHA-256 as it comes. EngineError when
-    it cannot be had or is not what was expected; nothing is left behind then."""
+class _Broken(Exception):
+    """The download stopped on the way (the network, a time-out, a server's error): another try goes on."""
+
+
+def download(url, path, size, sha256, progress=None, opener=None, cancelled=None, tries=TRIES, wait=BACKOFF):
+    """Fetch `url` into the file `path`, checking its size and its SHA-256. What `path` already holds (a
+    download cut short before) is hashed and gone on from with a Range request, and a broken connection, a
+    time-out or a server's error is tried again, up to `tries` times in all, `wait` seconds and then twice
+    that apart. EngineError when it cannot be had or is not what was expected: what came stays in `path`
+    for the next time when the network or the disk failed, and goes when it is wrong, too big, or the
+    download was cancelled."""
     opener = opener or urllib.request.build_opener(_Stay)
-    request = urllib.request.Request(url, headers={"User-Agent": "Ocean Mist"})
-    digest, done, last = hashlib.sha256(), 0, 0.0
-    try:
-        with opener.open(request, timeout=30) as response, open(path, "wb") as out:
-            while True:
-                if cancelled and cancelled():
-                    raise EngineError("the download was cancelled", "cancelled")
-                chunk = response.read(1 << 16)
-                if not chunk:
-                    break
-                done += len(chunk)
-                if done > size:
-                    raise EngineError("the download is bigger than it should be, so it was not used", "download")
-                digest.update(chunk)
-                out.write(chunk)
-                if progress and time.monotonic() - last >= PROGRESS_EVERY:
-                    last = time.monotonic()
-                    progress(done, size)
-    except urllib.error.HTTPError as error:
-        _forget(path)
-        raise EngineError(f"the download failed (HTTP {error.code})", "download") from None
-    except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException):
-        _forget(path)
-        raise EngineError("Ocean Mist could not download the engine; check the internet connection", "download") from None
-    except EngineError:
-        _forget(path)
-        raise
+    for attempt in range(1, tries + 1):
+        try:
+            digest, done = _going_on(opener, url, path, size, progress, cancelled)
+            break
+        except _Broken:
+            if attempt == tries:
+                raise EngineError("Ocean Mist could not download the engine; check the internet connection "
+                                  "(what came is kept, and the next try goes on from there)", "download") from None
+        except EngineError as error:
+            if error.code != "space":
+                _forget(path)
+            raise
+        until = time.monotonic() + wait * 2 ** (attempt - 1)
+        while time.monotonic() < until:   # a cancel is heard while it waits
+            if cancelled and cancelled():
+                _forget(path)
+                raise EngineError("the download was cancelled", "cancelled")
+            time.sleep(0.1)
     if done != size or digest.hexdigest() != sha256:
         _forget(path)
         raise EngineError("the download is not the one that was expected (its checksum differs), so it was not used", "download")
     if progress:
         progress(done, size)
+
+
+def _going_on(opener, url, path, size, progress, cancelled):
+    """One try of the download: (the SHA-256 so far, bytes) once `path` holds `size` bytes. _Broken when the
+    network failed, EngineError when it is no use going on."""
+    digest, done = hashlib.sha256(), 0
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+                done += len(chunk)
+    except FileNotFoundError:
+        pass
+    except OSError:   # what is there cannot be read: from the start
+        digest, done = hashlib.sha256(), 0
+    if done > size:
+        digest, done = hashlib.sha256(), 0
+    if done == size:   # all of it came last time
+        return digest, done
+    if done and progress:
+        progress(done, size)
+    headers = {"User-Agent": "Ocean Mist"}
+    if done:
+        headers["Range"] = f"bytes={done}-"
+    try:
+        response = opener.open(urllib.request.Request(url, headers=headers), timeout=30)
+    except urllib.error.HTTPError as error:
+        if error.code == 416 or error.code == 429 or error.code >= 500:   # the range is no longer good, or the server is busy
+            if error.code == 416:
+                _forget(path)
+            raise _Broken() from None
+        raise EngineError(f"the download failed (HTTP {error.code})", "download") from None
+    except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException):
+        raise _Broken() from None
+    last = 0.0
+    try:
+        with response:
+            if done and not (response.status == 206 and str(response.headers.get("Content-Range") or "")
+                             .startswith(f"bytes {done}-")):
+                digest, done = hashlib.sha256(), 0   # the server sent all of it again: from the start
+            with open(path, "ab" if done else "wb") as out:
+                while True:
+                    if cancelled and cancelled():
+                        raise EngineError("the download was cancelled", "cancelled")
+                    try:
+                        chunk = response.read(1 << 16)
+                    except (OSError, TimeoutError, http.client.HTTPException, ValueError):
+                        raise _Broken() from None
+                    if not chunk:
+                        break
+                    done += len(chunk)
+                    if done > size:
+                        raise EngineError("the download is bigger than it should be, so it was not used", "download")
+                    digest.update(chunk)
+                    out.write(chunk)
+                    if progress and time.monotonic() - last >= PROGRESS_EVERY:
+                        last = time.monotonic()
+                        progress(done, size)
+    except OSError as error:   # the file's own: reading the network is caught above
+        if error.errno in (errno.ENOSPC, errno.EDQUOT):
+            raise EngineError("the disk is full, so the engine could not be downloaded; free some space and try again "
+                              "(what came is kept, and the next try goes on from there)", "space") from None
+        raise EngineError("Ocean Mist could not write the engine's download to the disk", "download") from None
+    if done < size:   # the connection ended before all of it came
+        raise _Broken()
+    return digest, done
 
 
 def _forget(path):
@@ -312,25 +387,36 @@ def unpack(archive, folder):
 
 def install_runtime(root, fetch=download, progress=None, steps=None, cancelled=None):
     """Download and unpack the runtime into `root`/electron. It lands whole or not at all: it is made beside
-    the old one and moved into place. `steps(name)` says which part is on. EngineError otherwise."""
+    the old one, and the two change places in one step (see _swap), so a runtime is there all along. A
+    download cut short is gone on from (PARTIAL). `steps(name)` says which part is on. EngineError otherwise."""
     say = steps or (lambda name: None)
     os.makedirs(root, exist_ok=True)
-    need = SIZE + UNPACKED + (100 << 20)
-    if shutil.disk_usage(root).free < need:
-        raise EngineError(f"there is not enough free space for the engine (it needs about {need >> 20} MB)", "download")
-    for name in os.listdir(root):   # what an install that was cut short left
-        if name.startswith(".installing-"):
+    for name in os.listdir(root):   # what an install that was cut short left, and a download of another version
+        if name.startswith((".installing-", ".replaced-")):
             shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+        elif name.startswith(".download-") and name != PARTIAL:
+            _forget(os.path.join(root, name))
+    archive, old = os.path.join(root, PARTIAL), os.path.join(root, "electron")
+    have = os.path.getsize(archive) if os.path.isfile(archive) else 0
+    need = max(0, SIZE - have) + UNPACKED + (100 << 20)
+    free = shutil.disk_usage(root).free
+    if free < need:
+        there = _folder_size(old) if os.path.isdir(old) and not os.path.islink(old) else 0
+        if there and free + there >= need and _version(root) != VERSION:
+            # the engine there is of another version, which plays nothing any more: it makes room first
+            shutil.rmtree(old, ignore_errors=True)
+            _forget(os.path.join(root, "engine.json"))
+        else:
+            raise EngineError(f"there is not enough free space for the engine: it needs about {need >> 20} MB, "
+                              f"and {free >> 20} MB are free", "download")
     work = tempfile.mkdtemp(prefix=".installing-", dir=root)
     try:
-        archive = os.path.join(work, "archive.zip")
         say("downloading")
         fetch(URL, archive, SIZE, SHA256, progress, cancelled=cancelled)
         say("unpacking")
         fresh = os.path.join(work, "electron")
         os.makedirs(fresh)
         unpack(archive, fresh)
-        _forget(archive)
         try:
             with open(os.path.join(fresh, "version")) as fh:
                 same = fh.read().strip() == VERSION
@@ -338,15 +424,127 @@ def install_runtime(root, fetch=download, progress=None, steps=None, cancelled=N
             same = False
         program = os.path.join(fresh, "electron")
         if not (same and os.access(program, os.X_OK) and os.path.isfile(os.path.join(fresh, "libffmpeg.so"))):
+            _forget(archive)
             raise EngineError("the download is not the engine that was expected, so it was not used", "download")
-        old = os.path.join(root, "electron")
-        if os.path.lexists(old):
-            shutil.rmtree(old)
-        os.replace(fresh, old)
-        with open(os.path.join(root, "engine.json"), "w") as fh:
-            json.dump({"version": VERSION, "sha256": SHA256, "installed": time.strftime("%Y-%m-%d")}, fh)
+        files = manifest(fresh)
+        gone = _swap(fresh, old)
+        _write_json(os.path.join(root, "engine.json"),
+                    {"version": VERSION, "sha256": SHA256, "installed": time.strftime("%Y-%m-%d"), "files": files})
+        _forget(archive)
+        if gone:
+            shutil.rmtree(gone, ignore_errors=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _version(root):
+    """The version engine.json names, or None."""
+    try:
+        with open(os.path.join(root, "engine.json")) as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return meta.get("version") if isinstance(meta, dict) and isinstance(meta.get("version"), str) else None
+
+
+def _folder_size(folder):
+    total = 0
+    for top, _, names in os.walk(folder):
+        for name in names:
+            try:
+                total += os.lstat(os.path.join(top, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _write_json(path, value):
+    """Write `path` whole or not at all: a temporary file beside it, moved over it."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(value, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        _forget(tmp)
+        raise
+
+
+def _exchange(a, b):
+    """Swap two folders in one step (Linux's renameat2 with RENAME_EXCHANGE); False where the system or the
+    file system cannot."""
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except (OSError, AttributeError):
+        return False
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    at_fdcwd, rename_exchange = -100, 2
+    return renameat2(at_fdcwd, os.fsencode(a), at_fdcwd, os.fsencode(b), rename_exchange) == 0
+
+
+def _swap(fresh, place):
+    """Put the folder `fresh` at `place`. When a runtime is there, the two change places in one step, so there
+    is no moment without one, and the old one (now at `fresh`) is returned, for the caller to delete. Where
+    that cannot be done, the old one is moved aside and the new one in, and back when that fails."""
+    if not os.path.lexists(place):
+        os.replace(fresh, place)
+        return None
+    if _exchange(fresh, place):
+        return fresh
+    aside = tempfile.mkdtemp(prefix=".replaced-", dir=os.path.dirname(place))
+    os.rmdir(aside)
+    os.replace(place, aside)
+    try:
+        os.replace(fresh, place)
+    except OSError:
+        os.replace(aside, place)
+        raise
+    return aside
+
+
+def manifest(folder):
+    """What the runtime in `folder` holds: {path in it: [size, mtime in ns, SHA-256]} for every file."""
+    files = {}
+    for top, dirs, names in os.walk(folder):
+        dirs.sort()
+        for name in sorted(names):
+            path = os.path.join(top, name)
+            info = os.lstat(path)
+            files[os.path.relpath(path, folder)] = [info.st_size, info.st_mtime_ns, _sha256(path)]
+    return files
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def damaged(folder, files):
+    """The first file of the runtime in `folder` that is missing or not what `files` (see manifest) says, or
+    None. A file whose size and time are as they were is taken as it was; one whose time changed is hashed
+    again, and is fine when its SHA-256 is (its new time is then in `files`)."""
+    for name, (size, mtime, sha256) in sorted(files.items()):
+        path = os.path.join(folder, name)
+        try:
+            info = os.lstat(path)
+        except OSError:
+            return name
+        if info.st_size != size or not os.path.isfile(path) or os.path.islink(path):
+            return name
+        if info.st_mtime_ns != mtime:
+            try:
+                if _sha256(path) != sha256:
+                    return name
+            except OSError:
+                return name
+            files[name] = [size, info.st_mtime_ns, sha256]
+    return None
 
 
 # ---- the engine ----
@@ -378,6 +576,7 @@ class Engine:
         self.stop_install = False
         self.sandbox = "unknown"   # ok | blocked, as the last start or check found
         self.error = ""            # why the last install or check failed
+        self.damaged = False       # a start found a file of the runtime missing or changed (see damaged())
         self.watcher = None
         self.checking = threading.Lock()   # one check of the sandbox at a time: they share a folder
         self.asking = False        # whether the administrator step is out for a password (or running)
@@ -391,19 +590,56 @@ class Engine:
 
     # -- what is there --
     def installed(self):
+        return not self.damaged and _version(self.root) == VERSION and os.access(self.program, os.X_OK)
+
+    def outdated(self):
+        """{"from": version, "to": VERSION} when the engine there is of another version than this player's (an
+        update is due: it plays nothing until then), or None."""
+        there = _version(self.root)
+        if there and there != VERSION and os.access(self.program, os.X_OK):
+            return {"from": there, "to": VERSION}
+        return None
+
+    def _missing(self, service):
+        """Why a song cannot be played with what is there: the page's words for it (an engine to install, to
+        update, or to install again)."""
+        words = SPOTIFY_WORDS if service == "spotify" else WORDS
+        if self.damaged:
+            return words["damaged"]
+        return words["outdated"] if self.outdated() else words["not-installed"]
+
+    def _intact(self):
+        """Whether the runtime's files are what engine.json says they were when it was installed (an engine
+        installed before that list was kept is taken as it is). A file found changed makes the engine
+        damaged until it is installed again."""
+        path = os.path.join(self.root, "engine.json")
         try:
-            with open(os.path.join(self.root, "engine.json")) as fh:
+            with open(path) as fh:
                 meta = json.load(fh)
         except (OSError, ValueError):
             return False
-        return isinstance(meta, dict) and meta.get("version") == VERSION and os.access(self.program, os.X_OK)
+        files = meta.get("files") if isinstance(meta, dict) else None
+        if not isinstance(files, dict) or not all(isinstance(v, list) and len(v) == 3 for v in files.values()):
+            return True
+        before = json.dumps(files, sort_keys=True)
+        if damaged(os.path.dirname(self.program), files) is not None:
+            with self.lock:
+                self.damaged, self.error = True, WORDS["damaged"]
+            return False
+        if json.dumps(files, sort_keys=True) != before:   # a file's time changed, not its bytes: noted, so it is not hashed every time
+            try:
+                _write_json(path, dict(meta, files=files))
+            except OSError:
+                pass
+        return True
 
     def status(self):
         with self.lock:
             running = self.proc is not None and self.proc.poll() is None
             real = os.path.realpath(self.program)   # a profile matches the file as the kernel resolves it
             return {
-                "installed": self.installed(), "version": VERSION, "source": SOURCE, "size": SIZE, "unpacked": UNPACKED,
+                "installed": self.installed(), "outdated": None if self.damaged else self.outdated(), "damaged": self.damaged,
+                "version": VERSION, "source": SOURCE, "size": SIZE, "unpacked": UNPACKED,
                 "extra": WIDEVINE, "sha256": SHA256, "folder": self.root, "running": running, "ready": running and self.ready,
                 "installing": dict(self.installing) if self.installing else None, "error": self.error,
                 "sandbox": self.sandbox, "restricted": restricted(), "covered": package_covers(self.program),
@@ -456,6 +692,8 @@ class Engine:
             if gone is not None:
                 self._reap(gone, 5)
             install_runtime(self.root, self.fetch, progress, step, cancelled=lambda: self.stop_install)
+            with self.lock:
+                self.damaged = False
             step("checking")
             self.check(inside=True)
         except EngineError as error:
@@ -616,7 +854,7 @@ class Engine:
         try:
             proc = self.popen([self.program, self.helper, "--selftest", f"--data={folder}"], stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=helper_env(), cwd=self.root,
-                              text=True, encoding="utf-8", errors="replace")
+                              text=True, encoding="utf-8", errors="replace", start_new_session=True)
         except OSError:
             self.error = WORDS["start"]
             self.sandbox = "unknown"
@@ -625,7 +863,7 @@ class Engine:
             return False
         drain = threading.Thread(target=_drain, args=(proc.stderr, tail), daemon=True)
         drain.start()
-        timer = threading.Timer(CHECK_WITHIN, proc.kill)
+        timer = threading.Timer(CHECK_WITHIN, _kill_group, args=(proc, signal.SIGKILL))
         timer.daemon = True
         timer.start()
         try:
@@ -640,6 +878,11 @@ class Engine:
         finally:
             timer.cancel()
             shutil.rmtree(folder, ignore_errors=True)
+            for pipe in (proc.stdout,) + (() if drain.is_alive() else (proc.stderr,)):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
         said = next((e for e in lines if e.get("event") == "selftest"), None)
         if said and said.get("ok"):
             self.sandbox, self.error, ok = "ok", "", True
@@ -657,8 +900,7 @@ class Engine:
         service takes, from `start` seconds. The page hears how it goes. EngineError when the engine
         cannot be started at all. A running helper of the other service ends first."""
         if not self.installed():
-            words = SPOTIFY_WORDS if service == "spotify" else WORDS
-            raise EngineError(words["not-installed"], "not-installed")
+            raise EngineError(self._missing(service), "not-installed")
         with self.lock:
             if volume is not None:
                 self.volume = max(0.0, min(1.0, _finite(volume, self.volume)))
@@ -820,18 +1062,30 @@ class Engine:
 
     @staticmethod
     def _reap(proc, patience):
+        """Wait `patience` seconds for the helper to end, then end it: it and what it started (Chromium's own
+        processes are in its process group): asked to end first (SIGTERM), then made to (SIGKILL)."""
         try:
             proc.wait(patience)
         except subprocess.TimeoutExpired:
-            proc.terminate()
+            _kill_group(proc, signal.SIGTERM)
             try:
                 proc.wait(2)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                pass
+            _kill_group(proc, signal.SIGKILL)   # what it started goes with it, even when it ended on SIGTERM
+            try:
+                proc.wait(2)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _launch(self, serial, service):
-        """Start the helper and hand it the sign-in; its events carry on from there."""
+        """Start the helper and hand it the sign-in; its events carry on from there. The runtime's files are
+        looked at first: one missing or changed since the install, and nothing is started."""
         words = SPOTIFY_WORDS if service == "spotify" else WORDS
+        if not self._intact():
+            self._broken(serial, "not-installed", self._missing(service))
+            self.setup()
+            return
         try:
             token = self.token_source(service)
             line = start_line(service, token, self.volume, self.muted, self.store if service == "apple" else "")
@@ -853,7 +1107,7 @@ class Engine:
                 tail = collections.deque(maxlen=40)
                 proc = self.popen([self.program, self.helper, f"--data={folder}"], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=helper_env(), cwd=self.root,
-                                  text=True, encoding="utf-8", errors="replace", bufsize=1)
+                                  text=True, encoding="utf-8", errors="replace", bufsize=1, start_new_session=True)
                 self.proc, self.service, self.ready, self.started, self.fail, self.tail = \
                     proc, service, False, False, None, tail
                 proc.stdin.write(json.dumps(line) + "\n")
@@ -879,7 +1133,7 @@ class Engine:
         with self.lock:
             if proc is self.proc and not self.ready and proc.poll() is None:
                 self.fail = "offline"
-                proc.kill()
+                _kill_group(proc, signal.SIGKILL)
 
     def _read(self, proc):
         for line in proc.stdout:
@@ -985,6 +1239,18 @@ class Engine:
                     self._end()
 
 
+def _kill_group(proc, sig):
+    """Signal the helper's process group (it was started in a session of its own, so the group is it and
+    what it started), or the helper alone where that cannot be done."""
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError, OSError, TypeError, AttributeError):
+        try:
+            proc.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
+
+
 def _finite(value, default=0.0):
     """`value` as a finite number (a place or a volume that is not one becomes `default`)."""
     try:
@@ -1016,7 +1282,8 @@ def main(argv):
         print("the sandbox works" if ok else "the sandbox is not on: " + (engine.error or "the engine is not installed"))
         return 0 if ok else 1
     status = engine.status()
-    print(f"engine {'installed' if status['installed'] else 'not installed'} (version {VERSION}) in {engine.root}")
+    print(f"engine {'installed' if status['installed'] else 'not installed'} (version {VERSION}) in {engine.root}"
+          + (f"; the one there is {status['outdated']['from']}, so an update is due" if status["outdated"] else ""))
     print(f"this system restricts user namespaces: {status['restricted']}")
     return 0
 

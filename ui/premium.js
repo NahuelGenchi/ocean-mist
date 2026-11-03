@@ -842,7 +842,12 @@
         `<button id="en-cancel"${now.step === 'downloading' ? '' : ' disabled'}>Cancel</button></div>`;
     }
     if (!s.installed) {
-      return '<div class="yt-sign en"><b>Playback engine</b>' + warn +
+      // an engine of another version is there (it plays nothing until it is updated), or one whose files changed
+      const update = s.outdated, short = (version) => esc(String(version).split('+')[0]);
+      const verb = update ? `Update the engine (${short(update.from)} → ${short(update.to)})` : s.damaged ? 'Download and install it again' : 'Download and install';
+      return `<div class="yt-sign en"><b>${update ? 'An update of the playback engine' : 'Playback engine'}</b>` + warn +
+        (update ? `<p>This version of Ocean Mist plays songs with Electron ${short(update.to)}, and the engine installed is ${short(update.from)}, ` +
+          'which plays nothing until it is updated. The update downloads the new one and puts it in the old one’s place in one step.</p>' : '') +
         '<p>Apple Music’s and Spotify’s songs are protected, so this page cannot play them. Ocean Mist plays them with an engine of its own: a copy of ' +
         'Chromium that runs in the background, with no window, only while a song of theirs plays. It opens the service’s web player and ' +
         'nothing else, signed in with the sign-in Ocean Mist reads from Firefox, which it keeps in memory only.</p>' +
@@ -856,7 +861,7 @@
         '<p><u>Licences:</u> Electron is MIT licensed and Chromium has its own open-source licences (both come in the download); ' +
         'Widevine is Google’s module and comes under Google’s own terms.</p>' +
         `<label><input type="checkbox" id="en-ok"${eng.ticked ? ' checked' : ''}> I accept these licences and want the engine downloaded.</label>` +
-        `<button id="en-install"${eng.ticked ? '' : ' disabled'}>Download and install</button>${profile}</div>`;
+        `<button id="en-install"${eng.ticked ? '' : ' disabled'}>${verb}</button>${profile}</div>`;
     }
     if (s.sandbox === 'ok') {
       return '<div class="yt-sign en"><b>Playback engine</b>' + warn +
