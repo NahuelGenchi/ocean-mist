@@ -24,6 +24,7 @@ import os
 import queue
 import re
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -272,12 +273,35 @@ def write_playlist(path, tracks):
         raise
 
 
+def _read_state(path):
+    """state.json, as the object it is. One that cannot be read as that is kept aside as state.json.bad, where its
+    lists and settings can still be found: the player's first save would otherwise write the defaults over it."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            saved = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):   # (a file that is not UTF-8 is a ValueError too)
+        saved = None
+    if isinstance(saved, dict):
+        return saved
+    try:
+        os.replace(path, path + ".bad")
+        print(f"ocean-mist: {path} could not be read; it is kept as {path}.bad, and the player starts afresh",
+              file=sys.stderr)
+    except OSError:
+        pass
+    return {}
+
+
 def _write_json(path, data):
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
+            fh.flush()
+            os.fsync(fh.fileno())   # on the disk before it takes the old one's place: a power cut leaves one or the other
         os.replace(tmp, path)
     except OSError:
         pass
@@ -336,19 +360,17 @@ class Library:
             self._cache = cached.get("files", {}) if cached.get("version") == tags.VERSION else {}
         except (OSError, ValueError, AttributeError):
             self._cache = {}
-        try:
-            with open(STATE_FILE, encoding="utf-8") as fh:
-                saved = json.load(fh)
-        except (OSError, ValueError):
-            saved = {}
-        self.settings.update(saved.get("settings", {}))
+        saved = _read_state(STATE_FILE)
+        settings = saved.get("settings")
+        self.settings.update(settings if isinstance(settings, dict) else {})
         stations = saved.get("stations")
-        if stations is None:
+        if not isinstance(stations, list):
             stations = [{"id": n + 1, "name": name, "url": url}
                         for n, (name, url) in enumerate(DEFAULT_STATIONS)]
-        self.stations = [s for s in stations if s.get("url")]
-        self._remembered = [p for p in saved.get("playlists", []) if isinstance(p, str)]
-        self.names["local"] = saved.get("list", "")
+        self.stations = [s for s in stations if isinstance(s, dict) and s.get("url")]
+        playlists = saved.get("playlists")
+        self._remembered = [p for p in playlists if isinstance(p, str)] if isinstance(playlists, list) else []
+        self.names["local"] = saved.get("list") if isinstance(saved.get("list"), str) else ""
         dropped = self._restore(saved.get("playlist", []))
         resume = saved.get("resume")
         if not isinstance(resume, dict):

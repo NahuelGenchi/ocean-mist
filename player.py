@@ -21,6 +21,7 @@ import os
 import queue
 import re
 import secrets
+import signal
 import sys
 import threading
 import urllib.parse
@@ -933,7 +934,17 @@ def run_app(argv):
         def do_activate(self):
             if self.window is None:
                 self._build()
+                # a logout, a kill or Ctrl+C in the terminal closes the player the way its close button does, so
+                # what _on_destroy saves is saved and the engine's helper and the library views end
+                for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                    GLib.unix_signal_add(GLib.PRIORITY_HIGH, signum, self._on_signal)
             self.window.present()
+
+        def _on_signal(self, *_):
+            if self.window is not None:
+                self.window.destroy()   # (_on_destroy)
+            self.quit()
+            return GLib.SOURCE_REMOVE
 
         def do_open(self, files, n_files, hint):
             paths = [f.get_path() for f in files if f.get_path()]
