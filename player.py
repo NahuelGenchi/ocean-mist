@@ -19,6 +19,7 @@ import json
 import mimetypes
 import os
 import queue
+import re
 import secrets
 import sys
 import threading
@@ -69,7 +70,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         if os.environ.get("OCEAN_MIST_DEBUG"):
-            sys.stderr.write("http: " + fmt % args + "\n")
+            sys.stderr.write("http: " + self._unsaid(fmt % args) + "\n")
+
+    def _unsaid(self, line):
+        """A log line without what a log handed over with a bug report must not carry: the page's token (the
+        secret that keeps other programs from using the server) and the query of a request (the words of a
+        search, the address of a cover)."""
+        if self.token:
+            line = line.replace(f"/{self.token}/", "/TOKEN/")
+        return re.sub(r"\?[^\s\"']*", "?…", line)
 
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")   # every answer is what its type says, nothing else
