@@ -2,10 +2,13 @@
 answered, nothing a file's tags say reaches a header (#74), and a command of
 the wrong shape gets a 400 (#116)."""
 import http.client
+import io
 import json
 import os
 import secrets
+import time
 import unittest
+from unittest import mock
 
 import tests  # noqa: F401  (scratch folders first)
 
@@ -163,6 +166,39 @@ class Malformed(unittest.TestCase):
             answer.read()
             self.assertEqual(answer.getheader("X-Content-Type-Options"), "nosniff", path)
         conn.close()
+
+
+class DebugLog(unittest.TestCase):
+    """With OCEAN_MIST_DEBUG the server logs its requests, but not the page's token nor what a request's query
+    says (a search's words, a cover's address): a log is handed over with bug reports (#118)."""
+
+    def test_the_log_says_neither_the_token_nor_the_words(self):
+        class Music:   # YouTube Music, stood in: a search that finds nothing
+            def search(self, words, kind="songs"):
+                return {"items": [], "more": None}
+        lib, token = Library(), secrets.token_urlsafe(16)
+        server = player.start_server(lib, token, music=Music())
+        port = server.server_address[1]
+        log = io.StringIO()
+        try:
+            with mock.patch.dict(os.environ, {"OCEAN_MIST_DEBUG": "1"}), mock.patch("sys.stderr", log):
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                for path in (f"/{token}/yt/search?q=invented+secret+words&kind=songs",
+                             f"/{token}/ui/app.js?u=https%3A%2F%2Fi.ytimg.com%2Fvi%2Finvented%2Fhq.jpg",
+                             f"/{token}/nothing?also=invented"):
+                    conn.request("GET", path, headers={"Host": f"127.0.0.1:{port}"})
+                    conn.getresponse().read()
+                conn.close()
+                time.sleep(0.2)   # (the server's thread writes the last line after it answers)
+        finally:
+            server.shutdown()
+            server.server_close()
+        said = log.getvalue()
+        self.assertEqual(len(said.strip().splitlines()), 3, said)
+        for secret in (token, "invented", "secret", "words", "ytimg"):
+            self.assertNotIn(secret, said)
+        self.assertIn("/TOKEN/yt/search?…", said)
+        self.assertRegex(said, r"/TOKEN/nothing\?… HTTP/1.1\" 404")
 
 
 class PictureType(unittest.TestCase):
