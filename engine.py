@@ -452,7 +452,7 @@ class Engine:
                     self.installing.update(step=name)
             self.setup()
         try:
-            gone = self.stop(final=True)
+            gone = self._go_away()
             if gone is not None:
                 self._reap(gone, 5)
             install_runtime(self.root, self.fetch, progress, step, cancelled=lambda: self.stop_install)
@@ -471,7 +471,7 @@ class Engine:
         """Stop the helper and delete the engine and everything it kept."""
         if self.installing:
             raise EngineError("the engine is being installed", "start")
-        gone = self.stop(final=True)
+        gone = self._go_away()
         if gone is not None:
             self._reap(gone, 5)   # Chromium writes while it ends: the folder goes after it
         if os.path.basename(self.root) == "engine" and os.path.isdir(self.root) and not os.path.islink(self.root):
@@ -733,6 +733,19 @@ class Engine:
                 return self._end()
             self._send({"cmd": "stop"})
         return None
+
+    def _go_away(self):
+        """The engine is removed, or installed again: the helper is asked to end (and returned, if there was
+        one), and the page hears that the song it played, if any, has stopped, as for a song asked for with no
+        engine installed. (A helper asked to end says nothing as it ends.)"""
+        with self.lock:
+            song = self.song
+        gone = self.stop(final=True)
+        if song:
+            words = SPOTIFY_WORDS if song.get("service") == "spotify" else WORDS
+            self.emit("engine", phase="error", serial=song["serial"], code="not-installed",
+                      message=words["not-installed"])
+        return gone
 
     def close(self):
         """The player is closing: end the helper and wait for it."""

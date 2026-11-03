@@ -90,6 +90,7 @@ FIND = {
 TOP = frozenset(path for path, _ in LIBRARY.values())   # the lists of the library itself
 # what a request's address says when it signs you out, in the spellings Apple might use
 SIGN_OUT = ("log.?out", "sign.?out", "log.?off", "sign.?off", "unauthori[sz]e")
+SEARCH_RULE = r"^[a-z]+://[^/?]*/v1/me/library/search[?]"   # the library's search, by its address (see Page._rules)
 
 
 class AppleError(YTError):
@@ -264,8 +265,12 @@ class Page:
         """Block every request whose address names a sign-out, on any site: if
         Apple's page thinks the sign-in is bad it signs it out, and that would
         end the one in Firefox too."""
-        return json.dumps([{"trigger": {"url-filter": f".*{word}.*"}, "action": {"type": "block"}}
-                           for word in SIGN_OUT]).encode()
+        block = lambda where: {"trigger": {"url-filter": where}, "action": {"type": "block"}}
+        # ...but the library's search, whose query holds your own words (a song may be called "Log Off"): there a
+        # word counts only before the query, in the address's host or path, which the last rules block again
+        return json.dumps([block(f".*{word}.*") for word in SIGN_OUT]
+                          + [{"trigger": {"url-filter": SEARCH_RULE}, "action": {"type": "ignore-previous-rules"}}]
+                          + [block(f"^[^?]*{word}") for word in SIGN_OUT]).encode()
 
     def _rules_saved(self, store, result, _):
         if self.state != "loading":
