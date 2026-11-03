@@ -54,6 +54,9 @@ PAGE_POLICY = ("default-src 'self'; script-src 'self'; connect-src 'self'; img-s
 
 # -- http ---------------------------------------------------------------------
 
+BODY_LIMIT = 8 << 20   # bytes a command of the page may have (a playlist of 1,000 songs is far less)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     library = None
@@ -67,6 +70,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if os.environ.get("OCEAN_MIST_DEBUG"):
             sys.stderr.write("http: " + fmt % args + "\n")
+
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")   # every answer is what its type says, nothing else
+        super().end_headers()
 
     def handle_one_request(self):
         """A request, read and answered. A page that stops waiting for the
@@ -514,9 +521,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, b"forbidden")
         try:
             length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return self._send(400, b"bad request")
+        if length < 0 or length > BODY_LIMIT:   # (a negative one would read until the page gives up)
+            self.close_connection = True
+            return self._send(413 if length > 0 else 400, b"bad request")
+        try:
             msg = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self._send(400, b"bad request")
+        if not isinstance(msg, dict) or not isinstance(msg.get("cmd"), str):
+            return self._send(400, b"bad request")
+        try:
+            result = self._command(msg)
+        except (TypeError, ValueError, AttributeError, KeyError) as error:   # a field of the wrong kind
+            if os.environ.get("OCEAN_MIST_DEBUG"):
+                sys.stderr.write(f"http: {msg['cmd']}: {type(error).__name__}\n")
+            return self._send(400, b"bad request")
+        self._json(result)
+
+    def _command(self, msg):
+        """Carry out one of the page's commands: what is answered."""
         cmd = msg.get("cmd")
         library = self.library
         result = {"ok": True}
@@ -646,7 +671,7 @@ class Handler(BaseHTTPRequestHandler):
             library.remove_folder(str(msg.get("path") or ""))
         elif self.host is not None:
             self.host.command(cmd, msg)
-        self._json(result)
+        return result
 
 
 def cover_of(music, url):
