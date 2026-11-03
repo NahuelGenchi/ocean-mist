@@ -75,6 +75,7 @@ class Mpris:
         self.control, self.raise_window, self.quit = control, raise_window, quit
         self.open_file = open_file
         self.sent = {}
+        self.held = None   # _state() while one question is answered (see _asked)
         self.last_position = 0.0
         node = Gio.DBusNodeInfo.new_for_xml(XML)
         for interface in node.interfaces:
@@ -158,7 +159,20 @@ class Mpris:
             return self._root().get(name)
         if name == "Position":
             return GLib.Variant("x", int(self.library.position() * 1e6))
-        return self._state().get(name)
+        return self._asked().get(name)
+
+    def _asked(self):
+        """_state(), worked out once for the properties asked in one go: GDBus answers GetAll with one call of
+        _get per property, all in one turn of the main loop. It is let go when the loop is next idle (and when
+        something changed, see update), so the next question sees what changed."""
+        if self.held is None:
+            self.held = self._state()
+            GLib.idle_add(self._let_go)
+        return self.held
+
+    def _let_go(self):
+        self.held = None
+        return False
 
     def _set(self, connection, sender, path, interface, name, value):
         if name == "Volume":
@@ -204,6 +218,7 @@ class Mpris:
     def update(self):
         """Call on the GTK thread whenever playback or the settings change."""
         state = self._state()
+        self.held = None   # what a question asked meanwhile was told is gone with the change
         changed = {k: v for k, v in state.items()
                    if k not in self.sent or not self.sent[k].equal(v)}
         self.sent = state
