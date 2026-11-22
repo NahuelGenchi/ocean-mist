@@ -24,6 +24,7 @@ import secrets
 import signal
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -778,9 +779,42 @@ def lean():
     return libc
 
 
+# -- WSLg ---------------------------------------------------------------------
+# Under WSL, a window reaches the Windows desktop through WSLg: a compositor (Weston with an RDP backend) that
+# the Windows side's Remote Desktop client connects to. A launch that starts WSL starts the player in the same
+# second as that compositor, seconds before the Windows side connects, and a window mapped before then never
+# shows (#125). The compositor logs the connection, so the player waits for that line before it opens a window.
+
+WSLG_LOG = "/mnt/wslg/weston.log"
+WSLG_CONNECTED = b"Client HandShake"
+WSLG_WAIT = 20          # seconds at most: a WSLg that logs something else must not keep the player from starting
+WSLG_READ = 1 << 20     # bytes of the log read: the line comes early, and the log grows for as long as WSL runs
+
+
+def wait_for_wslg(log=WSLG_LOG, limit=WSLG_WAIT, sleep=time.sleep, clock=time.monotonic):
+    """Under WSLg, wait until the Windows side has connected, `limit` seconds at most. Returns at once when
+    this is not WSLg (no folder of the log). True when connected (or not WSLg), False when the limit came first."""
+    if not os.path.isdir(os.path.dirname(log)):
+        return True
+    end = clock() + limit
+    while True:
+        try:
+            with open(log, "rb") as f:
+                if WSLG_CONNECTED in f.read(WSLG_READ):
+                    return True
+        except OSError:   # not written yet
+            pass
+        if clock() >= end:
+            print(f"WSLg: the Windows side had not connected after {limit} s; opening the window anyway",
+                  file=sys.stderr)
+            return False
+        sleep(0.25)
+
+
 # -- window -------------------------------------------------------------------
 
 def run_app(argv):
+    wait_for_wslg()   # before GTK connects to the display
     libc = lean()
     import gi
     gi.require_version("Gtk", "3.0")
