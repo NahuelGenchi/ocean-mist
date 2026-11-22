@@ -890,13 +890,14 @@ def run_app(argv):
 
         def open_in_firefox(self, url):
             """Open `url` in Firefox, the way the desktop starts it (whichever
-            package it came in); False when there is none."""
+            package it came in), or under WSL the Windows one; False when
+            there is none."""
             for name in firefox.DESKTOP_ENTRIES:
                 found = DesktopAppInfo.new(name)
                 if found is not None:
                     GLib.idle_add(self._launch, found, url)
                     return True
-            return False
+            return firefox.open_in_windows(url)
 
         @staticmethod
         def _launch(found, url):

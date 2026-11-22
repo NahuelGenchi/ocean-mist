@@ -23,3 +23,8 @@ os.environ.pop("OCEAN_MIST_DEBUG", None)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+# under WSL, the Windows Firefox is the user's too: no test reaches it
+import firefox  # noqa: E402
+
+firefox.WSL_INTEROP = os.path.join(SCRATCH, "no-wsl-interop")
