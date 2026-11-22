@@ -17,7 +17,9 @@ are taken, or, for Apple Music, the one cookie its web player signs in with
 (media-user-token), or, for Spotify, the cookies its web player signs in with
 (sp_dc, and the companions it sends along), and they are let go once the
 request is made. The next request reads them again, so they are always the
-ones Firefox has now. Standard library only.
+ones Firefox has now. Under WSL, the Windows Firefox counts too: its profiles
+are read the same way through WSL's drive mounts, and a sign-in opens there
+when Linux has no Firefox. Standard library only.
 
     python3 firefox.py      which profiles have a YouTube, Apple Music or
                             Spotify sign-in (no values)
@@ -27,8 +29,11 @@ import glob
 import hashlib
 import os
 import re
+import shutil
 import sqlite3
 import struct
+import subprocess
+import threading
 import time
 
 # YouTube Music's own sign-in link: Google's page, then back to YouTube Music
@@ -56,18 +61,116 @@ SAFE = re.compile(r"[!#-+\--:<-\[\]-~]+\Z")   # what may go in a Cookie header, 
 WAL_MAGIC = (0x377F0682, 0x377F0683)
 WAL_VERSION = 3007000
 NEEDS_NEWER_PYTHON = "signing in needs Python 3.11 or newer"
+# Under WSL, Firefox is usually the Windows one (#126). WSL runs Windows programs only
+# where this file is (its interop); Windows is asked for these folders of the user
+# running WSL once, through cmd.exe, and they are reached through WSL's drive mounts.
+WSL_INTEROP = "/proc/sys/fs/binfmt_misc/WSLInterop"
+WSL_CONF = "/etc/wsl.conf"
+WINDOWS_FOLDERS = ("APPDATA", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)")
+WINDOWS_WAIT = 10   # seconds for cmd.exe, whose first start in a session can be slow
+_windows = {}       # the answer, once there is one
+
+
+def _run(args, **kwargs):   # the tests put a stand-in Windows here
+    return subprocess.run(args, **kwargs)
+
+
+def _mounts():
+    """Where WSL mounts the Windows drives: wsl.conf's [automount] root, or /mnt/."""
+    conf = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        conf.read(WSL_CONF, encoding="utf-8")
+    except (configparser.Error, UnicodeDecodeError):
+        pass
+    return conf.get("automount", "root", fallback="").strip().strip("\"'") or "/mnt/"
+
+
+def wsl_path(path):
+    """A Windows path (C:\\Users\\...) as WSL reaches it, or None for any other path."""
+    found = re.match(r"([A-Za-z]):(?:[\\/](.*))?\Z", path)
+    if not found:
+        return None
+    parts = [part for part in re.split(r"[\\/]+", found.group(2) or "") if part]
+    return os.path.join(_mounts(), found.group(1).lower(), *parts)
+
+
+def windows_folders():
+    """Under WSL, the Windows folders in WINDOWS_FOLDERS of the user running it,
+    as WSL reaches them: {name: path}. Empty anywhere else, or when Windows did
+    not answer (asked again next time)."""
+    if _windows or not glob.glob(glob.escape(WSL_INTEROP) + "*"):
+        return dict(_windows)
+    cmd = shutil.which("cmd.exe") or os.path.join(_mounts(), "c", "Windows", "System32", "cmd.exe")
+    line = "chcp 65001>nul" + "".join(f"&echo {name}=%{name}%" for name in WINDOWS_FOLDERS)
+    try:
+        out = _run([cmd, "/d", "/c", line], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                   stderr=subprocess.DEVNULL, cwd="/", timeout=WINDOWS_WAIT).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    for row in out.decode("utf-8", "replace").splitlines():
+        name, _, value = row.strip().partition("=")
+        value = value.strip()
+        if name in WINDOWS_FOLDERS and "%" not in value:   # an unset one stays %NAME%
+            path = wsl_path(value)
+            if path:
+                _windows[name] = path
+    return dict(_windows)
+
+
+def windows_roots():
+    """Where the Windows Firefox keeps its profiles, seen from WSL: Mozilla's
+    installer's, and the Microsoft Store package's."""
+    folders = windows_folders()
+    found = []
+    if "APPDATA" in folders:
+        found.append(os.path.join(folders["APPDATA"], "Mozilla", "Firefox"))
+    if "LOCALAPPDATA" in folders:
+        found += sorted(glob.glob(os.path.join(glob.escape(folders["LOCALAPPDATA"]), "Packages",
+                                               "Mozilla.Firefox_*", "LocalCache", "Roaming", "Mozilla",
+                                               "Firefox")))
+    return tuple(found)
+
+
+def windows_firefox():
+    """The Windows Firefox's program, seen from WSL, or None: Mozilla's
+    installer's (for everyone, or for the one user), or the Store's alias."""
+    folders = windows_folders()
+    for base, *rest in (("ProgramFiles", "Mozilla Firefox"), ("ProgramFiles(x86)", "Mozilla Firefox"),
+                        ("LOCALAPPDATA", "Mozilla Firefox"), ("LOCALAPPDATA", "Microsoft", "WindowsApps")):
+        if base in folders:
+            program = os.path.join(folders[base], *rest, "firefox.exe")
+            if os.path.lexists(program):   # the Store's alias is a link WSL cannot follow
+                return program
+    return None
+
+
+def open_in_windows(url):
+    """Open `url` in the Windows Firefox; False when there is none, or it did not start."""
+    program = windows_firefox()
+    if program is None:
+        return False
+    try:
+        started = subprocess.Popen([program, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, cwd=os.path.dirname(program),
+                                   start_new_session=True)
+    except OSError:
+        return False
+    threading.Thread(target=started.wait, daemon=True).start()   # no zombie once Firefox ends
+    return True
 
 
 def roots():
     """Where Firefox keeps its profiles: Mozilla's and distribution packages
-    (the old place and the XDG one), the Snap and the Flatpak."""
+    (the old place and the XDG one), the Snap and the Flatpak, and under WSL
+    the Windows Firefox's."""
     home = os.path.expanduser("~")
     config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
     return (os.path.join(home, ".mozilla", "firefox"),
             os.path.join(config, "mozilla", "firefox"),
             os.path.join(home, "snap", "firefox", "common", ".mozilla", "firefox"),
             os.path.join(home, ".var", "app", "org.mozilla.firefox", ".mozilla", "firefox"),
-            os.path.join(home, ".var", "app", "org.mozilla.firefox", "config", "mozilla", "firefox"))
+            os.path.join(home, ".var", "app", "org.mozilla.firefox", "config", "mozilla", "firefox")
+            ) + windows_roots()
 
 
 def _listing(root):
@@ -82,6 +185,8 @@ def _listing(root):
         path = listing.get(section, "Path", fallback="")
         if path:
             relative = listing.get(section, "IsRelative", fallback="1") != "0"
+            if not relative:   # the Windows Firefox's own names its drive
+                path = wsl_path(path) or path
             found[os.path.realpath(os.path.join(root, path) if relative else path)] = listing.get(
                 section, "Name", fallback="")
     return found
@@ -89,10 +194,13 @@ def _listing(root):
 
 def profiles():
     """The profile folders that have a cookie file, each once: those in the
-    usual places, and those a profiles.ini lists, wherever they are."""
+    usual places (Windows keeps them under Profiles), and those a profiles.ini
+    lists, wherever they are."""
     found = []
     for root in roots():
-        folders = glob.glob(os.path.join(glob.escape(root), "*", "")) + list(_listing(root))
+        folders = (glob.glob(os.path.join(glob.escape(root), "*", ""))   # Linux's place
+                   + glob.glob(os.path.join(glob.escape(root), "Profiles", "*", ""))   # Windows'
+                   + list(_listing(root)))
         for folder in folders:
             folder = os.path.realpath(folder)
             if folder not in found and os.path.isfile(os.path.join(folder, "cookies.sqlite")):
