@@ -544,18 +544,21 @@
         for (const p of lib.items) rows.push({ depth: 1, label: p.title, node: { kind: 'page', value: keyOf(p) } });
         if (!lib.items.length) rows.push({ depth: 1, label: '(no playlists yet)', dim: true });
       } else rows.push({ depth: 1, label: lib && lib.error ? '(not signed in)' : '(opening…)', dim: true });
+      if (signedIn()) rows.push({ depth: 1, label: 'Sign out', out: 'yt' });   // the counterpart of Sign in…
     }
     rows.push({ depth: 0, label: 'Apple Music', fold: 'apple' });
     if (yt.open.apple) {
       if (!appleReady()) rows.push({ depth: 1, label: 'Sign in…', node: { kind: 'apple', value: 'sign-in' } });
       else for (const [value, label] of APPLE) rows.push({ depth: 1, label, node: { kind: 'apple', value } });
       rows.push({ depth: 1, label: 'Playback engine', node: { kind: 'apple', value: 'engine' } });
+      if (state.settings.apple_account) rows.push({ depth: 1, label: 'Sign out', out: 'apple' });   // also when Apple turned the sign-in down
     }
     rows.push({ depth: 0, label: 'Spotify', fold: 'spotify' });
     if (yt.open.spotify) {
       if (!spotifyReady()) rows.push({ depth: 1, label: 'Sign in…', node: { kind: 'spotify', value: 'sign-in' } });
       else for (const [value, label] of SPOTIFY) rows.push({ depth: 1, label, node: { kind: 'spotify', value } });
       rows.push({ depth: 1, label: 'Playback engine', node: { kind: 'apple', value: 'engine' } });
+      if (state.settings.spotify_account) rows.push({ depth: 1, label: 'Sign out', out: 'spotify' });
     }
     yt.tree = rows;
     $('yt-tree').innerHTML = rows.map((r, i) =>
@@ -567,6 +570,7 @@
   $('yt-tree').addEventListener('click', (e) => {
     const row = treeRow(e);
     if (!row) return;
+    if (row.out) { ({ yt: signOut, apple: appleSignOut, spotify: spotifySignOut })[row.out](); return; }
     if (row.fold && (!row.node || e.target.tagName === 'I')) { yt.open[row.fold] = !yt.open[row.fold]; drawTree(); return; }
     if (row.node) show(row.node);
   });
