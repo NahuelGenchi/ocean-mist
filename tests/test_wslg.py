@@ -1,7 +1,8 @@
-"""The wait for WSLg before the window opens (player.py, #125): under WSL, a
-window mapped before the Windows side has connected to WSLg's compositor never
-shows, so the player waits for the line the compositor logs then. The log is a
-scratch file and the clock a stand-in: nothing waits for real."""
+"""Under WSLg (player.py): the wait before the window opens (#125), and the
+sound output WebKit plays to (#129). Under WSL, a window mapped before the
+Windows side has connected to WSLg's compositor never shows, so the player
+waits for the line the compositor logs then. The log is a scratch file and the
+clock a stand-in: nothing waits for real."""
 import contextlib
 import io
 import os
@@ -78,6 +79,37 @@ class WaitForWslg(unittest.TestCase):
         self.assertIn("had not connected after 5 s", said.getvalue())
         self.assertGreaterEqual(clock.now - 100.0, 5)
         self.assertLess(clock.now - 100.0, 5.5)   # it goes on soon after the limit
+
+
+class WslgAudio(unittest.TestCase):
+    """The sound output WebKit plays to under WSLg (#129): GStreamer's OpenAL sink, ranked first through the
+    environment the player's processes start with. WSLg's sound server is a scratch file; nothing plays."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="wslg-audio-", dir=SCRATCH)
+        self.server = os.path.join(self.dir, "PulseServer")
+        open(self.server, "w").close()
+
+    def test_not_wslg(self):
+        env = {}
+        self.assertFalse(player.wslg_audio(env, server=os.path.join(self.dir, "none")))
+        self.assertEqual(env, {})
+
+    def test_wslg(self):
+        env = {}
+        self.assertTrue(player.wslg_audio(env, server=self.server))
+        self.assertEqual(env, {"GST_PLUGIN_FEATURE_RANK": "openalsink:MAX"})
+
+    def test_ranks_of_the_user_kept(self):
+        env = {"GST_PLUGIN_FEATURE_RANK": "avdec_aac:PRIMARY"}
+        self.assertTrue(player.wslg_audio(env, server=self.server))
+        self.assertEqual(env["GST_PLUGIN_FEATURE_RANK"], "avdec_aac:PRIMARY,openalsink:MAX")
+
+    def test_user_ranked_the_sink(self):
+        for ranks in ("openalsink:NONE", "avdec_aac:PRIMARY, openalsink :NONE"):
+            env = {"GST_PLUGIN_FEATURE_RANK": ranks}
+            self.assertFalse(player.wslg_audio(env, server=self.server))
+            self.assertEqual(env["GST_PLUGIN_FEATURE_RANK"], ranks)   # their choice, left alone
 
 
 if __name__ == "__main__":

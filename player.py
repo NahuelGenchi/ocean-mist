@@ -811,10 +811,33 @@ def wait_for_wslg(log=WSLG_LOG, limit=WSLG_WAIT, sleep=time.sleep, clock=time.mo
         sleep(0.25)
 
 
+# Under WSLg, sound goes to a PulseAudio server whose one sink (RDPSink) hands it on to Windows. Fed by WebKit's
+# Web Audio, GStreamer's pulsesink starves against it after about 2 s, and as the page sends every song through
+# Web Audio (equalizer, visualizations, volume), every song then plays on in silence (#129). OpenAL Soft feeds the
+# same server at a pace of its own, without a gap, so there GStreamer's OpenAL sink is ranked first, and the
+# autoaudiosink WebKit plays to picks it. It comes with gstreamer1.0-plugins-bad; without it, nothing changes.
+
+WSLG_PULSE = "/mnt/wslg/PulseServer"
+WSLG_AUDIO_SINK = "openalsink"
+
+
+def wslg_audio(environ=os.environ, server=WSLG_PULSE):
+    """Under WSLg, rank GStreamer's OpenAL sink first for the processes WebKit starts; True when it did. A
+    GST_PLUGIN_FEATURE_RANK the user set is kept: the sink is added to it, unless it names the sink already."""
+    if not os.path.exists(server):
+        return False
+    ranks = environ.get("GST_PLUGIN_FEATURE_RANK", "")
+    if any(part.split(":", 1)[0].strip() == WSLG_AUDIO_SINK for part in ranks.split(",")):
+        return False
+    environ["GST_PLUGIN_FEATURE_RANK"] = ",".join(filter(None, (ranks, WSLG_AUDIO_SINK + ":MAX")))
+    return True
+
+
 # -- window -------------------------------------------------------------------
 
 def run_app(argv):
     wait_for_wslg()   # before GTK connects to the display
+    wslg_audio()      # before WebKit starts the processes that play
     libc = lean()
     import gi
     gi.require_version("Gtk", "3.0")
